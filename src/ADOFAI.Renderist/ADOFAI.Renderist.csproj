@@ -1,0 +1,86 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <RootNamespace>ADOFAI.Renderist</RootNamespace>
+    <AssemblyName>ADOFAI.Renderist</AssemblyName>
+    <Product>ADOFAI Renderist</Product>
+    <Version>0.1.0</Version>
+    <Company>ShakeCrane, Ice2974</Company>
+    <Copyright>Copyright (c) ShakeCrane, Ice2974</Copyright>
+    <Description>Non-realtime / controlled / reproducible render export plugin for A Dance of Fire and Ice (UMM mod).</Description>
+
+    <!-- We want a plain DLL output without TFM/RID subfolders. -->
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+
+    <!-- Mod assemblies should not bundle any of the game's reference DLLs. -->
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>portable</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+  </PropertyGroup>
+
+  <!--
+    Reference paths are resolved from the local ADOFAI install via:
+      $(AdofaiManagedDir) — A Dance of Fire and Ice_Data\Managed
+      $(AdofaiUmmDir)     — Managed\UnityModManager
+    These are defined in build/local.props (generated locally by scripts/prepare-references.ps1).
+  -->
+
+  <ItemGroup>
+
+    <!-- Unity Mod Manager core -->
+    <Reference Include="UnityModManager">
+      <HintPath>$(AdofaiUmmDir)\UnityModManager.dll</HintPath>
+      <Private>false</Private>
+      <SpecificVersion>false</SpecificVersion>
+    </Reference>
+
+    <!-- Harmony (shipped with UMM as 0Harmony.dll) -->
+    <Reference Include="0Harmony">
+      <HintPath>$(AdofaiUmmDir)\0Harmony.dll</HintPath>
+      <Private>false</Private>
+      <SpecificVersion>false</SpecificVersion>
+    </Reference>
+
+    <!-- Unity engine modules — Phase 1 minimum set -->
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(AdofaiManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+      <SpecificVersion>false</SpecificVersion>
+    </Reference>
+
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>$(AdofaiManagedDir)\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+      <SpecificVersion>false</SpecificVersion>
+    </Reference>
+
+    <!-- UnityEngine.dll: legacy umbrella assembly. Optional — only reference if present. -->
+    <Reference Include="UnityEngine"
+               Condition="Exists('$(AdofaiManagedDir)\UnityEngine.dll')">
+      <HintPath>$(AdofaiManagedDir)\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+      <SpecificVersion>false</SpecificVersion>
+    </Reference>
+
+    <!--
+      Assembly-CSharp.dll is intentionally NOT referenced in Phase 1.
+      It will be introduced in Phase 4 (game state recognition) after dnSpy/ILSpy
+      verification of target types and method signatures.
+    -->
+
+  </ItemGroup>
+
+  <!--
+    Fail fast with a clear message if the developer has not yet run
+    scripts/prepare-references.ps1 (i.e. build/local.props missing).
+  -->
+  <Target Name="VerifyLocalProps" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(AdofaiManagedDir)' == '' or '$(AdofaiUmmDir)' == ''"
+           Text="Local reference paths are not configured. Run scripts/prepare-references.ps1 (or copy build/local.props.example to build/local.props and edit it). See references/LOCAL_SETUP.md." />
+  </Target>
+
+</Project>

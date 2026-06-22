@@ -1,0 +1,23 @@
+<Project>
+
+  <!--
+    Root-level Directory.Build.props
+    MSBuild auto-discovers this file when loading any .csproj under this repo
+    and imports it before the project file is evaluated.
+
+    Imports the developer-local reference path configuration (build/local.props),
+    which must define $(AdofaiInstallDir), $(AdofaiManagedDir), $(AdofaiUmmDir).
+    See build/local.props.example and references/LOCAL_SETUP.md.
+  -->
+
+  <Import Project="$(MSBuildThisFileDirectory)build\local.props"
+          Condition="Exists('$(MSBuildThisFileDirectory)build\local.props')" />
+
+  <PropertyGroup>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+  </PropertyGroup>
+
+</Project>

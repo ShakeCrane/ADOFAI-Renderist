@@ -1,0 +1,9 @@
+{
+  "Id": "ADOFAI.Renderist",
+  "DisplayName": "ADOFAI Renderist",
+  "Author": "ShakeCrane, Ice2974",
+  "Version": "0.1.0",
+  "ManagerVersion": "0.22.14",
+  "AssemblyName": "ADOFAI.Renderist.dll",
+  "EntryMethod": "ADOFAI.Renderist.ModEntry.Load"
+}

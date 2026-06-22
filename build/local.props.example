@@ -1,0 +1,26 @@
+<Project>
+
+  <!--
+    Template for build/local.props.
+
+    Copy this file to "build/local.props" (next to this example) and adjust
+    AdofaiInstallDir to point at YOUR local ADOFAI install. The other two
+    properties are derived automatically.
+
+    build/local.props is gitignored — never commit it.
+
+    The typical Steam install path on Windows is:
+      C:\Program Files (x86)\Steam\steamapps\common\A Dance of Fire and Ice
+    or, on a non-default Steam library:
+      <SteamLibrary>\steamapps\common\A Dance of Fire and Ice
+
+    See references/LOCAL_SETUP.md for the full setup workflow.
+  -->
+
+  <PropertyGroup>
+    <AdofaiInstallDir>C:\Program Files (x86)\Steam\steamapps\common\A Dance of Fire and Ice</AdofaiInstallDir>
+    <AdofaiManagedDir>$(AdofaiInstallDir)\A Dance of Fire and Ice_Data\Managed</AdofaiManagedDir>
+    <AdofaiUmmDir>$(AdofaiManagedDir)\UnityModManager</AdofaiUmmDir>
+  </PropertyGroup>
+
+</Project>

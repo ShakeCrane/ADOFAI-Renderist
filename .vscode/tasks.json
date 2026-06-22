@@ -1,0 +1,67 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Debug",
+            "type": "process",
+            "command": "dotnet",
+            "args": [
+                "build",
+                "${workspaceFolder}/src/ADOFAI.Renderist/ADOFAI.Renderist.csproj",
+                "-c", "Debug",
+                "/consoleloggerparameters:NoSummary"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": "$msCompile"
+        },
+        {
+            "label": "Build Release",
+            "type": "process",
+            "command": "dotnet",
+            "args": [
+                "build",
+                "${workspaceFolder}/src/ADOFAI.Renderist/ADOFAI.Renderist.csproj",
+                "-c", "Release",
+                "/consoleloggerparameters:NoSummary"
+            ],
+            "group": "build",
+            "problemMatcher": "$msCompile"
+        },
+        {
+            "label": "Clean",
+            "type": "process",
+            "command": "dotnet",
+            "args": [
+                "clean",
+                "${workspaceFolder}/src/ADOFAI.Renderist/ADOFAI.Renderist.csproj"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Prepare References",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", "${workspaceFolder}/scripts/prepare-references.ps1"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Copy to ADOFAI Mods",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", "${workspaceFolder}/scripts/copy-to-mods.ps1"
+            ],
+            "dependsOn": ["Build Release"],
+            "problemMatcher": []
+        }
+    ]
+}

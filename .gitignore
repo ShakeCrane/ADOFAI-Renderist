@@ -1,0 +1,177 @@
+```gitignore
+# ============================================================
+# ADOFAI-Renderist .gitignore
+# Unity Mod Manager mod / C# Class Library / Visual Studio
+# ============================================================
+
+
+# ------------------------------------------------------------
+# Visual Studio / MSBuild / .NET build outputs
+# ------------------------------------------------------------
+.vs/
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+
+*.user
+*.rsuser
+*.suo
+*.userosscache
+*.sln.docstates
+*.csproj.user
+
+# Rider / JetBrains
+.idea/
+*.sln.iml
+
+# VS Code local settings
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+
+# ------------------------------------------------------------
+# NuGet
+# ------------------------------------------------------------
+*.nupkg
+*.snupkg
+packages/
+.nuget/
+project.lock.json
+project.assets.json
+
+
+# ------------------------------------------------------------
+# Local build configuration
+# ------------------------------------------------------------
+/build/local.props
+/build/*.local.props
+/build/*.user.props
+
+# Keep committed examples/templates if present
+!/build/local.props.example
+
+
+# ------------------------------------------------------------
+# Local proprietary / binary references
+# Do not commit ADOFAI, Unity, UMM, or third-party mod DLLs
+# ------------------------------------------------------------
+/references/ADOFAI/*
+!/references/ADOFAI/.gitkeep
+
+/references/Unity/*
+!/references/Unity/.gitkeep
+
+/references/UMM/*
+!/references/UMM/.gitkeep
+
+/references/Mods/*
+!/references/Mods/.gitkeep
+
+/references/Decompiled/*
+!/references/Decompiled/.gitkeep
+
+
+# ------------------------------------------------------------
+# DLL / binary guard
+# This prevents accidental commits of copied game DLLs.
+# If a DLL ever truly needs to be tracked, force-add it explicitly
+# and document the license reason.
+# ------------------------------------------------------------
+*.dll
+*.pdb
+*.mdb
+*.exe
+*.so
+*.dylib
+*.bundle
+
+
+# ------------------------------------------------------------
+# Unity / ADOFAI local game files and dumps
+# ------------------------------------------------------------
+/game/
+/Game/
+/ADOFAI/
+/A Dance of Fire and Ice/
+/A Dance of Fire and Ice_Data/
+/Managed/
+/decompiled/
+/Decompiled/
+/dnspy/
+/ilspy/
+/game-dumps/
+/GameDumps/
+
+
+# ------------------------------------------------------------
+# UMM generated packages / release artifacts
+# ------------------------------------------------------------
+/dist/
+/artifacts/
+/publish/
+/published/
+/out/
+/output/
+/packages/
+/release/
+/releases/
+
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+
+
+# ------------------------------------------------------------
+# Logs and temporary files
+# ------------------------------------------------------------
+*.log
+*.tmp
+*.temp
+*.bak
+*.old
+*.orig
+*.rej
+
+/logs/
+/Logs/
+/temp/
+/tmp/
+
+
+# ------------------------------------------------------------
+# OS generated files
+# ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+
+# ------------------------------------------------------------
+# Claude Code / local agent state
+# Keep CLAUDE.md tracked, but ignore local agent/session files.
+# ------------------------------------------------------------
+.claude/settings.local.json
+.claude/local/
+.claude/cache/
+.claude/tmp/
+
+
+# ------------------------------------------------------------
+# PowerShell local execution artifacts
+# ------------------------------------------------------------
+*.ps1xml
+*.pssc
+*.psd1~
+*.psm1~
+```
