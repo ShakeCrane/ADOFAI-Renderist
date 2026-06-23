@@ -1,412 +1,345 @@
-# CLAUDE.md
+## 1. 项目定位
 
-此文件为 Claude Code 在处理 **ADOFAI-Renderist** 仓库时提供仓库级别的工作指令。
+ADOFAI-Renderist 是一个面向 **A Dance of Fire and Ice** 的 **UMM 模组项目**，目标是实现 **非实时渲染导出插件**。
 
-## 项目定位
+长期方向：
 
-ADOFAI-Renderist 是一个面向 **A Dance of Fire and Ice** 的 Unity Mod Manager 模组项目。
+* 截图序列导出
+* 非实时逐帧渲染
+* 可复现渲染流程
+* replay / autoplay 驱动导出
+* 外部音频与视频编码流程
 
-本项目的长期目标是为 ADOFAI 构建一个 **非实时渲染导出插件**。该插件最终应能够在受控流程下导出稳定、可复现的帧、图像序列或渲染素材。
+仅支持 **Unity Mod Manager（UMM）**，禁止引入其他 Loader。
 
-项目设计时应考虑未来兼容：
+---
 
-* 当前最新正式版本的 ADOFAI；
-* ADOFAI 内置的自动播放 / 自动演示功能；
-* 其他模组提供的回放功能；
-* 后续可能加入的手动录制、外部编码、视频合成等工作流。
+## 2. 当前基线
 
-本项目 **仅使用 Unity Mod Manager**。
-
-不要引入或规划支持：
-
-* BepInEx；
-* MelonLoader；
-* 其他模组加载器；
-* 多加载器抽象层。
-
-除非用户明确改变项目方向，否则始终保持项目仅支持 UMM。
-
-## Agent 职责
-
-`CLAUDE.md` 是 Claude Code 使用的主要仓库指令文件。
-
-预期工作流程：
-
-* Web ChatGPT 负责项目规划、审查，以及生成 Claude Code 计划模式提示词。
-* Claude Code 在本地仓库中工作。
-* Claude Code 可以根据用户明确请求和本文件进行分析、规划、实现、重构、构建和验证。
-* Claude Code 不得在未实际检查或修改本地仓库、未运行当前环境可用验证步骤的情况下声称任务完成。
-
-本仓库仅使用 `CLAUDE.md` 作为 Agent 指令文件。
-
-除非用户明确要求，否则不要创建、修改或维护 `AGENTS.md`。
-
-## 默认工作流程
-
-除非用户明确要求实现，否则 Claude Code 必须从 **计划模式（plan mode）** 开始。
-
-计划模式意味着：
-
-* 分析当前目录；
-* 检查仓库结构；
-* 检查必要项目文件是否存在；
-* 如果存在构建配置，则检查构建配置；
-* 如果存在引用 DLL 配置，则检查引用配置；
-* 必要时检查本地 ADOFAI DLL 是否可用；
-* 找出缺失信息；
-* 提出具体计划；
-* 列出需要创建或修改的文件；
-* 列出验证步骤；
-* 列出风险和需要人工确认的事项；
-* **不要** 创建、修改、删除、移动或格式化任何文件。
-
-处于计划模式时，先输出可审查的计划。等待用户批准实现后再进行修改。
-
-如果用户明确要求实现、修复、创建文件或修改仓库，则按照请求范围执行，但仍应保持修改最小且目标明确。
-
-## README 策略
-
-`README.md` 不属于 Claude Code 默认修改范围。
-
-除非用户明确要求，否则 Claude Code 不得：
-
-* 创建 `README.md`；
-* 修改 `README.md`；
-* 重写 `README.md`；
-* 重新格式化 `README.md`；
-* 在计划修改文件列表中包含 README 修改。
-
-Claude Code 可以检查 `README.md` 是否存在以理解仓库，但不得主动提出 README 修改，除非用户明确要求。
-
-## 仓库命名与 C# 命名
-
-仓库名称：
+环境：
 
 ```text
-ADOFAI-Renderist
+ADOFAI v3.1.2
+Unity 6000.3.10f1
+UMM 0.32.5
+Harmony 2.3.6.0
+TargetFramework net48
 ```
 
-默认 C# 根命名空间：
+核心规则：
+
+* 命名空间：`ADOFAI.Renderist`
+* DLL：`ADOFAI.Renderist.dll`
+* Mod ID：`ADOFAI.Renderist`
+* License：Apache-2.0
+* README 不自动修改
+* 不使用 `AGENTS.md`
+* 不提交任何游戏 / Unity / UMM DLL
+* `references/`、`build/local.props` 仅本地使用
+* `dist/` 忽略
+* 不默认引入 `Assembly-CSharp.dll`
+* 不默认写 Patch 或渲染逻辑
+
+发布包：
 
 ```text
-ADOFAI.Renderist
+ADOFAI.Renderist.zip
+├── Info.json
+├── ADOFAI.Renderist.dll
+└── LICENSE
 ```
 
-默认程序集 / DLL 名称应遵循相同命名，除非用户另有要求：
+禁止包含任何第三方或本地依赖文件。
+
+---
+
+## 3. Agent 职责
+
+* 本文件为唯一 Agent 指令
+* Web ChatGPT 负责规划
+* Claude Code 负责实现与验证
+* 不得虚报已执行操作
+
+不使用 `AGENTS.md`。
+
+---
+
+## 4. 工作流程
+
+默认进入 **计划模式**：
+
+允许：
+
+* 检查仓库、脚本、引用、版本
+* 输出计划、风险、验证步骤
+
+禁止：
+
+* 修改文件
+* 创建文件
+
+计划必须包含：
+
+1. 需求理解
+2. 当前状态
+3. 修改范围
+4. 技术路线
+5. 验证方案
+6. 风险
+
+需用户批准后才能实现。
+
+---
+
+## 5. README 策略
+
+默认不修改 README。
+
+如需修改，必须标注：
 
 ```text
-ADOFAI.Renderist.dll
+需要用户确认：是否允许修改 README。
 ```
 
-项目许可证：
+---
+
+## 6. 版本规则
+
+同步以下位置：
+
+* `Info.json`
+* `.csproj`
+* 代码版本文本
+* 发布包
+
+使用：
 
 ```text
-Apache-2.0
+scripts/set-version.ps1
 ```
 
-除非用户明确要求，否则不要修改许可证。
+验证：
 
-## 目标游戏版本
+* 构建输出
+* UMM 日志
+* 发布包
+* verify 脚本
 
-目标游戏版本为 **当前最新正式版 ADOFAI**。
+---
 
-不要假设旧版 ADOFAI 模组代码、旧反编译符号、旧回放模组或旧 Unity 行为仍然有效。
+## 7. 构建环境
 
-涉及以下内容的任何工作，都必须基于用户当前本地 ADOFAI 安装进行验证：
+* Visual Studio 优先
+* 支持 MSBuild / dotnet
 
-* Unity 版本；
-* Mono / IL2CPP 状态；
-* `Assembly-CSharp.dll`；
-* Unity `Managed` DLL 结构；
-* ADOFAI 内部类名；
-* 方法签名；
-* 字段名称；
-* 游戏状态类；
-* 自动播放行为；
-* 回放兼容性；
-* Harmony Patch 目标。
-
-如果无法找到本地 ADOFAI 安装或缺少必要 DLL，停止并报告缺失需求。不要为专有游戏 API 编造 stub。
-
-## 构建环境
-
-首选开发环境为 **Visual Studio**。
-
-第一个实际构建目标应是一个适用于 Unity Mod Manager 模组的最小可构建 C# Class Library。
-
-优先使用简单项目结构和简单构建配置。除非用户明确要求，不要引入复杂构建系统、自定义生成器或大型框架抽象。
-
-可接受的构建相关工具：
-
-* Visual Studio；
-* MSBuild；
-* 与项目格式兼容时使用 `dotnet build`；
-* 用于本地引用准备和打包的 PowerShell 辅助脚本。
-
-优先使用清晰、可维护的 `.csproj` 配置，而不是隐藏的 IDE 专属设置。
-
-## 引用 DLL 策略
-
-不要提交专有游戏程序集或本地二进制引用。
-
-源码仓库只应提交：
-
-* 引用配置模板；
-* 检测脚本；
-* 占位目录；
-* 说明文本文件；
-* 用于定位或验证本地引用的构建脚本。
-
-每个开发者必须使用自己的本地 ADOFAI 安装提供所需游戏 DLL。
-
-不要提交：
-
-* `Assembly-CSharp.dll`；
-* ADOFAI 游戏 DLL；
-* 从游戏复制出的 Unity DLL；
-* 从游戏复制出的 `UnityEngine*.dll`；
-* Unity Mod Manager 二进制文件，除非明确批准；
-* 第三方模组 DLL，除非其许可证允许再分发且用户明确批准；
-* 从 ADOFAI DLL 反编译生成的专有游戏源码。
-
-推荐本地引用策略：
-
-1. 在仓库中保留占位目录。
-2. 使用 `build/local.props.example` 作为提交的模板。
-3. 在本地生成或复制 `build/local.props`。
-4. 让 `build/local.props` 指向用户本地 ADOFAI 安装路径。
-5. 通过 MSBuild 属性让项目文件引用本地 DLL。
-6. 所有实际游戏 DLL 均保持 Git 忽略。
-
-ADOFAI Managed 目录通常为：
+目标框架：
 
 ```text
-<ADOFAI install dir>/A Dance of Fire and Ice_Data/Managed
+net48
 ```
 
-该路径必须在本地验证。不要在提交的项目文件中硬编码某个用户机器路径。
+修改框架需验证兼容性（UMM / Harmony / Unity）。
 
-如果辅助脚本将 DLL 复制到本地 `references/` 目录，这些 DLL 必须保持 Git 忽略。
+---
 
-对于可再分发的开源依赖（例如 Harmony），优先使用 NuGet 包，除非 UMM 运行兼容性需要其他方式。
+## 8. DLL 引用规则
 
-引用 ADOFAI 或 Unity DLL 进行编译时：
+不提交任何专有 DLL。
 
-* 将其视为仅编译期引用；
-* 不要复制到模组发布包；
-* 不要包含在源码压缩包中；
-* 不要从第三方来源下载。
+允许：
 
-## 推荐本地引用文件结构
+* 引用模板
+* 脚本
+* 占位目录
 
-需要时优先使用：
+禁止：
+
+* `Assembly-CSharp.dll`
+* Unity / UMM / Harmony DLL
+* 第三方 Mod DLL
+
+本地引用通过脚本管理：
 
 ```text
-build/
-  local.props.example
-  local.props          # 仅本地存在，由 Git 忽略
-
-references/
-  ADOFAI/
-    .gitkeep
-  Unity/
-    .gitkeep
-  UMM/
-    .gitkeep
-
-scripts/
-  prepare-references.ps1
-  clean-references.ps1
+scripts/prepare-references.ps1
+scripts/clean-references.ps1
 ```
 
-`build/local.props.example` 只能包含示例属性。除示例用途外，不应包含私人机器路径。
+---
 
-`build/local.props` 应被 Git 忽略。
+## 9. UMM 结构
 
-引用准备脚本可以：
+核心：
 
-* 请求输入本地 ADOFAI 安装路径；
-* 尽可能检测 Steam 安装路径；
-* 检查必要 DLL 是否存在；
-* 生成 `build/local.props`；
-* 可选地复制本地 DLL 到被忽略的引用目录。
+* `Info.json`
+* `ModEntry`
+* `Load / OnToggle`
+* GUI / 设置 / 日志
 
-引用准备脚本不得：
+入口类保持精简，逻辑拆分模块。
 
-* 下载 ADOFAI DLL；
-* 从第三方下载 Unity 游戏 DLL；
-* 提交 DLL；
-* 修改无关文件。
+---
 
-## Git 与二进制文件规则
+## 10. Harmony 规则
 
-保持仓库以源码为核心。
+谨慎使用 Patch：
 
-不要提交本地构建产物或专有二进制文件。
+必须确认：
 
-谨慎使用宽泛的 `*.dll` 忽略规则。它可以防止误提交专有 DLL，但发布包可能也包含项目自身编译出的模组 DLL。如果使用宽泛 DLL 忽略规则，必须确保发布流程明确且安全。
+* 目标方法
+* 签名
+* Patch 类型
+* 风险
 
-## UMM 模组约束
+优先：
 
-项目必须保持基于 Unity Mod Manager。
+* Prefix / Postfix
 
-创建或修改 UMM 相关代码时，优先采用标准 UMM 模式：
+避免：
 
-* `Info.json`；
-* UMM 入口类；
-* 加载方法；
-* 启用 / 禁用处理；
-* 设置加载 / 保存；
-* 可选 UMM GUI；
-* UMM 日志；
-* Harmony 初始化和取消 Patch。
+* Transpiler
+* 未验证 API
 
-保持 UMM 入口代码精简。不要将大量功能逻辑直接放入入口类。
+禁止凭空假设 Hook。
 
-优先将职责拆分到 `ADOFAI.Renderist` 下清晰的命名空间和类中。
+---
 
-## Harmony Patch 规则
+## 11. 渲染导出边界
 
-谨慎使用 Harmony。
+分阶段推进：
 
-创建或修改任何 Harmony Patch 前，确认：
+1. 实时录屏（仅验证）
+2. 截图序列
+3. 非实时渲染（目标）
+4. 音频（后期）
+5. 视频编码（外部工具）
+6. replay / autoplay 驱动
 
-* 目标类型；
-* 目标方法；
-* 预期方法签名；
-* Patch 类型：Prefix、Postfix、Transpiler 或 Finalizer；
-* 为什么需要该 Patch；
-* 目标方法不存在时的失败行为；
-* 是否可以安全禁用或取消 Patch。
+必须考虑：
 
-尽可能优先使用 Prefix 或 Postfix。
+* 时间控制
+* 帧推进
+* UI / 相机
+* 音频同步
+* 性能与磁盘
 
-除非有明确验证过的需求且没有更简单 Hook 点，否则避免使用 Transpiler。
+---
 
-不要假设 ADOFAI 内部方法名或签名稳定。实现前必须基于当前本地游戏 DLL 验证。
+## 12. replay / autoplay
 
-## 非实时渲染导出方向
+优先兼容：
 
-项目最终方向是非实时渲染导出。
+* ADOFAI autoplay
+* 现有 replay Mod
 
-分析或实现渲染相关功能时，必须明确区分：
+不要重写 replay 系统。
 
-* 实时屏幕录制；
-* 游戏内截图导出；
-* 图像序列导出；
-* 受控帧推进；
-* 非实时渲染；
-* 音频提取或复用；
-* 外部视频编码；
-* 基于 ffmpeg 的合成；
-* 基于回放的渲染；
-* 基于自动播放的渲染。
+必须验证：
 
-不要假设完整非实时渲染可以立即实现。
+* 状态检测
+* 时间控制兼容
+* 稳定性
 
-任何涉及时间控制、帧捕获、回放、自动播放、相机状态、隐藏 UI、后处理、音频同步或事件播放的实现，在基于当前最新 ADOFAI 验证前都应视为高风险。
+---
 
-## 回放与自动播放兼容性
+## 13. 文件安全
 
-项目设计应兼容：
+* 不修改用户关卡
+* 输出到独立目录
 
-* ADOFAI 内置自动播放 / 自动演示行为；
-* 其他模组提供的回放功能。
+必须处理：
 
-不要假设任何回放模组提供稳定 API。
+* 路径合法性
+* 覆盖风险
+* 错误日志
 
-涉及回放兼容时，应检查本地环境中实际可用的回放模组源码、二进制、日志或运行行为。
+---
 
-不要在没有版本检查和失败处理的情况下硬编码第三方回放模组兼容。
+## 14. 脚本体系
 
-不要破坏游戏原始自动播放流程。
+优先复用现有脚本：
 
-## 文件安全
+* 引用准备
+* 部署
+* 清缓存
+* 打包
+* 验证
 
-不要覆盖用户创建的 ADOFAI 谱面文件。
+关键脚本：
 
-未来任何导出或生成内容都应进入专用输出目录。
+```text
+scripts/package-release.ps1
+scripts/verify-release-package.ps1
+scripts/set-version.ps1
+```
 
-处理文件时考虑：
+PowerShell 可使用：
 
-* 路径有效性；
-* 非法文件名字符；
-* 权限；
-* 磁盘空间；
-* 导出中断恢复；
-* 避免意外覆盖；
-* 清晰日志和用户可见错误信息。
+```text
+powershell.exe -ExecutionPolicy Bypass
+```
 
-## 发布包规则
+---
 
-Phase 1.4 起，本仓库使用 `scripts/package-release.ps1` 生成发布包，使用
-`scripts/verify-release-package.ps1` 校验发布包。
+## 15. 验证要求
 
-发布包必须满足：
+执行：
 
-* 文件名形如 `ADOFAI.Renderist-v<version>.zip`；
-* 默认输出目录为仓库内 `dist/`，绝不写入 `src/`、`mod/`、`scripts/`、`build/`、
-  `references/`、`.git/`、`.vscode/` 或任何 ADOFAI 游戏目录；
-* zip 内仅允许以下顶层文件，且不得包含任何子目录：
-  * `Info.json`
-  * `ADOFAI.Renderist.dll`
-  * `LICENSE`
-* zip 内禁止出现：`README*`、`AGENTS.md`、`CLAUDE.md`、`Settings.xml`、
-  `Log.txt`、`UnityModManager.dll`、`0Harmony.dll`、`Assembly-CSharp*.dll`、
-  `UnityEngine*.dll`、`UnityPlayer.dll`、`*.pdb`、`*.xml`、`*.cache`、
-  `*.config`、`ADOFAI.Renderist.dll.<digits>.cache`、`bin/`、`obj/`、
-  `references/`、`build/`、`.git/`、`.vscode/` 等内容；
-* `Info.json` 必须满足：`Id == ADOFAI.Renderist`、`AssemblyName ==
-  ADOFAI.Renderist.dll`、`EntryMethod == ADOFAI.Renderist.ModEntry.Load`、
-  `ManagerVersion == 0.32.5`、`Version` 与目标版本一致；
-* `ADOFAI.Renderist.dll` 的 FileVersion 或 ProductVersion 必须与 `Info.json`
-  的 Version 一致，避免打包旧 DLL；
-* 版本与 phase 文本同步只能通过 `scripts/set-version.ps1` 进行，打包脚本
-  不得改写源文件；
-* 打包脚本不得引入 BepInEx / MelonLoader / 其他 Mod Loader；
-* 打包脚本不得引入 Harmony Patch、Assembly-CSharp 编译引用或任何渲染/截图
-  /回放/自动播放逻辑；
-* 不得将 `README.md` 放入发布包，不得在打包流程中创建或修改 `README.md`，
-  不得创建 `AGENTS.md`。
+* 构建
+* 打包
+* verify 脚本
+* git 检查
 
-## 验证
+提供人工验证步骤：
 
-请求实现时，在报告完成前运行可用验证步骤。
+* 启动游戏
+* 检查 UMM
+* 检查日志
 
-可能的验证步骤：
+可说：
 
-* Visual Studio 构建；
-* 适用时运行 `dotnet build`；
-* 脚本语法检查；
-* 打包脚本 dry run；
-* `git status`；
-* `git diff --check`。
+```text
+代码层面验证已完成，游戏内验证需要用户执行。
+```
 
-如果需要游戏运行测试但 Claude Code 无法执行，必须明确说明限制，并提供用户手动测试步骤。
+不可虚报运行验证。
 
-除非实际运行游戏并观察结果，否则不要声称已验证 ADOFAI 运行时行为。
+---
 
-## 输出要求
+## 16. 实现报告
 
-报告计划或结果时，应具体且简洁。
+必须包含：
 
-计划应包含：
+* 修改文件
+* 修改目的
+* 版本同步
+* 验证情况
+* 风险
 
-1. 当前仓库状态；
-2. 假设；
-3. 建议创建或修改的文件；
-4. 引用 DLL 需求；
-5. 构建方式；
-6. 风险；
-7. 需要人工确认的事项；
-8. 验证步骤。
+---
 
-实现总结应包含：
+## 17. 信息边界
 
-1. 修改的文件；
-2. 修改原因；
-3. 已执行验证；
-4. 未执行验证；
-5. 剩余风险或 TODO。
+允许：
 
-始终将不确定事项标记为等待确认。
+* “需要确认”
+* “待验证”
+
+禁止虚构：
+
+* Hook 已存在
+* 已运行验证
+* 已修改仓库
+
+---
+
+## 18. 输出风格
+
+* 中文
+* 简洁
+* 工程化
+* 可执行
+
+根据需求输出：
+
+* 计划 / 实现 / 审查
