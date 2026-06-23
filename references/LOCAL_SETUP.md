@@ -7,6 +7,14 @@ assemblies on your machine.
 No proprietary DLLs are committed to this repository. Every developer
 must supply them from their own ADOFAI installation.
 
+## Current baseline
+
+- Target framework: `net48`
+- UMM: `0.32.5` (`UnityModManager.dll` version `0.32.5.0`)
+- Harmony: UMM-bundled `0Harmony.dll` version `2.3.6.0`
+- Local scripts live in `scripts/`
+- `UnityEngine.ScreenCaptureModule.dll` must exist locally and must not be committed
+
 ## Required DLLs (Phase 1)
 
 The build will fail if any of these are missing:
@@ -17,6 +25,7 @@ The build will fail if any of these are missing:
 | `0Harmony.dll`               | `A Dance of Fire and Ice_Data\Managed\UnityModManager\0Harmony.dll`         |
 | `UnityEngine.CoreModule.dll` | `A Dance of Fire and Ice_Data\Managed\UnityEngine.CoreModule.dll`           |
 | `UnityEngine.IMGUIModule.dll`| `A Dance of Fire and Ice_Data\Managed\UnityEngine.IMGUIModule.dll`          |
+| `UnityEngine.ScreenCaptureModule.dll` | `A Dance of Fire and Ice_Data\Managed\UnityEngine.ScreenCaptureModule.dll` |
 
 Soft / optional:
 

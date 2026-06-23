@@ -10,12 +10,12 @@
       3. Else try common Steam install paths.
       4. Else prompt the developer.
 
-    Validates four mandatory DLLs (hard fail) and one optional DLL (warn only).
+    Validates the local Mono/Managed baseline and required Phase 1 DLLs.
     Writes build/local.props from build/local.props.example with the
     AdofaiInstallDir value substituted.
 
     This script never copies any game DLLs and never modifies anything
-    outside this repository.
+    outside this repository except build/local.props.
 
 .PARAMETER AdofaiDir
     Path to the ADOFAI install root (the folder containing
@@ -48,6 +48,37 @@ function Write-Section($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)      { Write-Host "  + $msg" -ForegroundColor Green }
 function Write-Miss($msg)    { Write-Host "  ! $msg" -ForegroundColor Yellow }
 function Write-Fail($msg)    { Write-Host "  x $msg" -ForegroundColor Red }
+
+function Get-FileVersion([string]$path) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    return [System.Diagnostics.FileVersionInfo]::GetVersionInfo($path).FileVersion
+}
+
+function Test-FileVersion([string]$name, [string]$path, [string]$expectedVersion) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        Write-Fail "$name (expected at: $path)"
+        return $false
+    }
+
+    $actualVersion = Get-FileVersion $path
+    if ($actualVersion -eq $expectedVersion) {
+        Write-Ok "$name $actualVersion"
+        return $true
+    }
+
+    Write-Fail "$name version mismatch: expected $expectedVersion, found $actualVersion"
+    return $false
+}
+
+function Test-RequiredFile([string]$name, [string]$path) {
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        Write-Ok $name
+        return $true
+    }
+
+    Write-Fail "$name (expected at: $path)"
+    return $false
+}
 
 function Test-AdofaiRoot([string]$path) {
     if ([string]::IsNullOrWhiteSpace($path)) { return $false }
@@ -160,30 +191,53 @@ if (-not $resolved) {
 
 $managedDir = Join-Path $resolved 'A Dance of Fire and Ice_Data\Managed'
 $ummDir     = Join-Path $managedDir 'UnityModManager'
+$monoDir    = Join-Path $resolved 'MonoBleedingEdge'
+$gameAssembly = Join-Path $resolved 'GameAssembly.dll'
 
 # ----------- 2. Validate required DLLs -------------------------------------
 
-Write-Section 'Validating Phase 1 required DLLs'
-
-$required = @(
-    @{ Name = 'UnityModManager.dll';        Path = (Join-Path $ummDir     'UnityModManager.dll') },
-    @{ Name = '0Harmony.dll';               Path = (Join-Path $ummDir     '0Harmony.dll') },
-    @{ Name = 'UnityEngine.CoreModule.dll'; Path = (Join-Path $managedDir 'UnityEngine.CoreModule.dll') },
-    @{ Name = 'UnityEngine.IMGUIModule.dll';Path = (Join-Path $managedDir 'UnityEngine.IMGUIModule.dll') }
-)
+Write-Section 'Validating local ADOFAI baseline'
 
 $missing = 0
-foreach ($r in $required) {
-    if (Test-Path -LiteralPath $r.Path -PathType Leaf) {
-        Write-Ok "$($r.Name)"
-    } else {
-        Write-Fail "$($r.Name)  (expected at: $($r.Path))"
-        $missing++
-    }
+
+if (Test-Path -LiteralPath $resolved -PathType Container) {
+    Write-Ok "ADOFAI install directory: $resolved"
+} else {
+    Write-Fail "ADOFAI install directory missing: $resolved"
+    $missing++
 }
 
+if (Test-Path -LiteralPath $managedDir -PathType Container) {
+    Write-Ok "Managed directory: $managedDir"
+} else {
+    Write-Fail "Managed directory missing: $managedDir"
+    $missing++
+}
+
+if (Test-Path -LiteralPath $monoDir -PathType Container) {
+    Write-Ok 'MonoBleedingEdge/ present (Mono/Managed baseline)'
+} else {
+    Write-Fail "MonoBleedingEdge/ missing (expected at: $monoDir)"
+    $missing++
+}
+
+if (Test-Path -LiteralPath $gameAssembly -PathType Leaf) {
+    Write-Miss "GameAssembly.dll present — IL2CPP risk; current baseline expects Mono/Managed"
+} else {
+    Write-Ok 'GameAssembly.dll not present (Mono/Managed baseline)'
+}
+
+Write-Section 'Validating Phase 1 required DLLs'
+
+if (-not (Test-FileVersion 'UnityModManager.dll' (Join-Path $ummDir 'UnityModManager.dll') '0.32.5.0')) { $missing++ }
+if (-not (Test-FileVersion '0Harmony.dll' (Join-Path $ummDir '0Harmony.dll') '2.3.6.0')) { $missing++ }
+if (-not (Test-RequiredFile 'UnityEngine.CoreModule.dll' (Join-Path $managedDir 'UnityEngine.CoreModule.dll'))) { $missing++ }
+if (-not (Test-RequiredFile 'UnityEngine.IMGUIModule.dll' (Join-Path $managedDir 'UnityEngine.IMGUIModule.dll'))) { $missing++ }
+if (-not (Test-RequiredFile 'UnityEngine.ScreenCaptureModule.dll' (Join-Path $managedDir 'UnityEngine.ScreenCaptureModule.dll'))) { $missing++ }
+if (-not (Test-RequiredFile 'Assembly-CSharp.dll' (Join-Path $managedDir 'Assembly-CSharp.dll'))) { $missing++ }
+
 if ($missing -gt 0) {
-    Write-Fail "$missing required DLL(s) missing. Aborting without writing build/local.props."
+    Write-Fail "$missing required baseline item(s) missing or mismatched. Aborting without writing build/local.props."
     exit 1
 }
 
@@ -196,11 +250,9 @@ if (Test-Path -LiteralPath $unityUmbrella -PathType Leaf) {
 }
 
 # Phase 4 pre-check — informational only.
-Write-Section 'Phase 4 pre-check (informational only — not required for Phase 1 build)'
-foreach ($n in 'Assembly-CSharp.dll','Assembly-CSharp-firstpass.dll') {
-    $p = Join-Path $managedDir $n
-    if (Test-Path -LiteralPath $p -PathType Leaf) { Write-Ok $n } else { Write-Miss "$n (not present)" }
-}
+Write-Section 'Phase 4 pre-check (informational only — not referenced for Phase 1 build)'
+$firstpass = Join-Path $managedDir 'Assembly-CSharp-firstpass.dll'
+if (Test-Path -LiteralPath $firstpass -PathType Leaf) { Write-Ok 'Assembly-CSharp-firstpass.dll' } else { Write-Miss 'Assembly-CSharp-firstpass.dll (not present)' }
 
 # ----------- 3. Generate build/local.props ---------------------------------
 

@@ -214,7 +214,7 @@ references/
   UMM/
     .gitkeep
 
-tools/
+scripts/
   prepare-references.ps1
   clean-references.ps1
 ```
