@@ -37,7 +37,8 @@
 param(
     [ValidateSet('Debug','Release')]
     [string]$Configuration = 'Release',
-    [switch]$WhatIf
+    [switch]$WhatIf,
+    [switch]$CleanRuntimeCache
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,6 +53,10 @@ $infoJson   = Join-Path $repoRoot 'mod\Info.json'
 function Fail($msg) {
     Write-Error $msg
     exit 1
+}
+
+function Test-IsRenderistRuntimeCacheFileName([string]$name) {
+    return $name -match '^ADOFAI\.Renderist\.dll\.[0-9]+\.cache$'
 }
 
 # ---------- 1. Read AdofaiInstallDir from build/local.props -------------------
@@ -127,10 +132,16 @@ $allowedFiles = @(
     'ADOFAI.Renderist.pdb'           # optional symbols
 )
 
+$runtimeCaches = @()
+
 if (Test-Path -LiteralPath $destDir -PathType Container) {
     Get-ChildItem -LiteralPath $destDir -Force | ForEach-Object {
         if ($_.PSIsContainer) {
             Fail "Destination $destDir contains an unexpected subdirectory '$($_.Name)'. Refusing to write — please remove it manually if it is safe to do so."
+        }
+        if (Test-IsRenderistRuntimeCacheFileName $_.Name) {
+            $runtimeCaches += $_
+            return
         }
         if ($allowedFiles -notcontains $_.Name) {
             Fail "Destination $destDir contains an unexpected file '$($_.Name)' that does not belong to this mod. Refusing to write."
@@ -144,7 +155,28 @@ if (Test-Path -LiteralPath $destDir -PathType Container) {
     }
 }
 
-# ---------- 5. Copy + hash verification --------------------------------------
+# ---------- 5. Optional runtime cache cleanup --------------------------------
+
+if ($runtimeCaches.Count -gt 0) {
+    if ($CleanRuntimeCache) {
+        foreach ($cache in $runtimeCaches) {
+            if ($WhatIf) {
+                Write-Host "WhatIf: would remove runtime cache $($cache.FullName)"
+            } else {
+                try {
+                    Remove-Item -LiteralPath $cache.FullName -Force
+                    Write-Host "  - removed runtime cache $($cache.Name)"
+                } catch {
+                    Fail "Failed to remove runtime cache '$($cache.FullName)'. ADOFAI / UMM may still be running or the file may be locked. $($_.Exception.Message)"
+                }
+            }
+        }
+    } else {
+        Write-Host "Runtime cache detected and kept. Use -CleanRuntimeCache to remove ADOFAI.Renderist.dll.<digits>.cache files."
+    }
+}
+
+# ---------- 6. Copy + hash verification --------------------------------------
 
 function Copy-File([string]$src, [string]$dst) {
     if ($WhatIf) {
