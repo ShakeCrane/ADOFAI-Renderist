@@ -5,7 +5,7 @@
     <RootNamespace>ADOFAI.Renderist</RootNamespace>
     <AssemblyName>ADOFAI.Renderist</AssemblyName>
     <Product>ADOFAI Renderist</Product>
-    <Version>0.1.2</Version>
+    <Version>0.1.3</Version>
     <Company>ShakeCrane, Ice2974</Company>
     <Copyright>Copyright (c) ShakeCrane, Ice2974</Copyright>
     <Description>Non-realtime / controlled / reproducible render export plugin for A Dance of Fire and Ice (UMM mod).</Description>
@@ -54,12 +54,6 @@
 
     <Reference Include="UnityEngine.IMGUIModule">
       <HintPath>$(AdofaiManagedDir)\UnityEngine.IMGUIModule.dll</HintPath>
-      <Private>false</Private>
-      <SpecificVersion>false</SpecificVersion>
-    </Reference>
-
-    <Reference Include="UnityEngine.ScreenCaptureModule">
-      <HintPath>$(AdofaiManagedDir)\UnityEngine.ScreenCaptureModule.dll</HintPath>
       <Private>false</Private>
       <SpecificVersion>false</SpecificVersion>
     </Reference>
