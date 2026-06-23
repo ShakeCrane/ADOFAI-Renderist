@@ -7,9 +7,9 @@ assemblies on your machine.
 No proprietary DLLs are committed to this repository. Every developer must
 supply them from their own local ADOFAI and UMM installation.
 
-## Current Phase 1.3 baseline
+## Current Phase 1.4 baseline
 
-- Phase: `Phase 1.3 local reference baseline`
+- Phase: `Phase 1.4 release packaging baseline`
 - ADOFAI baseline: `v3.1.2`
 - Unity baseline: `6000.3.10f1`
 - Target framework: `net48`
@@ -136,3 +136,78 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\clean-referenc
 
 This removes `build/local.props` and local cached files under `references/`
 while preserving tracked `.gitkeep` placeholders.
+
+## Release packaging
+
+Phase 1.4 introduces a release packaging baseline. The output is a UMM-ready
+zip placed under `dist/` (gitignored).
+
+Zip contents (top-level files only, no directories):
+
+```text
+ADOFAI.Renderist-v<version>.zip
+├── Info.json
+├── ADOFAI.Renderist.dll
+└── LICENSE
+```
+
+The packaging scripts do not modify game files and do not deploy to the
+ADOFAI install. Use `scripts/copy-to-mods.ps1` for local deployment.
+
+### Build and package
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare-references.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package-release.ps1
+```
+
+`scripts/package-release.ps1` by default:
+
+- runs `dotnet build -c Release src/ADOFAI.Renderist/ADOFAI.Renderist.csproj`;
+- reads the target version from `mod/Info.json`;
+- cross-checks against the csproj `<Version>`;
+- stages `Info.json`, `ADOFAI.Renderist.dll`, and `LICENSE`;
+- writes `dist/ADOFAI.Renderist-v<version>.zip`;
+- writes a `dist/ADOFAI.Renderist-v<version>.zip.sha256` sidecar;
+- invokes `scripts/verify-release-package.ps1` on the output.
+
+Useful flags:
+
+- `-SkipBuild` — assume the Release DLL already exists.
+- `-SkipVerify` — do not run the verify script.
+- `-Clean` — remove a stale zip and sidecar for the same version first.
+- `-Force` — overwrite an existing zip of the same name.
+- `-OutputDir <path>` — must live inside the repository and must not be
+  `src/`, `mod/`, `scripts/`, `build/`, `references/`, `.git/`, `.vscode/`,
+  or an ADOFAI install directory.
+
+### Verify an existing zip
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-release-package.ps1 `
+  -ZipPath .\dist\ADOFAI.Renderist-v0.1.4.zip
+```
+
+The verify script enforces, among other things:
+
+- only the three allowed top-level files exist; no subdirectories;
+- no `README*`, `AGENTS.md`, `CLAUDE.md`, `Settings.xml`, `Log.txt`,
+  `UnityModManager.dll`, `0Harmony.dll`, `Assembly-CSharp*.dll`,
+  `UnityEngine*.dll`, `*.pdb`, `*.xml`, `*.cache`, `*.config`, or UMM
+  runtime caches inside the zip;
+- `Info.json` fields `Id`, `AssemblyName`, `EntryMethod`, `ManagerVersion`,
+  and `Version` match the Phase 1.4 baseline;
+- DLL FileVersion or ProductVersion matches `Info.json` Version.
+
+A missing `.sha256` sidecar is not a failure.
+
+### Install for users
+
+In UMM, drag the produced zip into the mod installer, or extract its three
+top-level files into `<ADOFAI install>\Mods\ADOFAI.Renderist\` manually.
+
+### Version sync
+
+Always change version and phase via `scripts/set-version.ps1`. The packaging
+scripts do not modify source files and will fail fast on a version mismatch
+between `mod/Info.json` and `ADOFAI.Renderist.csproj`.

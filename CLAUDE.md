@@ -337,6 +337,38 @@ scripts/
 * 避免意外覆盖；
 * 清晰日志和用户可见错误信息。
 
+## 发布包规则
+
+Phase 1.4 起，本仓库使用 `scripts/package-release.ps1` 生成发布包，使用
+`scripts/verify-release-package.ps1` 校验发布包。
+
+发布包必须满足：
+
+* 文件名形如 `ADOFAI.Renderist-v<version>.zip`；
+* 默认输出目录为仓库内 `dist/`，绝不写入 `src/`、`mod/`、`scripts/`、`build/`、
+  `references/`、`.git/`、`.vscode/` 或任何 ADOFAI 游戏目录；
+* zip 内仅允许以下顶层文件，且不得包含任何子目录：
+  * `Info.json`
+  * `ADOFAI.Renderist.dll`
+  * `LICENSE`
+* zip 内禁止出现：`README*`、`AGENTS.md`、`CLAUDE.md`、`Settings.xml`、
+  `Log.txt`、`UnityModManager.dll`、`0Harmony.dll`、`Assembly-CSharp*.dll`、
+  `UnityEngine*.dll`、`UnityPlayer.dll`、`*.pdb`、`*.xml`、`*.cache`、
+  `*.config`、`ADOFAI.Renderist.dll.<digits>.cache`、`bin/`、`obj/`、
+  `references/`、`build/`、`.git/`、`.vscode/` 等内容；
+* `Info.json` 必须满足：`Id == ADOFAI.Renderist`、`AssemblyName ==
+  ADOFAI.Renderist.dll`、`EntryMethod == ADOFAI.Renderist.ModEntry.Load`、
+  `ManagerVersion == 0.32.5`、`Version` 与目标版本一致；
+* `ADOFAI.Renderist.dll` 的 FileVersion 或 ProductVersion 必须与 `Info.json`
+  的 Version 一致，避免打包旧 DLL；
+* 版本与 phase 文本同步只能通过 `scripts/set-version.ps1` 进行，打包脚本
+  不得改写源文件；
+* 打包脚本不得引入 BepInEx / MelonLoader / 其他 Mod Loader；
+* 打包脚本不得引入 Harmony Patch、Assembly-CSharp 编译引用或任何渲染/截图
+  /回放/自动播放逻辑；
+* 不得将 `README.md` 放入发布包，不得在打包流程中创建或修改 `README.md`，
+  不得创建 `AGENTS.md`。
+
 ## 验证
 
 请求实现时，在报告完成前运行可用验证步骤。

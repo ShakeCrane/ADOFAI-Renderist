@@ -40,7 +40,7 @@ namespace ADOFAI.Renderist
                 // Instantiate Harmony but do NOT PatchAll in Phase 1.
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.1.3 (Phase 1.3 local reference baseline).");
+                Log.Info("Loaded ADOFAI Renderist 0.1.4 (Phase 1.4 release packaging baseline).");
                 return true;
             }
             catch (Exception ex)
@@ -83,7 +83,7 @@ namespace ADOFAI.Renderist
         {
             try
             {
-                GUILayout.Label("ADOFAI Renderist — Phase 1.3 local reference baseline", GUI.skin.label);
+                GUILayout.Label("ADOFAI Renderist — Phase 1.4 release packaging baseline", GUI.skin.label);
                 GUILayout.Space(6f);
 
                 Settings.VerboseLogging = GUILayout.Toggle(
