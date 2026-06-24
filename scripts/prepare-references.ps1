@@ -300,38 +300,34 @@ if (Test-Path -LiteralPath $gameAssembly -PathType Leaf) {
     Write-Ok 'GameAssembly.dll not present (Mono/Managed baseline)'
 }
 
-Write-Section 'Validating Phase 1.3 compile-time DLLs'
+Write-Section 'Validating Phase 2.0 compile-time DLLs'
 
 if (-not (Test-BaselineVersion 'UnityModManager.dll' (Join-Path $resolvedUmmDir 'UnityModManager.dll') $baselineUmmVersion)) { $missing++ }
 if (-not (Test-BaselineVersion '0Harmony.dll' (Join-Path $resolvedUmmDir '0Harmony.dll') $baselineHarmonyVersion)) { $missing++ }
 if (-not (Test-RequiredFile 'UnityEngine.CoreModule.dll' (Join-Path $managedDir 'UnityEngine.CoreModule.dll'))) { $missing++ }
 if (-not (Test-RequiredFile 'UnityEngine.IMGUIModule.dll' (Join-Path $managedDir 'UnityEngine.IMGUIModule.dll'))) { $missing++ }
+# Phase 2.0: ScreenCapture.CaptureScreenshot is the screenshot API. Required.
+if (-not (Test-RequiredFile 'UnityEngine.ScreenCaptureModule.dll' (Join-Path $managedDir 'UnityEngine.ScreenCaptureModule.dll'))) { $missing++ }
+# Phase 2.0: legacy Input.GetKeyDown / KeyCode for F9 / F10 hotkeys. Required.
+if (-not (Test-RequiredFile 'UnityEngine.InputLegacyModule.dll' (Join-Path $managedDir 'UnityEngine.InputLegacyModule.dll'))) { $missing++ }
 
 Write-Section 'Optional / future DLL checks'
 
 $unityUmbrella = Join-Path $managedDir 'UnityEngine.dll'
 if (Test-Path -LiteralPath $unityUmbrella -PathType Leaf) {
-    Write-Ok 'UnityEngine.dll (legacy umbrella, present; csproj references it only when present)'
+    Write-Ok 'UnityEngine.dll (legacy umbrella, present; csproj references it only when present; NOT used as a fallback for Input / ScreenCapture)'
     Write-FileMetadata 'UnityEngine.dll' $unityUmbrella
 } else {
-    Write-Warn 'UnityEngine.dll not present. Unity 6000 may not ship this legacy umbrella DLL; Phase 1.3 does not require it.'
-}
-
-$screenCapture = Join-Path $managedDir 'UnityEngine.ScreenCaptureModule.dll'
-if (Test-Path -LiteralPath $screenCapture -PathType Leaf) {
-    Write-Ok 'UnityEngine.ScreenCaptureModule.dll (present; not required by Phase 1.3)'
-    Write-FileMetadata 'UnityEngine.ScreenCaptureModule.dll' $screenCapture
-} else {
-    Write-Warn 'UnityEngine.ScreenCaptureModule.dll not present; Phase 1.3 does not require it because current source does not use ScreenCapture APIs.'
+    Write-Warn 'UnityEngine.dll not present. Unity 6000 may not ship this legacy umbrella DLL; Phase 2.0 does not require it.'
 }
 
 Write-Section 'Phase 4 candidate checks (informational only)'
 $assemblyCSharp = Join-Path $managedDir 'Assembly-CSharp.dll'
 if (Test-Path -LiteralPath $assemblyCSharp -PathType Leaf) {
-    Write-Ok 'Assembly-CSharp.dll (candidate for later Phase 4 analysis only; not referenced by Phase 1.3 build)'
+    Write-Ok 'Assembly-CSharp.dll (candidate for later Phase 4 analysis only; not referenced by Phase 2.0 build)'
     Write-FileMetadata 'Assembly-CSharp.dll' $assemblyCSharp
 } else {
-    Write-Warn 'Assembly-CSharp.dll not present; Phase 1.3 will continue because it is not a compile-time reference.'
+    Write-Warn 'Assembly-CSharp.dll not present; Phase 2.0 will continue because it is not a compile-time reference.'
 }
 
 $firstpass = Join-Path $managedDir 'Assembly-CSharp-firstpass.dll'

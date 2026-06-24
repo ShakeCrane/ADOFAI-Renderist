@@ -5,7 +5,7 @@
     <RootNamespace>ADOFAI.Renderist</RootNamespace>
     <AssemblyName>ADOFAI.Renderist</AssemblyName>
     <Product>ADOFAI Renderist</Product>
-    <Version>0.1.4</Version>
+    <Version>0.2.0</Version>
     <Company>ShakeCrane, Ice2974</Company>
     <Copyright>Copyright (c) ShakeCrane, Ice2974</Copyright>
     <Description>Non-realtime / controlled / reproducible render export plugin for A Dance of Fire and Ice (UMM mod).</Description>
@@ -45,7 +45,7 @@
       <SpecificVersion>false</SpecificVersion>
     </Reference>
 
-    <!-- Unity engine modules — Phase 1 minimum set -->
+    <!-- Unity engine modules — Phase 2.0 minimum set -->
     <Reference Include="UnityEngine.CoreModule">
       <HintPath>$(AdofaiManagedDir)\UnityEngine.CoreModule.dll</HintPath>
       <Private>false</Private>
@@ -58,7 +58,22 @@
       <SpecificVersion>false</SpecificVersion>
     </Reference>
 
-    <!-- UnityEngine.dll: legacy umbrella assembly. Optional — only reference if present. -->
+    <!-- Phase 2.0: ScreenCapture.CaptureScreenshot (fire-and-forget PNG to disk). -->
+    <Reference Include="UnityEngine.ScreenCaptureModule">
+      <HintPath>$(AdofaiManagedDir)\UnityEngine.ScreenCaptureModule.dll</HintPath>
+      <Private>false</Private>
+      <SpecificVersion>false</SpecificVersion>
+    </Reference>
+
+    <!-- Phase 2.0: legacy Input.GetKeyDown / KeyCode for hotkeys (F9 / F10). -->
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(AdofaiManagedDir)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+      <SpecificVersion>false</SpecificVersion>
+    </Reference>
+
+    <!-- UnityEngine.dll: legacy umbrella assembly. Optional — only reference if present.
+         Phase 2.0 does NOT rely on it as a fallback for Input / ScreenCapture. -->
     <Reference Include="UnityEngine"
                Condition="Exists('$(AdofaiManagedDir)\UnityEngine.dll')">
       <HintPath>$(AdofaiManagedDir)\UnityEngine.dll</HintPath>
@@ -67,7 +82,7 @@
     </Reference>
 
     <!--
-      Assembly-CSharp.dll is intentionally NOT referenced in Phase 1.
+      Assembly-CSharp.dll is intentionally NOT referenced in Phase 2.
       It will be introduced in Phase 4 (game state recognition) after dnSpy/ILSpy
       verification of target types and method signatures.
     -->

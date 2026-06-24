@@ -7,9 +7,9 @@ assemblies on your machine.
 No proprietary DLLs are committed to this repository. Every developer must
 supply them from their own local ADOFAI and UMM installation.
 
-## Current Phase 1.4 baseline
+## Current Phase 2.0 baseline
 
-- Phase: `Phase 1.4 release packaging baseline`
+- Phase: `Phase 2.0 screenshot sequence MVP`
 - ADOFAI baseline: `v3.1.2`
 - Unity baseline: `6000.3.10f1`
 - Target framework: `net48`
@@ -45,7 +45,7 @@ committed.
 Phase 1.3. Mods compatibility remains a later replay/autoplay phase, and local
 decompilation remains a later game API analysis phase.
 
-## Required compile-time DLLs for Phase 1.3
+## Required compile-time DLLs for Phase 2.0
 
 The build will fail if any of these are missing:
 
@@ -55,6 +55,8 @@ The build will fail if any of these are missing:
 | `0Harmony.dll` | UMM | `A Dance of Fire and Ice_Data\Managed\UnityModManager\0Harmony.dll`, or explicit `-UmmDir` |
 | `UnityEngine.CoreModule.dll` | ADOFAI Managed | `A Dance of Fire and Ice_Data\Managed\UnityEngine.CoreModule.dll` |
 | `UnityEngine.IMGUIModule.dll` | ADOFAI Managed | `A Dance of Fire and Ice_Data\Managed\UnityEngine.IMGUIModule.dll` |
+| `UnityEngine.ScreenCaptureModule.dll` | ADOFAI Managed | `A Dance of Fire and Ice_Data\Managed\UnityEngine.ScreenCaptureModule.dll` (Phase 2.0 uses `ScreenCapture.CaptureScreenshot`) |
+| `UnityEngine.InputLegacyModule.dll` | ADOFAI Managed | `A Dance of Fire and Ice_Data\Managed\UnityEngine.InputLegacyModule.dll` (Phase 2.0 hotkeys use legacy `Input.GetKeyDown` / `KeyCode`) |
 
 `UnityEngine.IMGUIModule.dll` is required because the current UMM GUI uses
 Unity IMGUI / `GUILayout` in `ModEntry.OnGUI`.
@@ -63,9 +65,8 @@ Unity IMGUI / `GUILayout` in `ModEntry.OnGUI`.
 
 | DLL | Status |
 | --- | --- |
-| `UnityEngine.dll` | Legacy umbrella assembly. Unity 6000 may not ship it. The project references it only when present. Missing is not a Phase 1.3 error. |
-| `UnityEngine.ScreenCaptureModule.dll` | Not required by Phase 1.3 because current source does not use ScreenCapture APIs. Do not keep it as an unused compile reference for a future screenshot phase. |
-| `Assembly-CSharp.dll` | Candidate for later Phase 4 local analysis only. Not a Phase 1.3 compile reference and not a Phase 1.3 success condition. |
+| `UnityEngine.dll` | Legacy umbrella assembly. Unity 6000 may not ship it. The project references it only when present. **Not** used as a fallback for Input / ScreenCapture. Missing is not a Phase 2.0 error. |
+| `Assembly-CSharp.dll` | Candidate for later Phase 4 local analysis only. Not a Phase 2.0 compile reference and not a Phase 2.0 success condition. |
 | `Assembly-CSharp-firstpass.dll` | Informational only if present. |
 
 ## Setup steps

@@ -3,7 +3,7 @@
     Builds and packages an ADOFAI.Renderist release zip suitable for UMM install.
 
 .DESCRIPTION
-    Phase 1.4 release packaging baseline.
+    Phase 2.0 screenshot sequence MVP.
 
     The zip contains exactly three TOP-LEVEL files (no subdirectories):
       * Info.json

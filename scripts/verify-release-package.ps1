@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Verifies an ADOFAI.Renderist release zip against Phase 1.4 packaging rules.
+    Verifies an ADOFAI.Renderist release zip against Phase 2.0 packaging rules.
 
 .DESCRIPTION
-    Phase 1.4 release packaging baseline.
+    Phase 2.0 screenshot sequence MVP — packaging rules unchanged since 1.4.
 
     Asserts the following on the supplied zip:
       * Top-level files only — exactly:
