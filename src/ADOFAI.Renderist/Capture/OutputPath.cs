@@ -41,7 +41,7 @@ namespace ADOFAI.Renderist.Capture
                 {
                     string finalDir = Path.Combine(candidate, sessionStamp);
                     if (TryCreate(finalDir)) return finalDir;
-                    Log.Warn("Configured output directory could not be created. Falling back to default: " + finalDir);
+                    Log.Warn(UiText.Format(UiText.LogOutDirConfiguredCreateFailedFormat, finalDir));
                 }
             }
 
@@ -52,14 +52,14 @@ namespace ADOFAI.Renderist.Capture
             }
             catch (Exception ex)
             {
-                Log.Exception("Failed to read Application.persistentDataPath", ex);
+                Log.Exception(UiText.LogExPersistentDataPathFailed, ex);
                 return null;
             }
 
             string defaultDir = Path.Combine(defaultRoot, sessionStamp);
             if (TryCreate(defaultDir)) return defaultDir;
 
-            Log.Error("Failed to prepare any output directory; capture aborted.");
+            Log.Error(UiText.LogOutDirPrepareFailed);
             return null;
         }
 
@@ -73,44 +73,44 @@ namespace ADOFAI.Renderist.Capture
             }
             catch (Exception ex)
             {
-                Log.Warn("OutputDirectory is not a valid path: " + configured + " (" + ex.Message + ")");
+                Log.Warn(UiText.Format(UiText.LogOutDirInvalidPathFormat, configured, ex.Message));
                 return false;
             }
 
             if (!Path.IsPathRooted(full))
             {
-                Log.Warn("OutputDirectory must be an absolute path. Got: " + full);
+                Log.Warn(UiText.Format(UiText.LogOutDirMustBeAbsoluteFormat, full));
                 return false;
             }
 
             if (IsFilesystemRoot(full))
             {
-                Log.Error("OutputDirectory refuses to use a filesystem root: " + full);
+                Log.Error(UiText.Format(UiText.LogOutDirRejectRootFormat, full));
                 return false;
             }
 
             if (PathContains(full, GetAdofaiInstallRoot()))
             {
-                Log.Error("OutputDirectory refuses to write inside the ADOFAI install directory: " + full);
+                Log.Error(UiText.Format(UiText.LogOutDirRejectInstallFormat, full));
                 return false;
             }
 
             if (PathContains(full, GetManagedDir()))
             {
-                Log.Error("OutputDirectory refuses to write inside Managed/: " + full);
+                Log.Error(UiText.Format(UiText.LogOutDirRejectManagedFormat, full));
                 return false;
             }
 
             if (PathContains(full, GetUmmCoreDir()))
             {
-                Log.Error("OutputDirectory refuses to write inside UnityModManager/: " + full);
+                Log.Error(UiText.Format(UiText.LogOutDirRejectUmmFormat, full));
                 return false;
             }
 
             string repoRoot = TryDetectRepositoryRoot();
             if (repoRoot != null && PathContains(full, repoRoot))
             {
-                Log.Error("OutputDirectory refuses to write inside the project repository: " + full);
+                Log.Error(UiText.Format(UiText.LogOutDirRejectRepoFormat, full));
                 return false;
             }
 
@@ -127,7 +127,7 @@ namespace ADOFAI.Renderist.Capture
             }
             catch (Exception ex)
             {
-                Log.Exception("CreateDirectory failed for " + dir, ex);
+                Log.Exception(UiText.Format(UiText.LogExCreateDirectoryFailedFormat, dir), ex);
                 return false;
             }
         }

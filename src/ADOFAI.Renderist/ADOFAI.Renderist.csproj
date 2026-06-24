@@ -5,7 +5,7 @@
     <RootNamespace>ADOFAI.Renderist</RootNamespace>
     <AssemblyName>ADOFAI.Renderist</AssemblyName>
     <Product>ADOFAI Renderist</Product>
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
     <Company>ShakeCrane, Ice2974</Company>
     <Copyright>Copyright (c) ShakeCrane, Ice2974</Copyright>
     <Description>Non-realtime / controlled / reproducible render export plugin for A Dance of Fire and Ice (UMM mod).</Description>

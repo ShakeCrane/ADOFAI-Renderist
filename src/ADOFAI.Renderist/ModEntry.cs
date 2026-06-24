@@ -43,8 +43,8 @@ namespace ADOFAI.Renderist
                 // Instantiate Harmony but do NOT PatchAll in Phase 2.
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.2.0 (Phase 2.0 screenshot sequence MVP).");
-                Log.Warn("Realtime PNG writes may reduce frame rate and consume disk space. Keep sequences short.");
+                Log.Info("Loaded ADOFAI Renderist 0.2.1 (Phase 2.1 Chinese UI baseline).");
+                Log.Warn(UiText.LogStartupPerfWarn);
                 return true;
             }
             catch (Exception ex)
@@ -65,7 +65,7 @@ namespace ADOFAI.Renderist
                 if (value)
                 {
                     // Phase 2: nothing to patch yet. Reserved for Phase 3+.
-                    Log.Info("Enabled.");
+                    Log.Info(UiText.LogEnabled);
                 }
                 else
                 {
@@ -75,7 +75,7 @@ namespace ADOFAI.Renderist
                     }
                     // Always safe to call even when no patches are registered.
                     Harmony?.UnpatchAll(HarmonyId);
-                    Log.Info("Disabled. Harmony patches (if any) removed.");
+                    Log.Info(UiText.LogDisabled);
                 }
 
                 return true;
@@ -91,12 +91,12 @@ namespace ADOFAI.Renderist
         {
             try
             {
-                GUILayout.Label("ADOFAI Renderist — Phase 2.0 screenshot sequence MVP", GUI.skin.label);
+                GUILayout.Label("ADOFAI Renderist — Phase 2.1 Chinese UI baseline", GUI.skin.label);
                 GUILayout.Space(6f);
 
                 Settings.VerboseLogging = GUILayout.Toggle(
                     Settings.VerboseLogging,
-                    " Verbose logging");
+                    UiText.GuiVerboseLoggingToggle);
 
                 GUILayout.Space(8f);
                 DrawCaptureGUI();
@@ -111,42 +111,67 @@ namespace ADOFAI.Renderist
         {
             // Status block — never reuses the phase label string to keep
             // scripts/set-version.ps1 matching exactly one phase label.
-            string status = CaptureService.IsRecording ? "RECORDING" : "idle";
-            int requested = CaptureService.FramesRequestedInSession;
-            string dir = string.IsNullOrEmpty(CaptureService.CurrentSessionDirectory)
-                ? "(none yet)"
+
+            // 序列段（F10）
+            string seqStatus = CaptureService.IsRecording ? UiText.GuiStatusRecording : UiText.GuiStatusIdle;
+            int seqRequested = CaptureService.FramesRequestedInSession;
+            string seqDir = string.IsNullOrEmpty(CaptureService.CurrentSessionDirectory)
+                ? UiText.GuiNonePlaceholder
                 : CaptureService.CurrentSessionDirectory;
 
-            GUILayout.Label("Capture status: " + status, GUI.skin.label);
-            GUILayout.Label("Frames requested (this session): " +
-                requested.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
-            GUILayout.Label("Session directory: " + dir, GUI.skin.label);
-            GUILayout.Label("Throttle: everyN=" +
-                Settings.CaptureEveryNFrames.ToString(CultureInfo.InvariantCulture) +
-                ", targetFps=" + Settings.TargetCaptureFps.ToString("0.###", CultureInfo.InvariantCulture) +
-                ", maxFrames=" + Settings.MaxFramesPerSession.ToString(CultureInfo.InvariantCulture) +
-                ", superSize=" + Settings.CaptureSuperSize.ToString(CultureInfo.InvariantCulture),
+            GUILayout.Label(UiText.GuiSequenceStatusPrefix + seqStatus, GUI.skin.label);
+            GUILayout.Label(UiText.GuiSequenceFramesRequestedPrefix +
+                seqRequested.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
+            GUILayout.Label(UiText.GuiSequenceDirectoryPrefix + seqDir, GUI.skin.label);
+
+            GUILayout.Space(4f);
+
+            // 单帧段（F9）— 与序列状态完全独立
+            int singleCount = CaptureService.SingleFrameCaptureCountThisRun;
+            string singleTime = CaptureService.LastSingleCaptureTimeLocal.HasValue
+                ? CaptureService.LastSingleCaptureTimeLocal.Value.ToString("HH:mm:ss", CultureInfo.InvariantCulture)
+                : UiText.GuiNonePlaceholder;
+            string singleDir = string.IsNullOrEmpty(CaptureService.LastSingleCaptureDirectory)
+                ? UiText.GuiNonePlaceholder
+                : CaptureService.LastSingleCaptureDirectory;
+            string singleFile = string.IsNullOrEmpty(CaptureService.LastSingleCaptureFile)
+                ? UiText.GuiNonePlaceholder
+                : CaptureService.LastSingleCaptureFile;
+
+            GUILayout.Label(UiText.GuiSingleCountPrefix +
+                singleCount.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
+            GUILayout.Label(UiText.GuiSingleLastTimePrefix + singleTime, GUI.skin.label);
+            GUILayout.Label(UiText.GuiSingleLastDirPrefix + singleDir, GUI.skin.label);
+            GUILayout.Label(UiText.GuiSingleLastFilePrefix + singleFile, GUI.skin.label);
+
+            GUILayout.Space(4f);
+
+            GUILayout.Label(UiText.Format(UiText.GuiThrottleFormat,
+                Settings.CaptureEveryNFrames.ToString(CultureInfo.InvariantCulture),
+                Settings.TargetCaptureFps.ToString("0.###", CultureInfo.InvariantCulture),
+                Settings.MaxFramesPerSession.ToString(CultureInfo.InvariantCulture),
+                Settings.CaptureSuperSize.ToString(CultureInfo.InvariantCulture)),
                 GUI.skin.label);
 
             GUILayout.Space(4f);
-            GUILayout.Label("Note: GUI capture may include the UMM panel. For clean shots, fold UMM and use hotkeys.", GUI.skin.label);
+            GUILayout.Label(UiText.GuiUmmPanelNote, GUI.skin.label);
 
             GUILayout.Space(6f);
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Capture single frame (next tick)"))
+            if (GUILayout.Button(UiText.GuiBtnCaptureSingleNextTick))
             {
                 CaptureService.RequestSingleCaptureNextTick();
             }
             if (!CaptureService.IsRecording)
             {
-                if (GUILayout.Button("Start sequence"))
+                if (GUILayout.Button(UiText.GuiBtnStartSequence))
                 {
                     CaptureService.StartSequence("gui");
                 }
             }
             else
             {
-                if (GUILayout.Button("Stop sequence"))
+                if (GUILayout.Button(UiText.GuiBtnStopSequence))
                 {
                     CaptureService.StopSequence("user");
                 }
@@ -156,8 +181,9 @@ namespace ADOFAI.Renderist
             GUILayout.Space(6f);
             Settings.HotkeysEnabled = GUILayout.Toggle(
                 Settings.HotkeysEnabled,
-                " Hotkeys enabled (single=" + Settings.SingleCaptureHotkey +
-                ", sequence=" + Settings.SequenceHotkey + ")");
+                UiText.Format(UiText.GuiHotkeysToggleFormat,
+                    Settings.SingleCaptureHotkey,
+                    Settings.SequenceHotkey));
         }
 
         private static void OnSaveGUI(UnityModManager.ModEntry modEntry)

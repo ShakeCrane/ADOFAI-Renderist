@@ -29,6 +29,13 @@ namespace ADOFAI.Renderist.Capture
         public static int FramesRequestedInSession { get; private set; }
         public static string CurrentSessionDirectory { get; private set; }
 
+        // 单帧域：本次运行内只读状态（不持久化、不写入 metadata）。
+        // 与 FramesRequestedInSession 完全分离：F9 / 单帧按钮路径仅更新这一组字段。
+        public static int SingleFrameCaptureCountThisRun { get; private set; }
+        public static string LastSingleCaptureDirectory { get; private set; }
+        public static string LastSingleCaptureFile { get; private set; }
+        public static DateTime? LastSingleCaptureTimeLocal { get; private set; }
+
         private static int _everyNCounter;
         private static float _lastCaptureRealtime;
         private static int _nextSequenceIndex;
@@ -49,7 +56,7 @@ namespace ADOFAI.Renderist.Capture
             string dir = OutputPath.ResolveSessionDirectory(settings.OutputDirectory, "single_" + stamp);
             if (string.IsNullOrEmpty(dir))
             {
-                Log.Error("Single capture aborted: no usable output directory.");
+                Log.Error(UiText.LogSingleAbortedNoDir);
                 return;
             }
 
@@ -62,15 +69,20 @@ namespace ADOFAI.Renderist.Capture
             try
             {
                 ScreenCapture.CaptureScreenshot(filePath, superSize);
-                Log.Info("Single capture requested -> " + filePath +
-                         " (superSize=" + superSize.ToString(CultureInfo.InvariantCulture) +
-                         "). Actual write is asynchronous; not confirmed.");
+                Log.Info(UiText.Format(UiText.LogSingleRequestedFormat, filePath, superSize));
             }
             catch (Exception ex)
             {
-                Log.Exception("ScreenCapture.CaptureScreenshot threw for " + filePath, ex);
+                Log.Exception(UiText.Format(UiText.LogExScreenCaptureThrewFormat, filePath), ex);
                 return;
             }
+
+            // GPU 请求已发出（未抛异常）才更新单帧状态，与序列 EmitSequenceFrame 的 honesty 一致。
+            // 仅记录"已请求"，不代表 PNG 已落盘——Unity 无完成回调。
+            SingleFrameCaptureCountThisRun++;
+            LastSingleCaptureDirectory = dir;
+            LastSingleCaptureFile = filename;
+            LastSingleCaptureTimeLocal = DateTime.Now;
 
             WriteSingleMetadata(dir, filename, superSize);
         }
@@ -82,7 +94,7 @@ namespace ADOFAI.Renderist.Capture
         /// </summary>
         public static void RequestSingleCaptureNextTick()
         {
-            Log.Info("Single capture queued for next tick. UMM panel may still be visible — fold it first if you do not want it captured.");
+            Log.Info(UiText.LogSingleQueuedNextTick);
             _guiSingleDelayTicks = 1;
         }
 
@@ -92,7 +104,7 @@ namespace ADOFAI.Renderist.Capture
         {
             if (IsRecording)
             {
-                Log.Warn("StartSequence ignored: a sequence is already in progress.");
+                Log.Warn(UiText.LogSequenceStartIgnoredAlreadyRunning);
                 return;
             }
 
@@ -103,7 +115,7 @@ namespace ADOFAI.Renderist.Capture
             string dir = OutputPath.ResolveSessionDirectory(settings.OutputDirectory, "seq_" + stamp);
             if (string.IsNullOrEmpty(dir))
             {
-                Log.Error("Sequence start aborted: no usable output directory.");
+                Log.Error(UiText.LogSequenceAbortedNoDir);
                 return;
             }
 
@@ -124,7 +136,7 @@ namespace ADOFAI.Renderist.Capture
 
             _sessionMetadata = new Metadata
             {
-                Version             = "0.2.0",
+                Version             = "0.2.1",
                 Phase               = "Phase 2.0 screenshot sequence MVP",
                 CreatedAtUtc        = Metadata.IsoUtcNow(),
                 EndedAtUtc          = null,
@@ -142,12 +154,13 @@ namespace ADOFAI.Renderist.Capture
             };
             _sessionMetadata.Write(Path.Combine(dir, SequenceMetadataName));
 
-            Log.Info("Sequence START (" + (trigger ?? "?") + ") -> " + dir);
-            Log.Info("  superSize=" + superSize.ToString(CultureInfo.InvariantCulture) +
-                     ", everyN=" + everyN.ToString(CultureInfo.InvariantCulture) +
-                     ", targetFps=" + fps.ToString("0.###", CultureInfo.InvariantCulture) +
-                     ", maxFrames=" + maxFrames.ToString(CultureInfo.InvariantCulture));
-            Log.Warn("Realtime PNG writes will reduce frame rate and consume disk space. Use short sessions.");
+            Log.Info(UiText.Format(UiText.LogSequenceStartFormat, trigger ?? "?", dir));
+            Log.Info(UiText.Format(UiText.LogSequenceStartParamsFormat,
+                superSize.ToString(CultureInfo.InvariantCulture),
+                everyN.ToString(CultureInfo.InvariantCulture),
+                fps.ToString("0.###", CultureInfo.InvariantCulture),
+                maxFrames.ToString(CultureInfo.InvariantCulture)));
+            Log.Warn(UiText.LogSequencePerfWarn);
         }
 
         public static void StopSequence(string reason)
@@ -170,10 +183,11 @@ namespace ADOFAI.Renderist.Capture
             int detected = _sessionMetadata != null && _sessionMetadata.FilesDetected.HasValue
                 ? _sessionMetadata.FilesDetected.Value
                 : -1;
-            Log.Info("Sequence STOP (" + (reason ?? "user") + ") frames requested=" +
-                     FramesRequestedInSession.ToString(CultureInfo.InvariantCulture) +
-                     ", files detected=" + (detected >= 0 ? detected.ToString(CultureInfo.InvariantCulture) : "n/a") +
-                     ", dir=" + CurrentSessionDirectory);
+            Log.Info(UiText.Format(UiText.LogSequenceStopFormat,
+                reason ?? "user",
+                FramesRequestedInSession.ToString(CultureInfo.InvariantCulture),
+                detected >= 0 ? detected.ToString(CultureInfo.InvariantCulture) : "n/a",
+                CurrentSessionDirectory));
         }
 
         // ---------------- tick driver ----------------
@@ -251,7 +265,7 @@ namespace ADOFAI.Renderist.Capture
             }
             catch (Exception ex)
             {
-                Log.Exception("ScreenCapture.CaptureScreenshot threw for " + filePath, ex);
+                Log.Exception(UiText.Format(UiText.LogExScreenCaptureThrewFormat, filePath), ex);
                 return;
             }
 
@@ -282,7 +296,7 @@ namespace ADOFAI.Renderist.Capture
             }
             catch (Exception ex)
             {
-                Log.Exception("Directory scan failed for " + dir, ex);
+                Log.Exception(UiText.Format(UiText.LogExDirectoryScanFailedFormat, dir), ex);
                 return null;
             }
         }
@@ -296,7 +310,7 @@ namespace ADOFAI.Renderist.Capture
 
                 var m = new Metadata
                 {
-                    Version             = "0.2.0",
+                    Version             = "0.2.1",
                     Phase               = "Phase 2.0 screenshot sequence MVP",
                     CreatedAtUtc        = Metadata.IsoUtcNow(),
                     EndedAtUtc          = null,
@@ -317,7 +331,7 @@ namespace ADOFAI.Renderist.Capture
             }
             catch (Exception ex)
             {
-                Log.Exception("Failed to write single-capture metadata", ex);
+                Log.Exception(UiText.LogExSingleMetadataFailed, ex);
             }
         }
     }
