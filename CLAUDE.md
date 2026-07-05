@@ -19,7 +19,7 @@ ADOFAI-Renderist 是一个面向 **A Dance of Fire and Ice** 的 **UMM 模组项
 环境：
 
 ```text
-ADOFAI v3.1.2
+ADOFAI v3.2.0
 Unity 6000.3.10f1
 UMM 0.32.5
 Harmony 2.3.6.0
