@@ -96,6 +96,27 @@ namespace ADOFAI.Renderist
         public const string GuiEnvSceneEmpty = "（空）";
         public const string GuiEnvNotAvailable = "（不可用）";
 
+        // ---------------- GUI: 目录浏览面板（Phase 2.2.2） ----------------
+
+        public const string GuiBtnBrowse = "浏览...";
+        public const string GuiDirBrowserTitle = "目录浏览";
+        public const string GuiDirBrowserCurrentPathPrefix = "当前路径：";
+        public const string GuiDirBrowserUp = "上级目录";
+        public const string GuiDirBrowserRefresh = "刷新";
+        public const string GuiDirBrowserClose = "关闭";
+        public const string GuiDirBrowserSelect = "选择此目录";
+        public const string GuiDirBrowserDrives = "盘符：";
+        public const string GuiDirBrowserSubdirs = "子目录：";
+        public const string GuiDirBrowserTruncatedFormat = "（仅显示前 {0} 项）";
+        public const string GuiDirBrowserEnumFailFormat = "枚举目录失败：{0}";
+
+        // ---------------- GUI: 单帧拒绝状态（Phase 2.2.2） ----------------
+
+        public const string GuiSingleRejectStatusPrefix = "最近单帧状态：";
+        public const string GuiSingleRejectStatus = "已阻止";
+        public const string GuiSingleRejectReasonPrefix = "拒绝原因：";
+        public const string GuiSingleRejectTimePrefix = "拒绝时间：";
+
         // ---------------- Log: ModEntry ----------------
 
         // 注：ModEntry.cs:46 启动日志（"Loaded ADOFAI Renderist X.Y.Z (...)" ）
@@ -113,6 +134,10 @@ namespace ADOFAI.Renderist
         public const string LogPreflightPassed = "导出前检查通过。";
         public const string LogPreflightWarn = "导出前检查通过（含警告），继续启动序列。";
         public const string LogPreflightFailed = "导出前检查失败，已阻止启动序列。";
+
+        // ---------------- Log: 单帧拒绝（Phase 2.2.2） ----------------
+
+        public const string LogSingleCaptureRejectedFormat = "单帧截图已阻止：{0}";
 
         // ---------------- Log: CaptureService ----------------
 

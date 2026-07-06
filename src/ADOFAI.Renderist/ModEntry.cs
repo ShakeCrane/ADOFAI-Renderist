@@ -5,6 +5,7 @@ using UnityEngine;
 using UnityModManagerNet;
 using ADOFAI.Renderist.Capture;
 using ADOFAI.Renderist.Export;
+using ADOFAI.Renderist.Gui;
 using ADOFAI.Renderist.Logging;
 
 namespace ADOFAI.Renderist
@@ -30,6 +31,7 @@ namespace ADOFAI.Renderist
         private static float _lastPreflightCacheRealtime = float.NegativeInfinity;
         private static PreflightReport _cachedPreflightReport;
         private static EditorEnvSnapshot _cachedEditorEnvSnapshot;
+        private static DirectoryBrowserState _directoryBrowserState;
 
         /// <summary>
         /// UMM entry method, invoked via Info.json's "EntryMethod".
@@ -51,7 +53,7 @@ namespace ADOFAI.Renderist
                 // Instantiate Harmony but do NOT PatchAll in Phase 2.
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.2.2.1 (Phase 2.2.1 output directory GUI validation bridge).");
+                Log.Info("Loaded ADOFAI Renderist 0.2.2.2 (Phase 2.2.2 single-frame preflight consistency + GUI directory picker).");
                 Log.Warn(UiText.LogStartupPerfWarn);
                 return true;
             }
@@ -99,7 +101,7 @@ namespace ADOFAI.Renderist
         {
             try
             {
-                GUILayout.Label("ADOFAI Renderist — Phase 2.2.1 output directory GUI validation bridge", GUI.skin.label);
+                GUILayout.Label("ADOFAI Renderist — Phase 2.2.2 single-frame preflight consistency + GUI directory picker", GUI.skin.label);
                 GUILayout.Space(6f);
 
                 Settings.VerboseLogging = GUILayout.Toggle(
@@ -108,9 +110,23 @@ namespace ADOFAI.Renderist
 
                 GUILayout.Space(8f);
                 RefreshPreflightCacheIfNeeded();
+                DrawOutputDirectoryGui();
+                GUILayout.Space(8f);
                 DrawPreflightGui();
                 GUILayout.Space(8f);
                 DrawCaptureGUI();
+
+                // Phase 2.2.2: 目录浏览面板（如果打开）
+                if (_directoryBrowserState.IsOpen)
+                {
+                    GUILayout.Space(8f);
+                    if (DirectoryBrowserGui.Draw(ref _directoryBrowserState))
+                    {
+                        Settings.OutputDirectory = _directoryBrowserState.CurrentPath ?? string.Empty;
+                        // 强制刷新 Preflight 缓存，使路径检查结果尽快更新
+                        _lastPreflightCacheRealtime = float.NegativeInfinity;
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -133,6 +149,58 @@ namespace ADOFAI.Renderist
             _cachedPreflightReport = Preflight.Run();
             _cachedEditorEnvSnapshot = _cachedPreflightReport.EditorEnv;
             _lastPreflightCacheRealtime = now;
+        }
+
+        /// <summary>
+        /// 绘制「输出目录设置」段（Phase 2.2.2 拆出）。
+        /// 含输入框 + 浏览按钮 + 路径检查结果 + 默认目录。
+        /// </summary>
+        private static void DrawOutputDirectoryGui()
+        {
+            GUILayout.Label(UiText.GuiPreflightOutputDirInputPrefix, GUI.skin.label);
+
+            PreflightReport report = _cachedPreflightReport;
+            if (report == null) return;
+
+            // 输入框 + 浏览按钮
+            GUILayout.BeginHorizontal();
+            string newDir = GUILayout.TextField(Settings.OutputDirectory ?? string.Empty);
+            if (newDir != (Settings.OutputDirectory ?? string.Empty))
+            {
+                Settings.OutputDirectory = newDir;
+            }
+            if (GUILayout.Button(UiText.GuiBtnBrowse, GUI.skin.button, GUILayout.Width(80)))
+            {
+                DirectoryBrowserGui.Open(ref _directoryBrowserState, Settings.OutputDirectory);
+            }
+            GUILayout.EndHorizontal();
+            GUILayout.Label(UiText.GuiPreflightOutputDirInputHint, GUI.skin.label);
+
+            // 路径检查结果
+            DirectoryValidationResult dirVal = report.OutputDirectoryValidation;
+            string pathCheckText;
+            switch (dirVal.Outcome)
+            {
+                case DirectoryValidationOutcome.Accept:
+                    pathCheckText = UiText.GuiPreflightPathCheckAccept;
+                    break;
+                case DirectoryValidationOutcome.FallBackToDefault:
+                    pathCheckText = UiText.GuiPreflightPathCheckFallBack;
+                    break;
+                case DirectoryValidationOutcome.Reject:
+                    pathCheckText = UiText.GuiPreflightPathCheckReject + "（" + (dirVal.RejectReason ?? "?") + "）";
+                    break;
+                default:
+                    pathCheckText = UiText.GuiPreflightNotChecked;
+                    break;
+            }
+            GUILayout.Label(UiText.GuiPreflightPathCheckPrefix + pathCheckText, GUI.skin.label);
+
+            if (dirVal.Outcome == DirectoryValidationOutcome.FallBackToDefault)
+            {
+                string defaultPath = report.OutputDirectory ?? UiText.GuiNonePlaceholder;
+                GUILayout.Label(UiText.GuiPreflightDefaultDirPrefix + defaultPath, GUI.skin.label);
+            }
         }
 
         /// <summary>
@@ -171,38 +239,7 @@ namespace ADOFAI.Renderist
             }
             GUILayout.Label(UiText.GuiExportStatePrefix + stateText, GUI.skin.label);
 
-            // Phase 2.2.1: 输出目录输入框 + 路径检查结果
-            GUILayout.Label(UiText.GuiPreflightOutputDirInputPrefix + " " + UiText.GuiPreflightOutputDirInputHint, GUI.skin.label);
-            string newDir = GUILayout.TextField(Settings.OutputDirectory ?? string.Empty);
-            if (newDir != (Settings.OutputDirectory ?? string.Empty))
-            {
-                Settings.OutputDirectory = newDir;
-            }
-
-            DirectoryValidationResult dirVal = report.OutputDirectoryValidation;
-            string pathCheckText;
-            switch (dirVal.Outcome)
-            {
-                case DirectoryValidationOutcome.Accept:
-                    pathCheckText = UiText.GuiPreflightPathCheckAccept;
-                    break;
-                case DirectoryValidationOutcome.FallBackToDefault:
-                    pathCheckText = UiText.GuiPreflightPathCheckFallBack;
-                    break;
-                case DirectoryValidationOutcome.Reject:
-                    pathCheckText = UiText.GuiPreflightPathCheckReject + "（" + (dirVal.RejectReason ?? "?") + "）";
-                    break;
-                default:
-                    pathCheckText = UiText.GuiPreflightNotChecked;
-                    break;
-            }
-            GUILayout.Label(UiText.GuiPreflightPathCheckPrefix + pathCheckText, GUI.skin.label);
-
-            if (dirVal.Outcome == DirectoryValidationOutcome.FallBackToDefault)
-            {
-                string defaultPath = report.OutputDirectory ?? UiText.GuiNonePlaceholder;
-                GUILayout.Label(UiText.GuiPreflightDefaultDirPrefix + defaultPath, GUI.skin.label);
-            }
+            // Phase 2.2.2: 输出目录段已拆出至 DrawOutputDirectoryGui
 
             GUILayout.Space(4f);
 
@@ -264,6 +301,18 @@ namespace ADOFAI.Renderist
             GUILayout.Label(UiText.GuiSingleLastDirPrefix + singleDir, GUI.skin.label);
             GUILayout.Label(UiText.GuiSingleLastFilePrefix + singleFile, GUI.skin.label);
 
+            // Phase 2.2.2: 单帧拒绝状态（最近一次 F9 / GUI 单帧被 Preflight 阻止）
+            if (ExportCoordinator.LastSingleCaptureRejectReason != null)
+            {
+                GUILayout.Label(UiText.GuiSingleRejectStatusPrefix + UiText.GuiSingleRejectStatus, GUI.skin.label);
+                GUILayout.Label(UiText.GuiSingleRejectReasonPrefix + ExportCoordinator.LastSingleCaptureRejectReason, GUI.skin.label);
+                if (ExportCoordinator.LastSingleCaptureRejectTimeLocal.HasValue)
+                {
+                    string rejectTime = ExportCoordinator.LastSingleCaptureRejectTimeLocal.Value.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+                    GUILayout.Label(UiText.GuiSingleRejectTimePrefix + rejectTime, GUI.skin.label);
+                }
+            }
+
             GUILayout.Space(4f);
 
             GUILayout.Label(UiText.Format(UiText.GuiThrottleFormat,
@@ -280,7 +329,7 @@ namespace ADOFAI.Renderist
             GUILayout.BeginHorizontal();
             if (GUILayout.Button(UiText.GuiBtnCaptureSingleNextTick))
             {
-                CaptureService.RequestSingleCaptureNextTick();
+                ExportCoordinator.TrySingleCaptureNextTick("gui");
             }
             if (!CaptureService.IsRecording)
             {
@@ -328,7 +377,7 @@ namespace ADOFAI.Renderist
                 {
                     if (Input.GetKeyDown(Settings.SingleCaptureHotkey))
                     {
-                        CaptureService.RequestSingleCaptureNow();
+                        ExportCoordinator.TrySingleCapture("hotkey");
                     }
                     if (Input.GetKeyDown(Settings.SequenceHotkey))
                     {
