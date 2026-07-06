@@ -4,6 +4,7 @@ using HarmonyLib;
 using UnityEngine;
 using UnityModManagerNet;
 using ADOFAI.Renderist.Capture;
+using ADOFAI.Renderist.Export;
 using ADOFAI.Renderist.Logging;
 
 namespace ADOFAI.Renderist
@@ -22,6 +23,13 @@ namespace ADOFAI.Renderist
         internal static Settings Settings;
         internal static Harmony Harmony;
         internal static bool Enabled;
+
+        // Phase 2.2: Preflight / EditorEnv 缓存，避免 OnGUI 每帧重算。
+        // F10 / GUI 启动序列时仍会执行即时 Preflight，不依赖此缓存。
+        private const float PreflightCacheRefreshSeconds = 0.5f;
+        private static float _lastPreflightCacheRealtime = float.NegativeInfinity;
+        private static PreflightReport _cachedPreflightReport;
+        private static EditorEnvSnapshot _cachedEditorEnvSnapshot;
 
         /// <summary>
         /// UMM entry method, invoked via Info.json's "EntryMethod".
@@ -43,7 +51,7 @@ namespace ADOFAI.Renderist
                 // Instantiate Harmony but do NOT PatchAll in Phase 2.
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.2.1 (Phase 2.1 Chinese UI baseline).");
+                Log.Info("Loaded ADOFAI Renderist 0.2.2 (Phase 2.2 export preflight baseline).");
                 Log.Warn(UiText.LogStartupPerfWarn);
                 return true;
             }
@@ -91,7 +99,7 @@ namespace ADOFAI.Renderist
         {
             try
             {
-                GUILayout.Label("ADOFAI Renderist — Phase 2.1 Chinese UI baseline", GUI.skin.label);
+                GUILayout.Label("ADOFAI Renderist — Phase 2.2 export preflight baseline", GUI.skin.label);
                 GUILayout.Space(6f);
 
                 Settings.VerboseLogging = GUILayout.Toggle(
@@ -99,12 +107,100 @@ namespace ADOFAI.Renderist
                     UiText.GuiVerboseLoggingToggle);
 
                 GUILayout.Space(8f);
+                RefreshPreflightCacheIfNeeded();
+                DrawPreflightGui();
+                GUILayout.Space(8f);
                 DrawCaptureGUI();
             }
             catch (Exception ex)
             {
                 Logger?.LogException("OnGUI failed", ex);
             }
+        }
+
+        /// <summary>
+        /// 刷新 Preflight / EditorEnv 缓存。每 0.5 秒最多一次。
+        /// 无副作用：Preflight.Run 内部不创建目录、不改 CaptureService 状态。
+        /// </summary>
+        private static void RefreshPreflightCacheIfNeeded()
+        {
+            float now = Time.realtimeSinceStartup;
+            if (_lastPreflightCacheRealtime != float.NegativeInfinity &&
+                (now - _lastPreflightCacheRealtime) < PreflightCacheRefreshSeconds)
+            {
+                return;
+            }
+            _cachedPreflightReport = Preflight.Run();
+            _cachedEditorEnvSnapshot = _cachedPreflightReport.EditorEnv;
+            _lastPreflightCacheRealtime = now;
+        }
+
+        /// <summary>
+        /// 绘制「导出前检查」+「环境诊断」段。Phase 2.2 新增。
+        /// 只读展示，不触发任何操作。
+        /// </summary>
+        private static void DrawPreflightGui()
+        {
+            GUILayout.Label(UiText.GuiPreflightSectionTitle, GUI.skin.label);
+
+            PreflightReport report = _cachedPreflightReport;
+            if (report == null)
+            {
+                GUILayout.Label(UiText.GuiPreflightStatusPrefix + UiText.GuiPreflightNotChecked, GUI.skin.label);
+                return;
+            }
+
+            string statusText;
+            switch (report.Overall)
+            {
+                case PreflightResult.Pass: statusText = UiText.GuiPreflightStatusPass; break;
+                case PreflightResult.Warn: statusText = UiText.GuiPreflightStatusWarn; break;
+                case PreflightResult.Fail: statusText = UiText.GuiPreflightStatusFail; break;
+                default: statusText = UiText.GuiPreflightNotChecked; break;
+            }
+            GUILayout.Label(UiText.GuiPreflightStatusPrefix + statusText, GUI.skin.label);
+
+            ExportState state = ExportStateMachine.CurrentState;
+            string stateText;
+            switch (state)
+            {
+                case ExportState.Idle: stateText = UiText.GuiExportStateIdle; break;
+                case ExportState.Capturing: stateText = UiText.GuiExportStateCapturing; break;
+                case ExportState.Failed: stateText = UiText.GuiExportStateFailed; break;
+                default: stateText = UiText.GuiExportStateIdle; break;
+            }
+            GUILayout.Label(UiText.GuiExportStatePrefix + stateText, GUI.skin.label);
+
+            string dirText;
+            DirectoryValidationResult dirVal = report.OutputDirectoryValidation;
+            if (dirVal.Outcome == DirectoryValidationOutcome.FallBackToDefault)
+            {
+                string defaultPath = report.OutputDirectory ?? string.Empty;
+                dirText = (string.IsNullOrEmpty(defaultPath) ? UiText.GuiNonePlaceholder : defaultPath)
+                          + " " + UiText.GuiPreflightOutputDirDefaultSuffix;
+            }
+            else if (dirVal.Outcome == DirectoryValidationOutcome.Reject)
+            {
+                dirText = (report.OutputDirectory ?? UiText.GuiNonePlaceholder)
+                          + " （" + (dirVal.RejectReason ?? "?") + "）";
+            }
+            else
+            {
+                dirText = report.OutputDirectory ?? UiText.GuiNonePlaceholder;
+            }
+            GUILayout.Label(UiText.GuiPreflightOutputDirPrefix + dirText, GUI.skin.label);
+
+            GUILayout.Space(4f);
+
+            GUILayout.Label(UiText.GuiEnvSectionTitle, GUI.skin.label);
+            EditorEnvSnapshot env = _cachedEditorEnvSnapshot;
+            string sceneName = string.IsNullOrEmpty(env.SceneName) ? UiText.GuiEnvSceneEmpty : env.SceneName;
+            GUILayout.Label(UiText.GuiEnvSceneNamePrefix + sceneName, GUI.skin.label);
+            string camCount = env.CameraCount < 0
+                ? UiText.GuiEnvNotAvailable
+                : env.CameraCount.ToString(CultureInfo.InvariantCulture);
+            GUILayout.Label(UiText.GuiEnvCameraCountPrefix + camCount, GUI.skin.label);
+            GUILayout.Label(UiText.GuiEnvDetectionPrefix + UiText.GuiEnvDetectionUnknown, GUI.skin.label);
         }
 
         private static void DrawCaptureGUI()
@@ -166,7 +262,7 @@ namespace ADOFAI.Renderist
             {
                 if (GUILayout.Button(UiText.GuiBtnStartSequence))
                 {
-                    CaptureService.StartSequence("gui");
+                    ExportCoordinator.TryStartSequence("gui");
                 }
             }
             else
@@ -213,7 +309,7 @@ namespace ADOFAI.Renderist
                     if (Input.GetKeyDown(Settings.SequenceHotkey))
                     {
                         if (CaptureService.IsRecording) CaptureService.StopSequence("user");
-                        else CaptureService.StartSequence("hotkey");
+                        else ExportCoordinator.TryStartSequence("hotkey");
                     }
                 }
 

@@ -59,6 +59,33 @@ namespace ADOFAI.Renderist
         // Hotkeys 行模板：{0}=single key, {1}=sequence key
         public const string GuiHotkeysToggleFormat = " 启用快捷键（单张={0}，序列={1}）";
 
+        // ---------------- GUI: 导出前检查段（Phase 2.2） ----------------
+
+        public const string GuiPreflightSectionTitle = "导出前检查";
+        public const string GuiPreflightStatusPrefix = "检查状态：";
+        public const string GuiPreflightStatusPass = "通过";
+        public const string GuiPreflightStatusWarn = "警告";
+        public const string GuiPreflightStatusFail = "失败";
+        public const string GuiPreflightNotChecked = "（尚未检查）";
+
+        public const string GuiExportStatePrefix = "导出状态：";
+        public const string GuiExportStateIdle = "空闲";
+        public const string GuiExportStateCapturing = "录制中";
+        public const string GuiExportStateFailed = "失败";
+
+        public const string GuiPreflightOutputDirPrefix = "输出目录：";
+        public const string GuiPreflightOutputDirDefaultSuffix = "（默认目录）";
+
+        // ---------------- GUI: 环境诊断段（Phase 2.2） ----------------
+
+        public const string GuiEnvSectionTitle = "环境诊断";
+        public const string GuiEnvSceneNamePrefix = "当前场景：";
+        public const string GuiEnvCameraCountPrefix = "相机数量：";
+        public const string GuiEnvDetectionPrefix = "检测结果：";
+        public const string GuiEnvDetectionUnknown = "未知（仅诊断，不阻断）";
+        public const string GuiEnvSceneEmpty = "（空）";
+        public const string GuiEnvNotAvailable = "（不可用）";
+
         // ---------------- Log: ModEntry ----------------
 
         // 注：ModEntry.cs:46 启动日志（"Loaded ADOFAI Renderist X.Y.Z (...)" ）
@@ -70,6 +97,12 @@ namespace ADOFAI.Renderist
 
         public const string LogEnabled = "已启用。";
         public const string LogDisabled = "已禁用。已撤销 Harmony 补丁（若有）。";
+
+        // ---------------- Log: Preflight（Phase 2.2） ----------------
+
+        public const string LogPreflightPassed = "导出前检查通过。";
+        public const string LogPreflightWarn = "导出前检查通过（含警告），继续启动序列。";
+        public const string LogPreflightFailed = "导出前检查失败，已阻止启动序列。";
 
         // ---------------- Log: CaptureService ----------------
 

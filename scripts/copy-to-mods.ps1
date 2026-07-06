@@ -128,6 +128,7 @@ if (-not (Test-Path -LiteralPath $infoJson -PathType Leaf)) {
 $allowedFiles = @(
     'ADOFAI.Renderist.dll',
     'Info.json',
+    'LICENSE',                       # bundled in the release zip; UMM extracts it
     'Settings.xml',                  # UMM settings persistence
     'ADOFAI.Renderist.pdb'           # optional symbols
 )

@@ -63,6 +63,130 @@ namespace ADOFAI.Renderist.Capture
             return null;
         }
 
+        /// <summary>
+        /// 只读验证输出目录合法性。Phase 2.2 新增。
+        ///
+        /// 无副作用契约：
+        ///   - 不调用 Directory.CreateDirectory。
+        ///   - 不调用 ResolveSessionDirectory。
+        ///   - 不写文件，不产生日志（reject reason 通过返回值传递）。
+        ///
+        /// 与 ResolveSessionDirectory / TryAcceptConfigured 共享 reject list 规则，
+        /// 但不会触发任何副作用。供 Preflight 检查使用。
+        /// </summary>
+        public static DirectoryValidationResult ValidateDirectory(string configured)
+        {
+            if (string.IsNullOrEmpty(configured))
+            {
+                return new DirectoryValidationResult
+                {
+                    Outcome = DirectoryValidationOutcome.FallBackToDefault,
+                    NormalizedPath = TryGetDefaultRoot(),
+                    RejectReason = null,
+                };
+            }
+
+            string trimmed = configured.Trim();
+            string full;
+            try
+            {
+                full = Path.GetFullPath(trimmed);
+            }
+            catch
+            {
+                return new DirectoryValidationResult
+                {
+                    Outcome = DirectoryValidationOutcome.Reject,
+                    NormalizedPath = trimmed,
+                    RejectReason = "Invalid path",
+                };
+            }
+
+            if (!Path.IsPathRooted(full))
+            {
+                return new DirectoryValidationResult
+                {
+                    Outcome = DirectoryValidationOutcome.Reject,
+                    NormalizedPath = full,
+                    RejectReason = "Must be absolute",
+                };
+            }
+
+            if (IsFilesystemRoot(full))
+            {
+                return new DirectoryValidationResult
+                {
+                    Outcome = DirectoryValidationOutcome.Reject,
+                    NormalizedPath = full,
+                    RejectReason = "Filesystem root",
+                };
+            }
+
+            if (PathContains(full, GetAdofaiInstallRoot()))
+            {
+                return new DirectoryValidationResult
+                {
+                    Outcome = DirectoryValidationOutcome.Reject,
+                    NormalizedPath = full,
+                    RejectReason = "ADOFAI install directory",
+                };
+            }
+
+            if (PathContains(full, GetManagedDir()))
+            {
+                return new DirectoryValidationResult
+                {
+                    Outcome = DirectoryValidationOutcome.Reject,
+                    NormalizedPath = full,
+                    RejectReason = "Managed directory",
+                };
+            }
+
+            if (PathContains(full, GetUmmCoreDir()))
+            {
+                return new DirectoryValidationResult
+                {
+                    Outcome = DirectoryValidationOutcome.Reject,
+                    NormalizedPath = full,
+                    RejectReason = "UnityModManager directory",
+                };
+            }
+
+            string repoRoot = TryDetectRepositoryRoot();
+            if (repoRoot != null && PathContains(full, repoRoot))
+            {
+                return new DirectoryValidationResult
+                {
+                    Outcome = DirectoryValidationOutcome.Reject,
+                    NormalizedPath = full,
+                    RejectReason = "Repository directory",
+                };
+            }
+
+            return new DirectoryValidationResult
+            {
+                Outcome = DirectoryValidationOutcome.Accept,
+                NormalizedPath = full,
+                RejectReason = null,
+            };
+        }
+
+        /// <summary>
+        /// 获取默认输出目录路径（基于 Application.persistentDataPath）。
+        /// 不创建目录，只返回路径字符串。失败时返回 null。
+        /// </summary>
+        private static string TryGetDefaultRoot()
+        {
+            try
+            {
+                return Path.Combine(Application.persistentDataPath, DefaultSubdirectory);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         private static bool TryAcceptConfigured(string configured, out string accepted)
         {
             accepted = null;
@@ -239,5 +363,33 @@ namespace ADOFAI.Renderist.Capture
             }
             return null;
         }
+    }
+
+    /// <summary>
+    /// 目录验证结果。由 OutputPath.ValidateDirectory 返回。
+    /// 无副作用快照——仅包含路径验证结论，不携带任何创建/写入状态。
+    /// </summary>
+    internal struct DirectoryValidationResult
+    {
+        /// <summary>验证结论：Accept / FallBackToDefault / Reject。</summary>
+        public DirectoryValidationOutcome Outcome;
+
+        /// <summary>已 normalize 的绝对路径。Reject 时为原始输入。</summary>
+        public string NormalizedPath;
+
+        /// <summary>拒绝原因（仅 Reject 时非空）。供 Preflight / GUI 展示，不用于控制流。</summary>
+        public string RejectReason;
+    }
+
+    internal enum DirectoryValidationOutcome
+    {
+        /// <summary>路径合法，接受用户配置。</summary>
+        Accept,
+
+        /// <summary>配置为空，回退到默认目录（基于 Application.persistentDataPath）。</summary>
+        FallBackToDefault,
+
+        /// <summary>路径非法或命中 reject list。</summary>
+        Reject,
     }
 }
