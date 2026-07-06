@@ -42,7 +42,7 @@
 param(
     [Parameter(Mandatory=$true)]
     [string]$ZipPath,
-    [ValidatePattern('^\d+\.\d+\.\d+$')]
+    [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')]
     [string]$ExpectedVersion,
     [switch]$Strict
 )

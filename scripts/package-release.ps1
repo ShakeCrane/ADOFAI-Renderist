@@ -61,7 +61,7 @@
 param(
     [ValidateSet('Debug','Release')]
     [string]$Configuration = 'Release',
-    [ValidatePattern('^\d+\.\d+\.\d+$')]
+    [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')]
     [string]$Version,
     [string]$OutputDir,
     [switch]$Clean,

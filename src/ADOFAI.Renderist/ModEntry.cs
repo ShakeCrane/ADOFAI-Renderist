@@ -51,7 +51,7 @@ namespace ADOFAI.Renderist
                 // Instantiate Harmony but do NOT PatchAll in Phase 2.
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.2.2 (Phase 2.2 export preflight baseline).");
+                Log.Info("Loaded ADOFAI Renderist 0.2.2.1 (Phase 2.2.1 output directory GUI validation bridge).");
                 Log.Warn(UiText.LogStartupPerfWarn);
                 return true;
             }
@@ -99,7 +99,7 @@ namespace ADOFAI.Renderist
         {
             try
             {
-                GUILayout.Label("ADOFAI Renderist — Phase 2.2 export preflight baseline", GUI.skin.label);
+                GUILayout.Label("ADOFAI Renderist — Phase 2.2.1 output directory GUI validation bridge", GUI.skin.label);
                 GUILayout.Space(6f);
 
                 Settings.VerboseLogging = GUILayout.Toggle(
@@ -171,24 +171,38 @@ namespace ADOFAI.Renderist
             }
             GUILayout.Label(UiText.GuiExportStatePrefix + stateText, GUI.skin.label);
 
-            string dirText;
+            // Phase 2.2.1: 输出目录输入框 + 路径检查结果
+            GUILayout.Label(UiText.GuiPreflightOutputDirInputPrefix + " " + UiText.GuiPreflightOutputDirInputHint, GUI.skin.label);
+            string newDir = GUILayout.TextField(Settings.OutputDirectory ?? string.Empty);
+            if (newDir != (Settings.OutputDirectory ?? string.Empty))
+            {
+                Settings.OutputDirectory = newDir;
+            }
+
             DirectoryValidationResult dirVal = report.OutputDirectoryValidation;
+            string pathCheckText;
+            switch (dirVal.Outcome)
+            {
+                case DirectoryValidationOutcome.Accept:
+                    pathCheckText = UiText.GuiPreflightPathCheckAccept;
+                    break;
+                case DirectoryValidationOutcome.FallBackToDefault:
+                    pathCheckText = UiText.GuiPreflightPathCheckFallBack;
+                    break;
+                case DirectoryValidationOutcome.Reject:
+                    pathCheckText = UiText.GuiPreflightPathCheckReject + "（" + (dirVal.RejectReason ?? "?") + "）";
+                    break;
+                default:
+                    pathCheckText = UiText.GuiPreflightNotChecked;
+                    break;
+            }
+            GUILayout.Label(UiText.GuiPreflightPathCheckPrefix + pathCheckText, GUI.skin.label);
+
             if (dirVal.Outcome == DirectoryValidationOutcome.FallBackToDefault)
             {
-                string defaultPath = report.OutputDirectory ?? string.Empty;
-                dirText = (string.IsNullOrEmpty(defaultPath) ? UiText.GuiNonePlaceholder : defaultPath)
-                          + " " + UiText.GuiPreflightOutputDirDefaultSuffix;
+                string defaultPath = report.OutputDirectory ?? UiText.GuiNonePlaceholder;
+                GUILayout.Label(UiText.GuiPreflightDefaultDirPrefix + defaultPath, GUI.skin.label);
             }
-            else if (dirVal.Outcome == DirectoryValidationOutcome.Reject)
-            {
-                dirText = (report.OutputDirectory ?? UiText.GuiNonePlaceholder)
-                          + " （" + (dirVal.RejectReason ?? "?") + "）";
-            }
-            else
-            {
-                dirText = report.OutputDirectory ?? UiText.GuiNonePlaceholder;
-            }
-            GUILayout.Label(UiText.GuiPreflightOutputDirPrefix + dirText, GUI.skin.label);
 
             GUILayout.Space(4f);
 
@@ -200,7 +214,17 @@ namespace ADOFAI.Renderist
                 ? UiText.GuiEnvNotAvailable
                 : env.CameraCount.ToString(CultureInfo.InvariantCulture);
             GUILayout.Label(UiText.GuiEnvCameraCountPrefix + camCount, GUI.skin.label);
-            GUILayout.Label(UiText.GuiEnvDetectionPrefix + UiText.GuiEnvDetectionUnknown, GUI.skin.label);
+            string detectionText;
+            switch (env.Detection)
+            {
+                case EditorEnvDetection.ProbablyEditor:
+                    detectionText = UiText.GuiEnvDetectionProbablyEditor;
+                    break;
+                default:
+                    detectionText = UiText.GuiEnvDetectionUnknown;
+                    break;
+            }
+            GUILayout.Label(UiText.GuiEnvDetectionPrefix + detectionText, GUI.skin.label);
         }
 
         private static void DrawCaptureGUI()

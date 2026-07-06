@@ -76,6 +76,15 @@ namespace ADOFAI.Renderist
         public const string GuiPreflightOutputDirPrefix = "输出目录：";
         public const string GuiPreflightOutputDirDefaultSuffix = "（默认目录）";
 
+        // Phase 2.2.1: 输出目录输入框 + 路径检查结果
+        public const string GuiPreflightOutputDirInputPrefix = "输出目录设置：";
+        public const string GuiPreflightOutputDirInputHint = "（留空使用默认目录）";
+        public const string GuiPreflightDefaultDirPrefix = "当前默认目录：";
+        public const string GuiPreflightPathCheckPrefix = "路径检查结果：";
+        public const string GuiPreflightPathCheckAccept = "合法";
+        public const string GuiPreflightPathCheckFallBack = "回退默认目录";
+        public const string GuiPreflightPathCheckReject = "拒绝";
+
         // ---------------- GUI: 环境诊断段（Phase 2.2） ----------------
 
         public const string GuiEnvSectionTitle = "环境诊断";
@@ -83,6 +92,7 @@ namespace ADOFAI.Renderist
         public const string GuiEnvCameraCountPrefix = "相机数量：";
         public const string GuiEnvDetectionPrefix = "检测结果：";
         public const string GuiEnvDetectionUnknown = "未知（仅诊断，不阻断）";
+        public const string GuiEnvDetectionProbablyEditor = "疑似编辑器（仅诊断，不阻断）";
         public const string GuiEnvSceneEmpty = "（空）";
         public const string GuiEnvNotAvailable = "（不可用）";
 

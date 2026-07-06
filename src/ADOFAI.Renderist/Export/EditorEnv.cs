@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -50,6 +51,15 @@ namespace ADOFAI.Renderist.Export
                 snapshot.SceneName = string.Empty;
             }
 
+            // Phase 2.2.1: 基于 Phase 2.2 实机验证（ADOFAI buildid 23935606，
+            // Unity 6000.3.10f1），scnEditor 是 ADOFAI 编辑器场景名。
+            // 仅诊断展示，不影响 Preflight Pass / Warn / Fail，不阻断任何截图路径。
+            if (!string.IsNullOrEmpty(snapshot.SceneName) &&
+                Array.IndexOf(EditorSceneNames, snapshot.SceneName) >= 0)
+            {
+                snapshot.Detection = EditorEnvDetection.ProbablyEditor;
+            }
+
             try
             {
                 snapshot.CameraCount = Camera.allCamerasCount;
@@ -61,15 +71,30 @@ namespace ADOFAI.Renderist.Export
 
             return snapshot;
         }
+
+        /// <summary>
+        /// 实机验证得到的编辑器场景名白名单（基于 Phase 2.2 实机验证，
+        /// ADOFAI buildid 23935606，Unity 6000.3.10f1）。
+        /// 仅用于 Detection 诊断展示，不作为 Preflight 通过 / 失败条件。
+        /// ADOFAI 更新后场景名可能变化，届时需重新实机验证。
+        /// </summary>
+        private static readonly string[] EditorSceneNames =
+        {
+            "scnEditor",
+        };
     }
 
     /// <summary>
-    /// 编辑器检测结果。Phase 2.2 第一版只有 Unknown。
-    /// 未来版本可能扩展 ProbablyEditor / ProbablyNotEditor，
-    /// 但需先确认场景名白名单（由用户在实机中通过诊断段读取真实场景名后填充）。
+    /// 编辑器检测结果。
+    /// - Unknown：未识别或非编辑器环境
+    /// - ProbablyEditor：场景名匹配白名单，疑似编辑器
+    ///
+    /// 仅为「疑似」，不写「确认」——场景名可能因 ADOFAI 版本更新而变化。
+    /// Detection 不影响 Preflight Pass / Warn / Fail，不阻断任何截图路径。
     /// </summary>
     internal enum EditorEnvDetection
     {
         Unknown,
+        ProbablyEditor,
     }
 }

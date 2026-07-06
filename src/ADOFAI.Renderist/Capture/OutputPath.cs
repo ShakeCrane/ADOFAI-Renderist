@@ -122,6 +122,44 @@ namespace ADOFAI.Renderist.Capture
                 };
             }
 
+            // Phase 2.2.1: 检查盘符是否存在（仅 Windows 盘符路径，不误伤 UNC 路径）。
+            // 无副作用：Directory.GetLogicalDrives 只读系统盘符列表，不创建目录、不写文件。
+            // GetLogicalDrives 抛异常时保守降级（跳过检查），不阻断。
+            // UNC 路径（\\server\share）的 pathRoot 第 2 个字符不是 ':'，跳过盘符检查。
+            string pathRoot = Path.GetPathRoot(full);
+            if (!string.IsNullOrEmpty(pathRoot) && pathRoot.Length >= 2 && pathRoot[1] == ':')
+            {
+                bool driveExists = false;
+                try
+                {
+                    string[] logicalDrives = Directory.GetLogicalDrives();
+                    string rootNormalized = pathRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    foreach (string drive in logicalDrives)
+                    {
+                        string driveNormalized = drive.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                        if (string.Equals(driveNormalized, rootNormalized, StringComparison.OrdinalIgnoreCase))
+                        {
+                            driveExists = true;
+                            break;
+                        }
+                    }
+                }
+                catch
+                {
+                    // GetLogicalDrives 失败时保守降级，跳过盘符检查
+                    driveExists = true;
+                }
+                if (!driveExists)
+                {
+                    return new DirectoryValidationResult
+                    {
+                        Outcome = DirectoryValidationOutcome.Reject,
+                        NormalizedPath = full,
+                        RejectReason = "Drive does not exist",
+                    };
+                }
+            }
+
             if (PathContains(full, GetAdofaiInstallRoot()))
             {
                 return new DirectoryValidationResult
