@@ -25,7 +25,7 @@ namespace ADOFAI.Renderist
         /// 由 scripts/set-version.ps1 自动同步。供 CaptureService metadata.json version 字段引用，
         /// 避免 metadata version 与 mod version 脱节。
         /// </summary>
-        internal const string ModVersion = "0.2.2.3";
+        internal const string ModVersion = "0.2.3.0";
 
         internal static UnityModManager.ModEntry Mod;
         internal static UnityModManager.ModEntry.ModLogger Logger;
@@ -39,6 +39,7 @@ namespace ADOFAI.Renderist
         private static float _lastPreflightCacheRealtime = float.NegativeInfinity;
         private static PreflightReport _cachedPreflightReport;
         private static EditorEnvSnapshot _cachedEditorEnvSnapshot;
+        private static EditorExportReadinessReport _cachedEditorExportReadinessReport;
         private static DirectoryBrowserState _directoryBrowserState;
 
         /// <summary>
@@ -61,7 +62,7 @@ namespace ADOFAI.Renderist
                 // Instantiate Harmony but do NOT PatchAll in Phase 2.
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.2.2.3 (Phase 2.2.3 GUI simplification + metadata version clarification).");
+                Log.Info("Loaded ADOFAI Renderist 0.2.3.0 (Phase 2.3 editor export readiness baseline).");
                 Log.Warn(UiText.LogStartupPerfWarn);
                 return true;
             }
@@ -144,8 +145,8 @@ namespace ADOFAI.Renderist
         }
 
         /// <summary>
-        /// 刷新 Preflight / EditorEnv 缓存。每 0.5 秒最多一次。
-        /// 无副作用：Preflight.Run 内部不创建目录、不改 CaptureService 状态。
+        /// 刷新 Preflight / EditorEnv / 编辑器导出就绪缓存。每 0.5 秒最多一次。
+        /// 无副作用：所有 Run 内部均不创建目录、不改 CaptureService 状态、不改 Unity 时间属性。
         /// </summary>
         private static void RefreshPreflightCacheIfNeeded()
         {
@@ -157,6 +158,7 @@ namespace ADOFAI.Renderist
             }
             _cachedPreflightReport = Preflight.Run();
             _cachedEditorEnvSnapshot = _cachedPreflightReport.EditorEnv;
+            _cachedEditorExportReadinessReport = EditorExportPreflight.Run();
             _lastPreflightCacheRealtime = now;
         }
 
@@ -249,6 +251,9 @@ namespace ADOFAI.Renderist
             if (newDir != (Settings.OutputDirectory ?? string.Empty))
             {
                 Settings.OutputDirectory = newDir;
+                // 输出目录变更后立即使 Preflight / EditorExport 缓存失效，
+                // 使目录验证摘要在下一次 OnGUI 绘制时更新。
+                _lastPreflightCacheRealtime = float.NegativeInfinity;
             }
             if (GUILayout.Button(UiText.GuiBtnOpenInExplorer, GUI.skin.button, GUILayout.Width(140)))
             {
@@ -333,11 +338,13 @@ namespace ADOFAI.Renderist
 
                 GUILayout.Label(UiText.GuiEnvSectionTitle, GUI.skin.label);
                 EditorEnvSnapshot env = _cachedEditorEnvSnapshot;
-                string sceneName = string.IsNullOrEmpty(env.SceneName) ? UiText.GuiEnvSceneEmpty : env.SceneName;
-                GUILayout.Label(UiText.GuiEnvSceneNamePrefix + sceneName, GUI.skin.label);
-                string camCount = env.CameraCount < 0
+                string sceneName = env.SceneName == null
                     ? UiText.GuiEnvNotAvailable
-                    : env.CameraCount.ToString(CultureInfo.InvariantCulture);
+                    : (string.IsNullOrEmpty(env.SceneName) ? UiText.GuiEnvSceneEmpty : env.SceneName);
+                GUILayout.Label(UiText.GuiEnvSceneNamePrefix + sceneName, GUI.skin.label);
+                string camCount = env.CameraCount.HasValue
+                    ? env.CameraCount.Value.ToString(CultureInfo.InvariantCulture)
+                    : UiText.GuiEnvNotAvailable;
                 GUILayout.Label(UiText.GuiEnvCameraCountPrefix + camCount, GUI.skin.label);
                 string detectionText;
                 switch (env.Detection)
@@ -350,7 +357,178 @@ namespace ADOFAI.Renderist
                         break;
                 }
                 GUILayout.Label(UiText.GuiEnvDetectionPrefix + detectionText, GUI.skin.label);
+
+                GUILayout.Space(6f);
+                DrawEditorExportReadinessGui();
             }
+        }
+
+        /// <summary>
+        /// 绘制「编辑器导出就绪」段（Phase 2.3）。
+        /// 仅在 Detailed Log / VerboseLogging 区域显示，不增加默认界面复杂度。
+        /// 不实现任何导出执行器，只展示就绪状态、环境与阻断原因。
+        /// </summary>
+        private static void DrawEditorExportReadinessGui()
+        {
+            GUILayout.Label(UiText.GuiEditorExportSectionTitle, GUI.skin.label);
+            GUILayout.Label(UiText.GuiEditorExportNotImplementedWarn, GUI.skin.label);
+
+            // 实验性开关
+            bool newEnabled = GUILayout.Toggle(
+                Settings.EditorExportEnabled,
+                UiText.GuiEditorExportEnabledToggle);
+            if (newEnabled != Settings.EditorExportEnabled)
+            {
+                Settings.EditorExportEnabled = newEnabled;
+                // 强制刷新缓存，使状态立即更新
+                _lastPreflightCacheRealtime = float.NegativeInfinity;
+            }
+
+            // 目标帧率输入（仅意图参数）
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(UiText.GuiEditorExportTargetFrameRatePrefix, GUI.skin.label);
+            string frameRateText = GUILayout.TextField(
+                Settings.EditorTargetFrameRate.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(80));
+            GUILayout.EndHorizontal();
+            if (int.TryParse(frameRateText, out int parsedFrameRate) &&
+                parsedFrameRate != Settings.EditorTargetFrameRate)
+            {
+                Settings.EditorTargetFrameRate = parsedFrameRate;
+                _lastPreflightCacheRealtime = float.NegativeInfinity;
+            }
+
+            EditorExportReadinessReport report = _cachedEditorExportReadinessReport;
+            if (report == null)
+            {
+                GUILayout.Label(UiText.GuiPreflightNotChecked, GUI.skin.label);
+                return;
+            }
+
+            // 就绪状态
+            string readinessText;
+            switch (report.Readiness)
+            {
+                case EditorExportReadiness.Disabled:
+                    readinessText = UiText.GuiEditorExportReadinessDisabled;
+                    break;
+                case EditorExportReadiness.NotInEditor:
+                    readinessText = UiText.GuiEditorExportReadinessNotInEditor;
+                    break;
+                case EditorExportReadiness.UnknownEnvironment:
+                    readinessText = UiText.GuiEditorExportReadinessUnknownEnvironment;
+                    break;
+                case EditorExportReadiness.Blocked:
+                    readinessText = UiText.GuiEditorExportReadinessBlocked;
+                    break;
+                case EditorExportReadiness.Ready:
+                    readinessText = UiText.GuiEditorExportReadinessReady;
+                    break;
+                default:
+                    readinessText = UiText.GuiPreflightNotChecked;
+                    break;
+            }
+            GUILayout.Label(UiText.GuiEditorExportReadinessPrefix + readinessText, GUI.skin.label);
+
+            // 原因
+            string reasonText;
+            switch (report.Reason)
+            {
+                case EditorExportReadinessReason.None:
+                    reasonText = UiText.GuiEditorExportReasonNone;
+                    break;
+                case EditorExportReadinessReason.FeatureDisabled:
+                    reasonText = UiText.GuiEditorExportReasonFeatureDisabled;
+                    break;
+                case EditorExportReadinessReason.EditorSceneNotDetected:
+                    reasonText = UiText.GuiEditorExportReasonEditorSceneNotDetected;
+                    break;
+                case EditorExportReadinessReason.EnvironmentUnavailable:
+                    reasonText = UiText.GuiEditorExportReasonEnvironmentUnavailable;
+                    break;
+                case EditorExportReadinessReason.CaptureBusy:
+                    reasonText = UiText.GuiEditorExportReasonCaptureBusy;
+                    break;
+                case EditorExportReadinessReason.InvalidTargetFrameRate:
+                    reasonText = UiText.GuiEditorExportReasonInvalidTargetFrameRate;
+                    break;
+                case EditorExportReadinessReason.InvalidOutputDirectory:
+                    reasonText = UiText.GuiEditorExportReasonInvalidOutputDirectory;
+                    break;
+                default:
+                    reasonText = UiText.GuiPreflightNotChecked;
+                    break;
+            }
+            GUILayout.Label(UiText.GuiEditorExportReasonPrefix + reasonText, GUI.skin.label);
+
+            // 环境快照
+            EditorEnvSnapshot env = report.EditorEnv;
+            string sceneName = env.SceneName == null
+                ? UiText.GuiEnvNotAvailable
+                : (string.IsNullOrEmpty(env.SceneName) ? UiText.GuiEnvSceneEmpty : env.SceneName);
+            GUILayout.Label(UiText.GuiEnvSceneNamePrefix + sceneName, GUI.skin.label);
+
+            string detectionText;
+            switch (env.Detection)
+            {
+                case EditorEnvDetection.ProbablyEditor:
+                    detectionText = UiText.GuiEnvDetectionProbablyEditor;
+                    break;
+                default:
+                    detectionText = UiText.GuiEnvDetectionUnknown;
+                    break;
+            }
+            GUILayout.Label(UiText.GuiEnvDetectionPrefix + detectionText, GUI.skin.label);
+
+            string timeScaleText = env.TimeScale.HasValue
+                ? env.TimeScale.Value.ToString("0.###", CultureInfo.InvariantCulture)
+                : UiText.GuiEnvNotAvailable;
+            GUILayout.Label(UiText.GuiEditorExportEnvTimeScalePrefix + timeScaleText, GUI.skin.label);
+
+            string captureFramerateText = env.CaptureFramerate.HasValue
+                ? env.CaptureFramerate.Value.ToString(CultureInfo.InvariantCulture)
+                : UiText.GuiEnvNotAvailable;
+            GUILayout.Label(UiText.GuiEditorExportEnvCaptureFrameratePrefix + captureFramerateText, GUI.skin.label);
+
+            string isFocusedText = env.IsFocused.HasValue
+                ? (env.IsFocused.Value ? "true" : "false")
+                : UiText.GuiEnvNotAvailable;
+            GUILayout.Label(UiText.GuiEditorExportEnvIsFocusedPrefix + isFocusedText, GUI.skin.label);
+
+            string screenSizeText = env.ScreenWidth.HasValue && env.ScreenHeight.HasValue
+                ? $"{env.ScreenWidth.Value}x{env.ScreenHeight.Value}"
+                : UiText.GuiEnvNotAvailable;
+            GUILayout.Label(UiText.GuiEditorExportEnvScreenSizePrefix + screenSizeText, GUI.skin.label);
+
+            string camCount = env.CameraCount.HasValue
+                ? env.CameraCount.Value.ToString(CultureInfo.InvariantCulture)
+                : UiText.GuiEnvNotAvailable;
+            GUILayout.Label(UiText.GuiEnvCameraCountPrefix + camCount, GUI.skin.label);
+
+            // 实时序列占用
+            GUILayout.Label(UiText.GuiEditorExportIsRecordingPrefix +
+                (report.IsRecording ? UiText.GuiStatusRecording : UiText.GuiStatusIdle), GUI.skin.label);
+
+            // 输出目录验证摘要
+            DirectoryValidationResult dirVal = report.OutputDirectoryValidation;
+            string dirSummary;
+            switch (dirVal.Outcome)
+            {
+                case DirectoryValidationOutcome.Accept:
+                    dirSummary = UiText.GuiPreflightPathCheckAccept;
+                    break;
+                case DirectoryValidationOutcome.FallBackToDefault:
+                    dirSummary = UiText.GuiPreflightPathCheckFallBack;
+                    break;
+                case DirectoryValidationOutcome.Reject:
+                    dirSummary = UiText.GuiPreflightPathCheckReject +
+                        "（" + (dirVal.RejectReason ?? "?") + "）";
+                    break;
+                default:
+                    dirSummary = UiText.GuiPreflightNotChecked;
+                    break;
+            }
+            GUILayout.Label(UiText.GuiPreflightPathCheckPrefix + dirSummary, GUI.skin.label);
         }
 
         private static void DrawCaptureGUI()

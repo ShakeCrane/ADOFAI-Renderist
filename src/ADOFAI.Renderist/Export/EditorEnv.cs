@@ -1,35 +1,59 @@
 using System;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using ADOFAI.Renderist.Logging;
 
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 编辑器环境诊断快照（Phase 2.2）。
+    /// 编辑器环境诊断快照（Phase 2.3）。
     ///
-    /// 第一版仅采集只读诊断信息，不做白名单匹配。
-    /// <see cref="Detection"/> 始终返回 <see cref="EditorEnvDetection.Unknown"/>，
-    /// 不作为 Preflight Fail 条件。
-    ///
+    /// 只采集只读诊断信息，不修改任何 Unity 状态。
     /// 不引入 Assembly-CSharp.dll。
-    /// CanvasCount 暂不实现（需要 UnityEngine.UIModule.dll，本轮不新增引用）。
+    ///
+    /// 读取失败处理：
+    ///   * SceneName 为 null 表示场景名读取失败；空字符串表示场景名为空。
+    ///   * CameraCount、TimeScale、CaptureFramerate、ScreenWidth、ScreenHeight、IsFocused
+    ///     使用可空类型，null 表示读取失败。
+    ///   * EnvironmentReadFailed 表示核心环境读取失败，Preflight 据此返回 UnknownEnvironment。
     /// </summary>
     internal struct EditorEnvSnapshot
     {
         /// <summary>
         /// 当前场景名（SceneManager.GetActiveScene().name）。
-        /// 空字符串表示获取失败或场景名为空。
+        /// null 表示获取失败；空字符串表示场景名为空。
         /// </summary>
         public string SceneName;
 
         /// <summary>
         /// 当前相机数量（Camera.allCamerasCount）。
-        /// -1 表示获取失败。
+        /// null 表示获取失败。
         /// </summary>
-        public int CameraCount;
+        public int? CameraCount;
 
-        /// <summary>检测结果：第一版始终 Unknown。</summary>
+        /// <summary>当前时间缩放（Time.timeScale）。null 表示获取失败。</summary>
+        public float? TimeScale;
+
+        /// <summary>当前固定帧率（Time.captureFramerate）。null 表示获取失败。</summary>
+        public int? CaptureFramerate;
+
+        /// <summary>游戏窗口是否处于焦点（Application.isFocused）。null 表示获取失败。</summary>
+        public bool? IsFocused;
+
+        /// <summary>屏幕宽度（Screen.width）。null 表示获取失败。</summary>
+        public int? ScreenWidth;
+
+        /// <summary>屏幕高度（Screen.height）。null 表示获取失败。</summary>
+        public int? ScreenHeight;
+
+        /// <summary>检测结果：场景名匹配白名单则 ProbablyEditor，否则 Unknown。</summary>
         public EditorEnvDetection Detection;
+
+        /// <summary>
+        /// 核心环境读取是否失败（如 SceneManager 抛异常）。
+        /// 为 true 时 Detection 不应作为判断依据。
+        /// </summary>
+        public bool EnvironmentReadFailed;
 
         /// <summary>
         /// 采集当前环境诊断快照。无副作用：只读不写。
@@ -40,36 +64,50 @@ namespace ADOFAI.Renderist.Export
             var snapshot = new EditorEnvSnapshot
             {
                 Detection = EditorEnvDetection.Unknown,
+                EnvironmentReadFailed = false,
             };
 
+            // 场景名是核心环境信息；读取失败标记 EnvironmentReadFailed。
             try
             {
-                snapshot.SceneName = SceneManager.GetActiveScene().name ?? string.Empty;
+                snapshot.SceneName = SceneManager.GetActiveScene().name;
             }
-            catch
+            catch (Exception ex)
             {
-                snapshot.SceneName = string.Empty;
+                Log.Exception("EditorEnvSnapshot: failed to read active scene name", ex);
+                snapshot.SceneName = null;
+                snapshot.EnvironmentReadFailed = true;
             }
 
-            // Phase 2.2.1: 基于 Phase 2.2 实机验证（ADOFAI buildid 23935606，
+            // Phase 2.2.1 / 2.3: 基于实机验证（ADOFAI buildid 23935606，
             // Unity 6000.3.10f1），scnEditor 是 ADOFAI 编辑器场景名。
-            // 仅诊断展示，不影响 Preflight Pass / Warn / Fail，不阻断任何截图路径。
-            if (!string.IsNullOrEmpty(snapshot.SceneName) &&
+            // 仅诊断展示；空字符串视为未识别，不作为 Preflight Ready 条件。
+            if (snapshot.SceneName != null &&
                 Array.IndexOf(EditorSceneNames, snapshot.SceneName) >= 0)
             {
                 snapshot.Detection = EditorEnvDetection.ProbablyEditor;
             }
 
+            snapshot.CameraCount = TryRead(() => Camera.allCamerasCount);
+            snapshot.TimeScale = TryRead(() => Time.timeScale);
+            snapshot.CaptureFramerate = TryRead(() => Time.captureFramerate);
+            snapshot.IsFocused = TryRead(() => Application.isFocused);
+            snapshot.ScreenWidth = TryRead(() => Screen.width);
+            snapshot.ScreenHeight = TryRead(() => Screen.height);
+
+            return snapshot;
+        }
+
+        private static T? TryRead<T>(Func<T> read) where T : struct
+        {
             try
             {
-                snapshot.CameraCount = Camera.allCamerasCount;
+                return read();
             }
             catch
             {
-                snapshot.CameraCount = -1;
+                return null;
             }
-
-            return snapshot;
         }
 
         /// <summary>

@@ -124,6 +124,36 @@ namespace ADOFAI.Renderist
         public const string GuiSeeLogForDetails = "详情请查看日志。";
         public const string GuiDebugInfoTitle = "调试信息（详细日志模式）";
 
+        // ---------------- GUI: 编辑器导出就绪段（Phase 2.3） ----------------
+
+        public const string GuiEditorExportSectionTitle = "编辑器导出就绪（实验性）";
+        public const string GuiEditorExportNotImplementedWarn = "注意：编辑器逐帧导出尚未实现。";
+        public const string GuiEditorExportEnabledToggle = " 启用编辑器导出就绪检查";
+
+        public const string GuiEditorExportReadinessPrefix = "就绪状态：";
+        public const string GuiEditorExportReasonPrefix = "原因：";
+        public const string GuiEditorExportTargetFrameRatePrefix = "目标帧率（仅意图）：";
+        public const string GuiEditorExportIsRecordingPrefix = "实时序列占用：";
+
+        public const string GuiEditorExportReadinessDisabled = "已禁用";
+        public const string GuiEditorExportReadinessNotInEditor = "非编辑器场景";
+        public const string GuiEditorExportReadinessUnknownEnvironment = "环境不确定";
+        public const string GuiEditorExportReadinessBlocked = "未就绪";
+        public const string GuiEditorExportReadinessReady = "已就绪（未实现导出）";
+
+        public const string GuiEditorExportReasonNone = "无";
+        public const string GuiEditorExportReasonFeatureDisabled = "实验性开关未启用";
+        public const string GuiEditorExportReasonEditorSceneNotDetected = "未检测到编辑器场景";
+        public const string GuiEditorExportReasonEnvironmentUnavailable = "环境信息不可用";
+        public const string GuiEditorExportReasonCaptureBusy = "实时序列截图正在运行";
+        public const string GuiEditorExportReasonInvalidTargetFrameRate = "目标帧率不合法";
+        public const string GuiEditorExportReasonInvalidOutputDirectory = "输出目录非法";
+
+        public const string GuiEditorExportEnvTimeScalePrefix = "Time.timeScale：";
+        public const string GuiEditorExportEnvCaptureFrameratePrefix = "Time.captureFramerate：";
+        public const string GuiEditorExportEnvIsFocusedPrefix = "Application.isFocused：";
+        public const string GuiEditorExportEnvScreenSizePrefix = "屏幕分辨率：";
+
         // ---------------- Log: ModEntry ----------------
 
         // 注：ModEntry.cs:46 启动日志（"Loaded ADOFAI Renderist X.Y.Z (...)" ）
