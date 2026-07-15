@@ -136,7 +136,7 @@ namespace ADOFAI.Renderist.Capture
 
             _sessionMetadata = new Metadata
             {
-                Version             = "0.2.1",
+                Version             = ModEntry.ModVersion,
                 Phase               = "Phase 2.0 screenshot sequence MVP",
                 CreatedAtUtc        = Metadata.IsoUtcNow(),
                 EndedAtUtc          = null,
@@ -310,7 +310,7 @@ namespace ADOFAI.Renderist.Capture
 
                 var m = new Metadata
                 {
-                    Version             = "0.2.1",
+                    Version             = ModEntry.ModVersion,
                     Phase               = "Phase 2.0 screenshot sequence MVP",
                     CreatedAtUtc        = Metadata.IsoUtcNow(),
                     EndedAtUtc          = null,

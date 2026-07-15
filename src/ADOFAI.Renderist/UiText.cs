@@ -117,6 +117,13 @@ namespace ADOFAI.Renderist
         public const string GuiSingleRejectReasonPrefix = "拒绝原因：";
         public const string GuiSingleRejectTimePrefix = "拒绝时间：";
 
+        // ---------------- GUI: Phase 2.2.3 简化文案 ----------------
+
+        public const string GuiBtnOpenInExplorer = "在资源管理器中打开";
+        public const string GuiOutputDirUnavailable = "输出目录不可用，已阻止截图。";
+        public const string GuiSeeLogForDetails = "详情请查看日志。";
+        public const string GuiDebugInfoTitle = "调试信息（详细日志模式）";
+
         // ---------------- Log: ModEntry ----------------
 
         // 注：ModEntry.cs:46 启动日志（"Loaded ADOFAI Renderist X.Y.Z (...)" ）
@@ -138,6 +145,10 @@ namespace ADOFAI.Renderist
         // ---------------- Log: 单帧拒绝（Phase 2.2.2） ----------------
 
         public const string LogSingleCaptureRejectedFormat = "单帧截图已阻止：{0}";
+
+        // ---------------- Log: Explorer 打开目录（Phase 2.2.3） ----------------
+
+        public const string LogOpenExplorerFailedFormat = "打开目录失败：{0}";
 
         // ---------------- Log: CaptureService ----------------
 

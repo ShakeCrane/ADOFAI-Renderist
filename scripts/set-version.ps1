@@ -123,20 +123,17 @@ try {
     $oldVersion = Get-UniqueValue $originals[$infoJsonPath] '"Version"\s*:\s*"([^"]+)"' 'mod/Info.json Version'
     $oldCsprojVersion = Get-UniqueValue $originals[$csprojPath] '<Version>([^<]+)</Version>' 'csproj Version'
     $oldLogPhase = Get-UniqueValue $originals[$modEntryPath] 'Loaded ADOFAI Renderist [0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)? \(([^)]+)\)\.' 'ModEntry load phase'
-    $oldGuiPhase = Get-UniqueValue $originals[$modEntryPath] "GUILayout\.Label\(`"$guiLabelPrefixPattern([^`"]+)`"" 'ModEntry GUI phase'
+    $oldModVersion = Get-UniqueValue $originals[$modEntryPath] 'internal const string ModVersion = "([^"]+)"' 'ModEntry ModVersion constant'
 
     if ($oldVersion -ne $oldCsprojVersion) {
         Fail "Existing version mismatch: Info.json has $oldVersion, csproj has $oldCsprojVersion."
-    }
-    if ($oldLogPhase -ne $oldGuiPhase) {
-        Fail "Existing phase mismatch: load log has '$oldLogPhase', GUI has '$oldGuiPhase'."
     }
 
     $newInfoJson = Replace-Unique $originals[$infoJsonPath] '("Version"\s*:\s*")[^"]+(")' "`${1}$Version`${2}" 'mod/Info.json Version'
     $newCsproj = Replace-Unique $originals[$csprojPath] '(<Version>)[^<]+(</Version>)' "`${1}$Version`${2}" 'csproj Version'
     $newModEntry = $originals[$modEntryPath]
     $newModEntry = Replace-Unique $newModEntry 'Loaded ADOFAI Renderist [0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)? \([^)]+\)\.' "Loaded ADOFAI Renderist $Version ($Phase)." 'ModEntry load log'
-    $newModEntry = Replace-Unique $newModEntry "(GUILayout\.Label\(`")$guiLabelPrefixPattern[^`"]+(`")" "`${1}$guiLabelPrefix$Phase`${2}" 'ModEntry GUI label'
+    $newModEntry = Replace-Unique $newModEntry 'internal const string ModVersion = "[^"]+"' "internal const string ModVersion = `"$Version`"" 'ModEntry ModVersion constant'
 
     $planned = @(
         [PSCustomObject]@{ Path = $infoJsonPath; Old = $originals[$infoJsonPath]; New = $newInfoJson },
