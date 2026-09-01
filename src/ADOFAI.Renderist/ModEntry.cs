@@ -25,7 +25,7 @@ namespace ADOFAI.Renderist
         /// 由 scripts/set-version.ps1 自动同步。供 CaptureService metadata.json version 字段引用，
         /// 避免 metadata version 与 mod version 脱节。
         /// </summary>
-        internal const string ModVersion = "0.2.3.0";
+        internal const string ModVersion = "0.2.4.0";
 
         internal static UnityModManager.ModEntry Mod;
         internal static UnityModManager.ModEntry.ModLogger Logger;
@@ -62,7 +62,7 @@ namespace ADOFAI.Renderist
                 // Instantiate Harmony but do NOT PatchAll in Phase 2.
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.2.3.0 (Phase 2.3 editor export readiness baseline).");
+                Log.Info("Loaded ADOFAI Renderist 0.2.4.0 (Phase 2.4 editor export skeleton).");
                 Log.Warn(UiText.LogStartupPerfWarn);
                 return true;
             }
@@ -92,6 +92,8 @@ namespace ADOFAI.Renderist
                     {
                         CaptureService.StopSequence("disabled");
                     }
+                    // Phase 2.4: Mod 禁用时安全取消编辑器导出会话。
+                    EditorExportController.Cancel("mod-disabled");
                     // Always safe to call even when no patches are registered.
                     Harmony?.UnpatchAll(HarmonyId);
                     Log.Info(UiText.LogDisabled);
@@ -529,6 +531,76 @@ namespace ADOFAI.Renderist
                     break;
             }
             GUILayout.Label(UiText.GuiPreflightPathCheckPrefix + dirSummary, GUI.skin.label);
+
+            // Phase 2.4: 编辑器导出骨架控制段（仅 EditorExportEnabled 时显示）
+            if (Settings.EditorExportEnabled)
+            {
+                GUILayout.Space(6f);
+                DrawEditorExportControlGui(report);
+            }
+        }
+
+        /// <summary>
+        /// 绘制编辑器导出骨架控制段（Phase 2.4）。
+        /// 仅在 Detailed Log + EditorExportEnabled 时显示。
+        /// 不新增 FPS / MaxFrames / Camera / UI / Replay 等配置控件。
+        /// </summary>
+        private static void DrawEditorExportControlGui(EditorExportReadinessReport report)
+        {
+            GUILayout.Label(UiText.GuiEditorExportSkeletonSectionTitle, GUI.skin.label);
+            GUILayout.Label(UiText.GuiEditorExportSkeletonNotImplementedWarn, GUI.skin.label);
+
+            EditorExportState state = EditorExportController.CurrentState;
+            string stateText;
+            switch (state)
+            {
+                case EditorExportState.Idle: stateText = UiText.GuiEditorExportStateIdle; break;
+                case EditorExportState.Preparing: stateText = UiText.GuiEditorExportStatePreparing; break;
+                case EditorExportState.Running: stateText = UiText.GuiEditorExportStateRunning; break;
+                case EditorExportState.Cleaning: stateText = UiText.GuiEditorExportStateCleaning; break;
+                case EditorExportState.Completed: stateText = UiText.GuiEditorExportStateCompleted; break;
+                case EditorExportState.Cancelled: stateText = UiText.GuiEditorExportStateCancelled; break;
+                case EditorExportState.Failed: stateText = UiText.GuiEditorExportStateFailed; break;
+                default: stateText = UiText.GuiEditorExportStateIdle; break;
+            }
+            GUILayout.Label(UiText.GuiEditorExportStatePrefix + stateText, GUI.skin.label);
+
+            EditorExportSession session = EditorExportController.CurrentSession;
+            string detail = (session != null && !string.IsNullOrEmpty(session.StateDetail))
+                ? session.StateDetail
+                : UiText.GuiEditorExportNotRunning;
+            GUILayout.Label(UiText.GuiEditorExportStateDetailPrefix + detail, GUI.skin.label);
+
+            string dir = (session != null && !string.IsNullOrEmpty(session.OutputDirectory))
+                ? session.OutputDirectory
+                : UiText.GuiEditorExportNotRunning;
+            GUILayout.Label(UiText.GuiEditorExportSessionDirPrefix + dir, GUI.skin.label);
+
+            string startedAt = (session != null && session.StartedAtUtc.HasValue)
+                ? session.StartedAtUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
+                : UiText.GuiEditorExportNotRunning;
+            GUILayout.Label(UiText.GuiEditorExportStartedAtPrefix + startedAt, GUI.skin.label);
+
+            long tick = session != null ? session.TickCount : 0;
+            GUILayout.Label(UiText.GuiEditorExportTickCountPrefix +
+                tick.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
+
+            GUILayout.Space(4f);
+            GUILayout.BeginHorizontal();
+            bool canStart = !EditorExportController.IsBusy &&
+                report != null && report.Readiness == EditorExportReadiness.Ready;
+            GUI.enabled = canStart;
+            if (GUILayout.Button(UiText.GuiEditorExportBtnStart))
+            {
+                EditorExportController.Start();
+            }
+            GUI.enabled = EditorExportController.IsBusy;
+            if (GUILayout.Button(UiText.GuiEditorExportBtnStop))
+            {
+                EditorExportController.Stop();
+            }
+            GUI.enabled = true;
+            GUILayout.EndHorizontal();
         }
 
         private static void DrawCaptureGUI()
@@ -605,17 +677,34 @@ namespace ADOFAI.Renderist
             }
 
             GUILayout.Space(6f);
+            bool editorExportBusy = EditorExportController.IsBusy;
             GUILayout.BeginHorizontal();
             if (GUILayout.Button(UiText.GuiBtnCaptureSingleNextTick))
             {
-                ExportCoordinator.TrySingleCaptureNextTick("gui");
+                if (editorExportBusy)
+                {
+                    Log.Warn(UiText.LogEditorExportF9F10Blocked);
+                }
+                else
+                {
+                    ExportCoordinator.TrySingleCaptureNextTick("gui");
+                }
             }
             if (!CaptureService.IsRecording)
             {
+                GUI.enabled = !editorExportBusy;
                 if (GUILayout.Button(UiText.GuiBtnStartSequence))
                 {
-                    ExportCoordinator.TryStartSequence("gui");
+                    if (editorExportBusy)
+                    {
+                        Log.Warn(UiText.LogEditorExportF9F10Blocked);
+                    }
+                    else
+                    {
+                        ExportCoordinator.TryStartSequence("gui");
+                    }
                 }
+                GUI.enabled = true;
             }
             else
             {
@@ -654,18 +743,38 @@ namespace ADOFAI.Renderist
 
                 if (Settings != null && Settings.HotkeysEnabled)
                 {
+                    // Phase 2.4: 编辑器导出会话进行中时阻止 F9/F10，避免状态耦合。
                     if (Input.GetKeyDown(Settings.SingleCaptureHotkey))
                     {
-                        ExportCoordinator.TrySingleCapture("hotkey");
+                        if (EditorExportController.IsBusy)
+                        {
+                            Log.Warn(UiText.LogEditorExportF9F10Blocked);
+                        }
+                        else
+                        {
+                            ExportCoordinator.TrySingleCapture("hotkey");
+                        }
                     }
                     if (Input.GetKeyDown(Settings.SequenceHotkey))
                     {
-                        if (CaptureService.IsRecording) CaptureService.StopSequence("user");
-                        else ExportCoordinator.TryStartSequence("hotkey");
+                        if (EditorExportController.IsBusy)
+                        {
+                            Log.Warn(UiText.LogEditorExportF9F10Blocked);
+                        }
+                        else if (CaptureService.IsRecording)
+                        {
+                            CaptureService.StopSequence("user");
+                        }
+                        else
+                        {
+                            ExportCoordinator.TryStartSequence("hotkey");
+                        }
                     }
                 }
 
                 CaptureService.Tick();
+                // Phase 2.4: 编辑器导出会话生命周期推进（不截图、不推进时间）。
+                EditorExportController.Tick();
             }
             catch (Exception ex)
             {

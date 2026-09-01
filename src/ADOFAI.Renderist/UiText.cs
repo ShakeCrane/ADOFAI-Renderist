@@ -154,6 +154,29 @@ namespace ADOFAI.Renderist
         public const string GuiEditorExportEnvIsFocusedPrefix = "Application.isFocused：";
         public const string GuiEditorExportEnvScreenSizePrefix = "屏幕分辨率：";
 
+        // ---------------- GUI: 编辑器导出骨架段（Phase 2.4） ----------------
+
+        public const string GuiEditorExportSkeletonSectionTitle = "编辑器导出骨架（实验性）";
+        public const string GuiEditorExportSkeletonNotImplementedWarn =
+            "Phase 2.4 尚未执行真实截图或非实时渲染。";
+        public const string GuiEditorExportStatePrefix = "会话状态：";
+        public const string GuiEditorExportStateDetailPrefix = "状态说明：";
+        public const string GuiEditorExportSessionDirPrefix = "会话目录：";
+        public const string GuiEditorExportStartedAtPrefix = "开始时间：";
+        public const string GuiEditorExportTickCountPrefix = "Tick 计数：";
+        public const string GuiEditorExportNotRunning = "（无活动会话）";
+
+        public const string GuiEditorExportStateIdle = "空闲";
+        public const string GuiEditorExportStatePreparing = "准备中";
+        public const string GuiEditorExportStateRunning = "运行中";
+        public const string GuiEditorExportStateCleaning = "清理中";
+        public const string GuiEditorExportStateCompleted = "已完成";
+        public const string GuiEditorExportStateCancelled = "已取消";
+        public const string GuiEditorExportStateFailed = "已失败";
+
+        public const string GuiEditorExportBtnStart = "开始编辑器导出";
+        public const string GuiEditorExportBtnStop = "停止编辑器导出";
+
         // ---------------- Log: ModEntry ----------------
 
         // 注：ModEntry.cs:46 启动日志（"Loaded ADOFAI Renderist X.Y.Z (...)" ）
@@ -179,6 +202,20 @@ namespace ADOFAI.Renderist
         // ---------------- Log: Explorer 打开目录（Phase 2.2.3） ----------------
 
         public const string LogOpenExplorerFailedFormat = "打开目录失败：{0}";
+
+        // ---------------- Log: 编辑器导出骨架（Phase 2.4） ----------------
+
+        // {0}=reason
+        public const string LogEditorExportStartRejectedFormat = "编辑器导出启动被拒绝：{0}";
+        // {0}=dir
+        public const string LogEditorExportStartedFormat = "编辑器导出会话已开始 -> {0}";
+        public const string LogEditorExportStopped = "编辑器导出会话已停止（用户）。";
+        // {0}=reason
+        public const string LogEditorExportCancelledFormat = "编辑器导出会话已取消：{0}";
+        // {0}=reason
+        public const string LogEditorExportFailedFormat = "编辑器导出会话失败：{0}";
+        public const string LogEditorExportF9F10Blocked =
+            "编辑器导出会话进行中，已阻止 F9/F10 截图请求。";
 
         // ---------------- Log: CaptureService ----------------
 
