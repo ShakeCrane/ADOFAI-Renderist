@@ -175,3 +175,15 @@ Desktop.ini
 *.pssc
 *.psd1~
 *.psm1~
+
+
+# ------------------------------------------------------------
+# Local build bootstrap (SDK / NuGet feed / caches)
+# ------------------------------------------------------------
+/.build-tools/
+
+
+# ------------------------------------------------------------
+# Web-GPT maintained project understanding note
+# ------------------------------------------------------------
+/PROJECT_UNDERSTANDING.md

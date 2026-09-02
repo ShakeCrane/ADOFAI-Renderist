@@ -23,6 +23,15 @@
   </PropertyGroup>
 
   <!--
+    net48 reference assemblies via NuGet, so the build also works on machines
+    without the .NET Framework 4.8 Developer Pack installed. PrivateAssets=all
+    keeps these out of the built DLL and out of the release zip.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!--
     Reference paths are resolved from the local ADOFAI install via:
       $(AdofaiManagedDir) — A Dance of Fire and Ice_Data\Managed
       $(AdofaiUmmDir)     — Managed\UnityModManager

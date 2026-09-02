@@ -10,10 +10,10 @@ supply them from their own local ADOFAI and UMM installation.
 ## Current Phase 2.0 baseline
 
 - Phase: `Phase 2.0 screenshot sequence MVP`
-- ADOFAI baseline: `v3.1.2`
+- ADOFAI baseline: `v3.2.0`
 - Unity baseline: `6000.3.10f1`
 - Target framework: `net48`
-- Unity Mod Manager baseline: `0.32.5` (`UnityModManager.dll` file version `0.32.5`, assembly version `0.32.5.0`)
+- Unity Mod Manager baseline: `0.32.4` (`UnityModManager.dll` file version `0.32.4`, assembly version `0.32.4.0`)
 - Harmony baseline: UMM-bundled `0Harmony.dll` file version `2.3.6.0`
 
 UMM / Harmony version differences are reported as warnings by
