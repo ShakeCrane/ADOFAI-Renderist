@@ -3,7 +3,7 @@
   "DisplayName": "ADOFAI Renderist",
   "Author": "ShakeCrane, Ice2974",
   "Version": "0.2.4.0",
-  "ManagerVersion": "0.32.4",
+  "ManagerVersion": "0.33.0",
   "AssemblyName": "ADOFAI.Renderist.dll",
   "EntryMethod": "ADOFAI.Renderist.ModEntry.Load"
 }

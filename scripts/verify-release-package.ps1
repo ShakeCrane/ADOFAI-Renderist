@@ -20,7 +20,7 @@
             Id            == ADOFAI.Renderist
             AssemblyName  == ADOFAI.Renderist.dll
             EntryMethod   == ADOFAI.Renderist.ModEntry.Load
-            ManagerVersion == 0.32.4
+            ManagerVersion == 0.33.0
             Version       == <expected>   (default: mod/Info.json Version)
       * DLL FileVersion or ProductVersion equals Info.json Version,
         guarding against packaging a stale build.
@@ -208,7 +208,7 @@ try {
                 Assert-True ([string]$infoObj.Id            -eq 'ADOFAI.Renderist')                     "Info.json Id mismatch: '$($infoObj.Id)'"
                 Assert-True ([string]$infoObj.AssemblyName  -eq 'ADOFAI.Renderist.dll')                 "Info.json AssemblyName mismatch: '$($infoObj.AssemblyName)'"
                 Assert-True ([string]$infoObj.EntryMethod   -eq 'ADOFAI.Renderist.ModEntry.Load')       "Info.json EntryMethod mismatch: '$($infoObj.EntryMethod)'"
-                Assert-True ([string]$infoObj.ManagerVersion -eq '0.32.4')                              "Info.json ManagerVersion mismatch: '$($infoObj.ManagerVersion)'"
+                Assert-True ([string]$infoObj.ManagerVersion -eq '0.33.0')                              "Info.json ManagerVersion mismatch: '$($infoObj.ManagerVersion)'"
                 Assert-True ([string]$infoObj.Version       -eq $ExpectedVersion)                       "Info.json Version mismatch: expected '$ExpectedVersion', got '$($infoObj.Version)'"
             }
         }

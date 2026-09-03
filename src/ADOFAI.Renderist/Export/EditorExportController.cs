@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.IO;
 using ADOFAI.Renderist.Capture;
 using ADOFAI.Renderist.Logging;
 
@@ -77,9 +78,13 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
+                // Phase 2.4 缺陷修复：使用确定性唯一会话目录。
+                // 基准名仍为 editor_<yyyyMMdd_HHmmss>；已存在时自动追加 _001 / _002 ...，
+                // 绝不静默复用已存在的会话目录，因此快速 Stop → Start 不会覆盖上一会话 metadata。
                 string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
-                string sessionStamp = "editor_" + stamp;
-                string dir = OutputPath.ResolveSessionDirectory(settings.OutputDirectory, sessionStamp);
+                string baseSessionName = "editor_" + stamp;
+                string dir = OutputPath.ResolveUniqueSessionDirectory(
+                    settings.OutputDirectory, baseSessionName, out string sessionId);
                 if (string.IsNullOrEmpty(dir))
                 {
                     LastStartRejectReason = "输出目录不可用";
@@ -87,7 +92,9 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
-                var session = new EditorExportSession(sessionStamp, dir, report.EditorEnv.SceneName)
+                // sessionId 使用唯一解析后的真实目录名（与返回目录末段一致），
+                // 保证 sessionId 与实际 session directory 的身份语义一致。
+                var session = new EditorExportSession(sessionId, dir, report.EditorEnv.SceneName)
                 {
                     State = EditorExportState.Preparing,
                     StateDetail = "正在准备会话。",
@@ -206,7 +213,7 @@ namespace ADOFAI.Renderist.Export
             }
         }
 
-        /// <summary>轻量环境校验：Mod 启用、未离开编辑器、F9/F10 未占用、定期目录校验。</summary>
+        /// <summary>轻量环境校验：Mod 启用、未离开编辑器、F9/F10 未占用、定期校验当前会话固定目录。</summary>
         private static bool IsEnvironmentStillValid(EditorExportSession s, out string reason)
         {
             reason = null;
@@ -232,14 +239,12 @@ namespace ADOFAI.Renderist.Export
 
             if (s.TickCount % _dirRecheckInterval == 0)
             {
-                Settings settings = ModEntry.Settings;
-                if (settings == null)
-                {
-                    reason = "settings-unavailable";
-                    return false;
-                }
-                DirectoryValidationResult dir = OutputPath.ValidateDirectory(settings.OutputDirectory);
-                if (dir.Outcome == DirectoryValidationOutcome.Reject)
+                // Phase 2.4 缺陷修复：复核对象是“当前会话自己的固定目录”，
+                // 而不是实时全局 Settings.OutputDirectory。
+                // 运行中修改 Settings 只影响下一次 Start，
+                // 不得因新全局路径非法而取消、切换或改写当前健康会话。
+                string sessionDir = s.OutputDirectory;
+                if (string.IsNullOrEmpty(sessionDir) || !Directory.Exists(sessionDir))
                 {
                     reason = "output-dir-invalid";
                     return false;

@@ -264,6 +264,10 @@ namespace ADOFAI.Renderist
 
         public const string LogOutDirPrepareFailed = "无法准备任何输出目录；截图已中止。";
 
+        // Phase 2.4 缺陷修复：编辑器导出会话目录唯一名耗尽（{0}=尝试次数，{1}=基础名）。
+        public const string LogOutDirUniqueNameExhaustedFormat =
+            "会话目录唯一名已耗尽（尝试 {0} 次）：{1}";
+
         // {0}=configured path, {1}=exception message
         public const string LogOutDirInvalidPathFormat = "OutputDirectory 不是合法路径：{0}（{1}）";
 

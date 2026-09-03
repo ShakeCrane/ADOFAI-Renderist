@@ -44,9 +44,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$baselineAdofaiVersion = '3.2.0'
+$baselineAdofaiVersion = '3.3.1'
 $baselineUnityVersion = '6000.3.10f1'
-$baselineUmmVersion = '0.32.4'
+$baselineUmmVersion = '0.33.0'
 $baselineHarmonyVersion = '2.3.6.0'
 
 $repoRoot     = Split-Path -Parent $PSScriptRoot

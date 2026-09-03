@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.IO;
 using UnityEngine;
 using ADOFAI.Renderist.Logging;
@@ -25,6 +26,9 @@ namespace ADOFAI.Renderist.Capture
     internal static class OutputPath
     {
         private const string DefaultSubdirectory = "ADOFAI.Renderist/captures";
+
+        /// <summary>编辑器导出会话目录名冲突时最多尝试的后缀数量。</summary>
+        private const int MaxUniqueNameAttempts = 1000;
 
         /// <summary>
         /// Resolve the output directory for a new session and ensure it exists.
@@ -60,6 +64,101 @@ namespace ADOFAI.Renderist.Capture
             if (TryCreate(defaultDir)) return defaultDir;
 
             Log.Error(UiText.LogOutDirPrepareFailed);
+            return null;
+        }
+
+        /// <summary>
+        /// 为编辑器导出解析一个保证“尚不存在”的全新会话目录（Phase 2.4 缺陷修复）。
+        ///
+        /// 与 <see cref="ResolveSessionDirectory"/> 不同：已存在的目录绝不复用。
+        /// 名称冲突时依次尝试 "&lt;baseName&gt;_001" / "_002" ... 直到找到空闲名称；
+        /// 达到 <see cref="MaxUniqueNameAttempts"/> 仍未命中则返回 null。
+        ///
+        /// 确定性唯一性：不依赖时间戳的毫秒精度，已存在目录不会被静默复用，
+        /// 因此快速 Stop → Start 不会复用旧目录，也不会覆盖上一会话 metadata。
+        /// F9/F10 的 single_* / seq_* 仍使用 <see cref="ResolveSessionDirectory"/>，行为不变。
+        /// </summary>
+        /// <param name="configured">Settings.OutputDirectory（未经过滤的原值）。</param>
+        /// <param name="baseName">基础目录名（如 editor_20260902_120000）。</param>
+        /// <param name="finalName">实际使用的最终目录名（与返回目录的末段一致）。</param>
+        /// <returns>创建成功的完整目录路径；失败返回 null（finalName 亦为 null）。</returns>
+        public static string ResolveUniqueSessionDirectory(string configured, string baseName, out string finalName)
+        {
+            finalName = null;
+
+            if (!string.IsNullOrEmpty(configured))
+            {
+                string trimmed = configured.Trim();
+                if (TryAcceptConfigured(trimmed, out string root))
+                {
+                    string dir = TryCreateUnique(root, baseName, out string name);
+                    if (dir != null)
+                    {
+                        finalName = name;
+                        return dir;
+                    }
+                    Log.Warn(UiText.Format(UiText.LogOutDirConfiguredCreateFailedFormat, Path.Combine(root, baseName)));
+                    // 与 ResolveSessionDirectory 一致：配置根创建失败时回退默认根，不直接失败。
+                }
+            }
+
+            string defaultRoot;
+            try
+            {
+                defaultRoot = Path.Combine(Application.persistentDataPath, DefaultSubdirectory);
+            }
+            catch (Exception ex)
+            {
+                Log.Exception(UiText.LogExPersistentDataPathFailed, ex);
+                finalName = null;
+                return null;
+            }
+
+            string defaultDir = TryCreateUnique(defaultRoot, baseName, out string defaultName);
+            if (defaultDir != null)
+            {
+                finalName = defaultName;
+                return defaultDir;
+            }
+
+            finalName = null;
+            Log.Error(UiText.LogOutDirPrepareFailed);
+            return null;
+        }
+
+        /// <summary>
+        /// 在 root 下寻找空闲目录名："&lt;baseName&gt;"、"&lt;baseName&gt;_001"、"_002" ...
+        /// 已存在的目录绝不复用（Directory.CreateDirectory 对已存在目录静默成功，
+        /// 必须先探测再创建）。首个候选因 IO/权限创建失败即失败返回，避免无意义重试。
+        /// </summary>
+        private static string TryCreateUnique(string root, string baseName, out string finalName)
+        {
+            finalName = null;
+            for (int i = 0; i < MaxUniqueNameAttempts; i++)
+            {
+                string name = i == 0
+                    ? baseName
+                    : baseName + "_" + i.ToString("000", CultureInfo.InvariantCulture);
+                string dir = Path.Combine(root, name);
+
+                // 冲突：目录已存在 → 绝不复用，继续尝试下一个后缀。
+                if (Directory.Exists(dir))
+                {
+                    continue;
+                }
+
+                if (!TryCreate(dir))
+                {
+                    // 非冲突型创建失败：立即返回，由调用方决定回退默认根或失败。
+                    finalName = null;
+                    return null;
+                }
+
+                finalName = name;
+                return dir;
+            }
+
+            Log.Warn(UiText.Format(UiText.LogOutDirUniqueNameExhaustedFormat, MaxUniqueNameAttempts, baseName));
             return null;
         }
 
