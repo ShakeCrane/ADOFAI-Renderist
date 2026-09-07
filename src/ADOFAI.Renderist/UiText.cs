@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 
 namespace ADOFAI.Renderist
 {
@@ -177,6 +177,54 @@ namespace ADOFAI.Renderist
         public const string GuiEditorExportBtnStart = "开始编辑器导出";
         public const string GuiEditorExportBtnStop = "停止编辑器导出";
 
+        // ---------------- GUI: 编辑器时间链探针（Phase 3.0） ----------------
+
+        public const string GuiTimeProbeSectionTitle = "编辑器时间链探针（实验性）";
+        public const string GuiTimeProbeStatusPrefix = "探针状态：";
+        public const string GuiTimeProbeIdle = "未运行";
+        public const string GuiTimeProbeRunning = "运行中";
+        public const string GuiTimeProbeLogPathPrefix = "日志路径：";
+        public const string GuiTimeProbeBtnStart = "开始时间探针";
+        public const string GuiTimeProbeBtnStop = "停止时间探针";
+
+        // ---------------- GUI: Editor Forced Visual Clock PoC（Phase 3.0） ----------------
+
+        public const string GuiVcPocSectionTitle = "Visual Clock PoC（实验性）";
+        public const string GuiVcPocStatusPrefix = "PoC 状态：";
+        public const string GuiVcPocIdle = "未运行";
+        public const string GuiVcPocRunning = "运行中";
+        public const string GuiVcPocFramePrefix = "logicalFrame / 180：";
+        public const string GuiVcPocLogPathPrefix = "日志路径：";
+        public const string GuiVcPocBtnStart = "开始 Visual Clock PoC";
+        public const string GuiVcPocBtnStop = "停止 Visual Clock PoC";
+        public const string GuiVcPocNotRunning = "（无活动 PoC）";
+        public const string GuiDvaModePrefix = "RDC.auto 对照模式：";
+        public const string GuiDvaModePreserve = "Preserve";
+        public const string GuiDvaModeTemporaryTrue = "TemporaryTrueDuringHit";
+        public const string GuiDvaProbeBtnStart = "开始 DVA Runtime Probe";
+        public const string GuiDvaProbeRunning = "当前模式：DVA Runtime Probe";
+        public const string GuiVcOnlyRunning = "当前模式：Visual Clock only";
+
+        // ---------------- Log: Editor Visual Clock PoC（Phase 3.0） ----------------
+
+        public const string LogVcPocStarted = "Visual Clock PoC 已启动（不含 auto-hit）。";
+        public const string LogDvaProbeStarted = "DVA Runtime Probe 已启动（仅支持简单谱面）。";
+        public const string LogVcPocAlreadyRunning = "Visual Clock PoC 已在运行。";
+        // {0}=reason
+        public const string LogVcPocStartRejectedFormat = "Visual Clock PoC 启动被拒绝：{0}";
+        public const string LogVcPocNoOutputDir = "无法准备 PoC 输出目录；Visual Clock PoC 已中止。";
+        // {0}=log file path
+        public const string LogVcPocLogPathFormat = "Visual Clock PoC 日志：{0}";
+        // {0}=reason
+        public const string LogVcPocStoppedFormat = "Visual Clock PoC 已停止（{0}）。";
+        public const string LogVcPocPlaybackRequested = "已请求官方 Editor Play（startFloor=0）。";
+        public const string LogVcPocStartFailed = "Visual Clock PoC 启动失败";
+        public const string LogVcPocTickError = "Visual Clock PoC 运行异常";
+        public const string LogVcPocRestoreError = "Visual Clock PoC 状态恢复异常";
+        public const string LogVcPocStartPlaybackFailed = "Visual Clock PoC：启动官方 Editor Play 失败";
+        public const string LogVcPocAnchorAbnormal = "Visual Clock PoC：起始锚点明显异常，终止测试（不做复杂修复）。";
+        public const string LogVcPocAnchorFailed = "Visual Clock PoC：读取时间锚点失败";
+
         // ---------------- Log: ModEntry ----------------
 
         // 注：ModEntry.cs:46 启动日志（"Loaded ADOFAI Renderist X.Y.Z (...)" ）
@@ -216,6 +264,20 @@ namespace ADOFAI.Renderist
         public const string LogEditorExportFailedFormat = "编辑器导出会话失败：{0}";
         public const string LogEditorExportF9F10Blocked =
             "编辑器导出会话进行中，已阻止 F9/F10 截图请求。";
+
+        // ---------------- Log: 编辑器时间链探针（Phase 3.0） ----------------
+
+        public const string LogTimeProbeStarted = "编辑器时间探针已启动（仅观察，不修改播放状态）。";
+        // {0}=log file path
+        public const string LogTimeProbeLogPathFormat = "探针日志：{0}";
+        // {0}=reason
+        public const string LogTimeProbeStoppedFormat = "编辑器时间探针已停止（{0}）。";
+        public const string LogTimeProbeAlreadyRunning = "时间探针已在运行。";
+        public const string LogTimeProbeRejectedNotEditor = "时间探针仅可在编辑器中使用，已拒绝启动。";
+        public const string LogTimeProbeNoOutputDir = "无法准备探针输出目录；时间探针已中止。";
+        // {0}=error message
+        public const string LogTimeProbeStartFailedFormat = "时间探针启动失败：{0}";
+        public const string LogTimeProbeError = "编辑器时间探针运行异常";
 
         // ---------------- Log: CaptureService ----------------
 

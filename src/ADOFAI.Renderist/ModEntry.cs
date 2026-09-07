@@ -5,6 +5,7 @@ using HarmonyLib;
 using UnityEngine;
 using UnityModManagerNet;
 using ADOFAI.Renderist.Capture;
+using ADOFAI.Renderist.Diagnostics;
 using ADOFAI.Renderist.Export;
 using ADOFAI.Renderist.Gui;
 using ADOFAI.Renderist.Logging;
@@ -25,7 +26,7 @@ namespace ADOFAI.Renderist
         /// 由 scripts/set-version.ps1 自动同步。供 CaptureService metadata.json version 字段引用，
         /// 避免 metadata version 与 mod version 脱节。
         /// </summary>
-        internal const string ModVersion = "0.2.4.0";
+        internal const string ModVersion = "0.3.0.0";
 
         internal static UnityModManager.ModEntry Mod;
         internal static UnityModManager.ModEntry.ModLogger Logger;
@@ -62,7 +63,7 @@ namespace ADOFAI.Renderist
                 // Instantiate Harmony but do NOT PatchAll in Phase 2.
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.2.4.0 (Phase 2.4 editor export skeleton).");
+                Log.Info("Loaded ADOFAI Renderist 0.3.0.0 (Phase 3.0 editor time probe).");
                 Log.Warn(UiText.LogStartupPerfWarn);
                 return true;
             }
@@ -94,6 +95,10 @@ namespace ADOFAI.Renderist
                     }
                     // Phase 2.4: Mod 禁用时安全取消编辑器导出会话。
                     EditorExportController.Cancel("mod-disabled");
+                    // Phase 3.0: Mod 禁用时安全停止并关闭时间探针日志。
+                    EditorTimeProbe.Stop("mod-disabled");
+                    // Phase 3.0: Mod 禁用时安全停止并恢复 Visual Clock PoC。
+                    EditorVisualClockPoc.Stop("mod-disabled");
                     // Always safe to call even when no patches are registered.
                     Harmony?.UnpatchAll(HarmonyId);
                     Log.Info(UiText.LogDisabled);
@@ -362,6 +367,10 @@ namespace ADOFAI.Renderist
 
                 GUILayout.Space(6f);
                 DrawEditorExportReadinessGui();
+                GUILayout.Space(6f);
+                DrawTimeProbeGui();
+                GUILayout.Space(6f);
+                DrawVisualClockPocGui();
             }
         }
 
@@ -603,6 +612,115 @@ namespace ADOFAI.Renderist
             GUILayout.EndHorizontal();
         }
 
+        /// <summary>
+        /// 绘制编辑器时间链探针控制段（Phase 3.0 临时诊断工具）。
+        /// 仅提供 Start / Stop 与日志路径展示，不承载任何导出配置。
+        /// 后续可随诊断完成而删除。
+        /// </summary>
+        private static void DrawTimeProbeGui()
+        {
+            GUILayout.Label(UiText.GuiTimeProbeSectionTitle, GUI.skin.label);
+
+            string status = EditorTimeProbe.IsRunning
+                ? UiText.GuiTimeProbeRunning
+                : UiText.GuiTimeProbeIdle;
+            GUILayout.Label(UiText.GuiTimeProbeStatusPrefix + status, GUI.skin.label);
+
+            string path = EditorTimeProbe.LogPath;
+            if (!string.IsNullOrEmpty(path))
+            {
+                GUILayout.Label(UiText.GuiTimeProbeLogPathPrefix + path, GUI.skin.label);
+            }
+
+            GUILayout.Space(4f);
+            GUILayout.BeginHorizontal();
+            if (!EditorTimeProbe.IsRunning)
+            {
+                if (GUILayout.Button(UiText.GuiTimeProbeBtnStart))
+                {
+                    EditorTimeProbe.Start();
+                }
+            }
+            else
+            {
+                if (GUILayout.Button(UiText.GuiTimeProbeBtnStop))
+                {
+                    EditorTimeProbe.Stop("user");
+                }
+            }
+            GUILayout.EndHorizontal();
+        }
+
+        /// <summary>
+        /// 绘制 Editor Forced Visual Clock PoC 控制段（Phase 3.0 临时诊断工具）。
+        /// 最小入口：开始/停止、状态、logicalFrame、日志路径。不承载导出配置。
+        /// </summary>
+        private static void DrawVisualClockPocGui()
+        {
+            GUILayout.Label(UiText.GuiVcPocSectionTitle, GUI.skin.label);
+
+            bool running = EditorVisualClockPoc.IsRunning;
+            GUILayout.Label(UiText.GuiVcPocStatusPrefix +
+                (running ? UiText.GuiVcPocRunning : UiText.GuiVcPocIdle), GUI.skin.label);
+
+            if (running)
+            {
+                GUILayout.Label(UiText.GuiVcPocFramePrefix +
+                    EditorVisualClockPoc.LogicalFrameIndex.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
+                GUILayout.Label("运行状态：" + EditorVisualClockPoc.StateName, GUI.skin.label);
+                GUILayout.Label("playerFloor：" +
+                    EditorVisualClockPoc.CurrentPlayerFloor.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
+                GUILayout.Label("totalHitCount：" +
+                    EditorVisualClockPoc.TotalHitCount.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
+            }
+
+            string path = EditorVisualClockPoc.LogPath;
+            if (!string.IsNullOrEmpty(path))
+            {
+                GUILayout.Label(UiText.GuiVcPocLogPathPrefix + path, GUI.skin.label);
+            }
+
+            GUILayout.Label(UiText.GuiDvaModePrefix +
+                EditorVisualClockPoc.SelectedRdcAutoMode, GUI.skin.label);
+
+            GUILayout.Space(4f);
+            if (!running)
+            {
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button(UiText.GuiDvaModePreserve))
+                {
+                    EditorVisualClockPoc.SelectedRdcAutoMode =
+                        EditorVisualClockPoc.RdcAutoExperimentMode.Preserve;
+                }
+                if (GUILayout.Button(UiText.GuiDvaModeTemporaryTrue))
+                {
+                    EditorVisualClockPoc.SelectedRdcAutoMode =
+                        EditorVisualClockPoc.RdcAutoExperimentMode.TemporaryTrueDuringHit;
+                }
+                GUILayout.EndHorizontal();
+
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button(UiText.GuiVcPocBtnStart))
+                {
+                    EditorVisualClockPoc.Start();
+                }
+                if (GUILayout.Button(UiText.GuiDvaProbeBtnStart))
+                {
+                    EditorVisualClockPoc.StartDvaProbe();
+                }
+                GUILayout.EndHorizontal();
+            }
+            else
+            {
+                GUILayout.Label(EditorVisualClockPoc.IsDvaProbe
+                    ? UiText.GuiDvaProbeRunning
+                    : UiText.GuiVcOnlyRunning, GUI.skin.label);
+                if (GUILayout.Button(UiText.GuiVcPocBtnStop))
+                {
+                    EditorVisualClockPoc.Stop("user");
+                }
+            }
+        }
         private static void DrawCaptureGUI()
         {
             // Status block — never reuses the phase label string to keep
@@ -775,6 +893,10 @@ namespace ADOFAI.Renderist
                 CaptureService.Tick();
                 // Phase 2.4: 编辑器导出会话生命周期推进（不截图、不推进时间）。
                 EditorExportController.Tick();
+                // Phase 3.0: 编辑器时间链探针采样与跃迁检测（仅观察）。
+                EditorTimeProbe.Tick();
+                // Phase 3.0: Editor Forced Visual Clock PoC 状态机推进。
+                EditorVisualClockPoc.Tick();
             }
             catch (Exception ex)
             {
