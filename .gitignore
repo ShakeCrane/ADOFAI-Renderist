@@ -159,16 +159,6 @@ Desktop.ini
 
 
 # ------------------------------------------------------------
-# Claude Code / local agent state
-# Keep CLAUDE.md tracked, but ignore local agent/session files.
-# ------------------------------------------------------------
-.claude/settings.local.json
-.claude/local/
-.claude/cache/
-.claude/tmp/
-
-
-# ------------------------------------------------------------
 # PowerShell local execution artifacts
 # ------------------------------------------------------------
 *.ps1xml
@@ -183,7 +173,3 @@ Desktop.ini
 /.build-tools/
 
 
-# ------------------------------------------------------------
-# Web-GPT maintained project understanding note
-# ------------------------------------------------------------
-/PROJECT_UNDERSTANDING.md
