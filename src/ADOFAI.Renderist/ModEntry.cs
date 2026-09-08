@@ -26,7 +26,7 @@ namespace ADOFAI.Renderist
         /// 由 scripts/set-version.ps1 自动同步。供 CaptureService metadata.json version 字段引用，
         /// 避免 metadata version 与 mod version 脱节。
         /// </summary>
-        internal const string ModVersion = "0.3.0.0";
+        internal const string ModVersion = "0.3.1.0";
 
         internal static UnityModManager.ModEntry Mod;
         internal static UnityModManager.ModEntry.ModLogger Logger;
@@ -63,7 +63,7 @@ namespace ADOFAI.Renderist
                 // Instantiate Harmony but do NOT PatchAll in Phase 2.
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.3.0.0 (Phase 3.0 editor time probe).");
+                Log.Info("Loaded ADOFAI Renderist 0.3.1.0 (Phase 3.1 Official Autoplay Deterministic Frame Scheduler).");
                 Log.Warn(UiText.LogStartupPerfWarn);
                 return true;
             }
@@ -99,6 +99,7 @@ namespace ADOFAI.Renderist
                     EditorTimeProbe.Stop("mod-disabled");
                     // Phase 3.0: Mod 禁用时安全停止并恢复 Visual Clock PoC。
                     EditorVisualClockPoc.Stop("mod-disabled");
+                    OfflineAudioClockPoC.Stop("mod-disabled");
                     // Always safe to call even when no patches are registered.
                     Harmony?.UnpatchAll(HarmonyId);
                     Log.Info(UiText.LogDisabled);
@@ -371,6 +372,8 @@ namespace ADOFAI.Renderist
                 DrawTimeProbeGui();
                 GUILayout.Space(6f);
                 DrawVisualClockPocGui();
+                GUILayout.Space(6f);
+                DrawDeterministicCorePocGui();
             }
         }
 
@@ -556,8 +559,8 @@ namespace ADOFAI.Renderist
         /// </summary>
         private static void DrawEditorExportControlGui(EditorExportReadinessReport report)
         {
-            GUILayout.Label(UiText.GuiEditorExportSkeletonSectionTitle, GUI.skin.label);
-            GUILayout.Label(UiText.GuiEditorExportSkeletonNotImplementedWarn, GUI.skin.label);
+            GUILayout.Label(UiText.GuiEditorExportControlSectionTitle, GUI.skin.label);
+            GUILayout.Label(UiText.GuiEditorExportControlWarn, GUI.skin.label);
 
             EditorExportState state = EditorExportController.CurrentState;
             string stateText;
@@ -593,6 +596,17 @@ namespace ADOFAI.Renderist
             long tick = session != null ? session.TickCount : 0;
             GUILayout.Label(UiText.GuiEditorExportTickCountPrefix +
                 tick.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
+
+            if (DeterministicFrameScheduler.IsRunning)
+            {
+                GUILayout.Label(UiText.GuiSchedulerOutputFramePrefix +
+                    DeterministicFrameScheduler.OutputFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                    " / " + DeterministicFrameScheduler.TargetFrameCount.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
+                GUILayout.Label(UiText.GuiSchedulerCapturedPrefix +
+                    DeterministicFrameScheduler.CapturedFrameCount.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
+                GUILayout.Label(UiText.GuiSchedulerStatusPrefix +
+                    DeterministicFrameScheduler.Status.ToString(), GUI.skin.label);
+            }
 
             GUILayout.Space(4f);
             GUILayout.BeginHorizontal();
@@ -666,7 +680,8 @@ namespace ADOFAI.Renderist
             if (running)
             {
                 GUILayout.Label(UiText.GuiVcPocFramePrefix +
-                    EditorVisualClockPoc.LogicalFrameIndex.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
+                    EditorVisualClockPoc.LogicalFrameIndex.ToString(CultureInfo.InvariantCulture) + " / " +
+                    EditorVisualClockPoc.TargetLogicalFrameCount.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
                 GUILayout.Label("运行状态：" + EditorVisualClockPoc.StateName, GUI.skin.label);
                 GUILayout.Label("playerFloor：" +
                     EditorVisualClockPoc.CurrentPlayerFloor.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
@@ -704,6 +719,10 @@ namespace ADOFAI.Renderist
                 {
                     EditorVisualClockPoc.Start();
                 }
+                if (GUILayout.Button(UiText.GuiFrameOrderProbeBtnStart))
+                {
+                    EditorVisualClockPoc.StartFrameOrderProbe();
+                }
                 if (GUILayout.Button(UiText.GuiDvaProbeBtnStart))
                 {
                     EditorVisualClockPoc.StartDvaProbe();
@@ -714,12 +733,31 @@ namespace ADOFAI.Renderist
             {
                 GUILayout.Label(EditorVisualClockPoc.IsDvaProbe
                     ? UiText.GuiDvaProbeRunning
-                    : UiText.GuiVcOnlyRunning, GUI.skin.label);
+                    : (EditorVisualClockPoc.IsFrameOrderProbe
+                        ? UiText.GuiFrameOrderProbeRunning
+                        : UiText.GuiVcOnlyRunning), GUI.skin.label);
                 if (GUILayout.Button(UiText.GuiVcPocBtnStop))
                 {
                     EditorVisualClockPoc.Stop("user");
                 }
             }
+        }
+        private static void DrawDeterministicCorePocGui()
+        {
+            GUILayout.Label("Route B 核心 PoC（OfflineAudioClock + RenderistAutoPlay）", GUI.skin.label);
+            GUILayout.Label("状态：" + OfflineAudioClockPoC.StateName + "，帧："
+                + OfflineAudioClockPoC.LogicalFrameIndex + " / "
+                + OfflineAudioClockPoC.TargetLogicalFrameCount + "，Hit："
+                + OfflineAudioClockPoC.TotalHitCount, GUI.skin.label);
+            if (!string.IsNullOrEmpty(OfflineAudioClockPoC.LogPath))
+                GUILayout.Label("日志：" + OfflineAudioClockPoC.LogPath, GUI.skin.label);
+            if (!string.IsNullOrEmpty(OfflineAudioClockPoC.ComparisonPath))
+                GUILayout.Label("对比：" + OfflineAudioClockPoC.ComparisonPath, GUI.skin.label);
+            if (!OfflineAudioClockPoC.IsRunning)
+            {
+                if (GUILayout.Button("启动 Route B deterministic core PoC")) OfflineAudioClockPoC.Start();
+            }
+            else if (GUILayout.Button("停止 Route B deterministic core PoC")) OfflineAudioClockPoC.Stop("user");
         }
         private static void DrawCaptureGUI()
         {
@@ -897,6 +935,7 @@ namespace ADOFAI.Renderist
                 EditorTimeProbe.Tick();
                 // Phase 3.0: Editor Forced Visual Clock PoC 状态机推进。
                 EditorVisualClockPoc.Tick();
+                OfflineAudioClockPoC.Tick();
             }
             catch (Exception ex)
             {

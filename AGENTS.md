@@ -55,15 +55,42 @@ ADOFAI-Renderist 是一个基于 **Unity Mod Manager（UMM）** 的 ADOFAI 模�
 - 提交
 - 按任务需要维护 `CHANGELOG.md` / `DEVLOG.md`
 
-### PROJECT\_UNDERSTANDING.md
+### PROJECT_UNDERSTANDING.md
 
-`PROJECT_UNDERSTANDING.md` 是跨会话项目状态来源。
+`PROJECT_UNDERSTANDING.md` 是 Web ChatGPT、GPT Work、DSH 及其他参与项目工作的 Agent 之间的跨会话、跨模型项目状态来源。
 
 规则：
 
-- 仅 Web ChatGPT 维护
-- DSH 只能读取
-- DSH 禁止创建、修改、重写或格式化该文件
+- 所有参与项目工作的 Agent 在开始任务前都应读取
+- Web ChatGPT、GPT Work、DSH 及其他执行 Agent 均可按需维护
+- 以下情况通常应更新：
+1) 新的重要行为或技术事实得到验证
+2) 原有结论被证伪或需要修正
+3) Hook、内部类、方法、字段或调用关系得到可靠确认
+4) 技术路线被确定、调整或排除
+5) PoC 得到重要成功或失败结论
+6) 当前实现基线发生变化
+7) 出现新的限制、风险、阻塞或兼容性事实
+8) 原“待验证”事项经构建、测试、日志或实机验证后得到结论
+9) 下一位 Agent 若不知道该信息，可能重复调查或做出错误判断
+- 以下情况通常无需更新：
+1) 单纯机械 coding
+2) 格式化或重命名
+3) 不影响项目理解的小型实现细节
+4) 临时实验和逐条命令
+5) 已被现有文档准确覆盖的信息
+6) 没有产生新项目知识的常规构建、打包或测试
+
+- 宁可及时记录一个对后续 Agent 有用的可靠结论，也不要因为“变化不够重大”而让关键上下文只存在于单次 Agent 会话中。
+- 更新前必须结合实际仓库、diff、构建、测试、日志或其他可靠证据核实。
+- 发现旧内容过时或错误时，应直接修正，而不是继续追加冲突信息。
+
+优先级：
+
+- 规则冲突：当前用户要求 > `AGENTS.md` > `PROJECT_UNDERSTANDING.md`
+- 事实冲突：实际仓库、diff、构建、测试和运行结果 > `PROJECT_UNDERSTANDING.md`
+
+不得因为 `PROJECT_UNDERSTANDING.md` 中已有记录，就跳过必要的仓库检查或把未经验证的信息直接视为事实。
 
 ---
 
@@ -256,13 +283,10 @@ ADOFAI.Renderist.zip
 5. 风险 / 待确认项
 6. 是否修改版本号
 7. 是否修改 README
-8. 是否修改 PROJECT\_UNDERSTANDING.md
-
-最后一项正常情况下必须为：
-
-```text
+8. 必须明确说明：
 PROJECT_UNDERSTANDING.md 未修改。
-```
+或：
+PROJECT_UNDERSTANDING.md 已更新：<简述更新内容及依据>
 
 ---
 

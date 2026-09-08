@@ -5,7 +5,7 @@
     <RootNamespace>ADOFAI.Renderist</RootNamespace>
     <AssemblyName>ADOFAI.Renderist</AssemblyName>
     <Product>ADOFAI Renderist</Product>
-    <Version>0.3.0.0</Version>
+    <Version>0.3.1.0</Version>
     <Company>ShakeCrane, Ice2974</Company>
     <Copyright>Copyright (c) ShakeCrane, Ice2974</Copyright>
     <Description>Non-realtime / controlled / reproducible render export plugin for A Dance of Fire and Ice (UMM mod).</Description>
@@ -74,9 +74,30 @@
       <SpecificVersion>false</SpecificVersion>
     </Reference>
 
+    <!-- Phase 3.1: Texture2D.EncodeToPNG for the deterministic synchronous
+         readback path (ReadPixels -> EncodeToPNG -> File.WriteAllBytes). -->
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>$(AdofaiManagedDir)\UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+      <SpecificVersion>false</SpecificVersion>
+    </Reference>
+
     <!-- Phase 2.0: legacy Input.GetKeyDown / KeyCode for hotkeys (F9 / F10). -->
     <Reference Include="UnityEngine.InputLegacyModule">
       <HintPath>$(AdofaiManagedDir)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+      <SpecificVersion>false</SpecificVersion>
+    </Reference>
+
+    <!-- Route B architecture PoC: AudioRenderer sample cursor to discard buffer. -->
+    <Reference Include="UnityEngine.AudioModule">
+      <HintPath>$(AdofaiManagedDir)\UnityEngine.AudioModule.dll</HintPath>
+      <Private>false</Private>
+      <SpecificVersion>false</SpecificVersion>
+    </Reference>
+
+    <Reference Include="Unity.Collections">
+      <HintPath>$(AdofaiManagedDir)\Unity.Collections.dll</HintPath>
       <Private>false</Private>
       <SpecificVersion>false</SpecificVersion>
     </Reference>

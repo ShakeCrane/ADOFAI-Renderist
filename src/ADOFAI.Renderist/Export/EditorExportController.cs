@@ -7,17 +7,16 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 编辑器导出会话控制器（Phase 2.4）。
+    /// 编辑器导出会话控制器（Phase 3.1）。
     ///
-    /// 本类只维护会话生命周期与 Tick 计数，不执行截图、不推进游戏时间、不控制相机 / UI。
+    /// 本类维护会话生命周期（Preparing / Running / 终态）并把真实导出工作
+    /// 交给 <see cref="DeterministicFrameScheduler"/>：
+    ///   * Start：校验就绪 + 创建独立会话目录 + 启动 scheduler
+    ///   * Stop：用户主动停止 → scheduler StopNow("user") → 终态 Completed
+    ///   * Cancel：环境失效 / Mod 禁用 → scheduler StopNow("cancelled") → 终态 Cancelled
+    ///   * Tick：推进 scheduler 并观察其是否进入 Completed / Cancelled / Failed
     ///
-    /// 入口：
-    ///   * Start：校验就绪并创建会话目录 + 初始 metadata，进入 Running
-    ///   * Stop：用户主动停止，Running -> Cleaning -> Completed
-    ///   * Cancel：环境失效 / Mod 禁用，进入 Cleaning -> Cancelled
-    ///   * Tick：每 OnUpdate 调用，推进 TickCount 并校验环境
-    ///
-    /// 所有收尾流程幂等，重复调用不会重复破坏状态或抛出异常。
+    /// 所有收尾流程幂等；不会重复恢复 scheduler 状态。
     /// </summary>
     internal static class EditorExportController
     {
@@ -42,7 +41,7 @@ namespace ADOFAI.Renderist.Export
 
         /// <summary>
         /// 启动编辑器导出会话。成功返回 true。
-        /// 防止重复启动；拒绝时不创建会话目录、不写 metadata。
+        /// 防止重复启动；拒绝时不创建会话目录、不写 metadata、不动游戏状态。
         /// </summary>
         public static bool Start()
         {
@@ -78,9 +77,7 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
-                // Phase 2.4 缺陷修复：使用确定性唯一会话目录。
-                // 基准名仍为 editor_<yyyyMMdd_HHmmss>；已存在时自动追加 _001 / _002 ...，
-                // 绝不静默复用已存在的会话目录，因此快速 Stop → Start 不会覆盖上一会话 metadata。
+                // 确定性唯一会话目录：绝不静默复用已存在的目录。
                 string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
                 string baseSessionName = "editor_" + stamp;
                 string dir = OutputPath.ResolveUniqueSessionDirectory(
@@ -92,12 +89,17 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
-                // sessionId 使用唯一解析后的真实目录名（与返回目录末段一致），
-                // 保证 sessionId 与实际 session directory 的身份语义一致。
+                int outputFps = settings.EditorTargetFrameRate > 0
+                    ? settings.EditorTargetFrameRate
+                    : DeterministicFrameScheduler.OutputFps;
+                int targetFrameCount = DeterministicFrameScheduler.DefaultTargetFrameCount;
+
                 var session = new EditorExportSession(sessionId, dir, report.EditorEnv.SceneName)
                 {
                     State = EditorExportState.Preparing,
-                    StateDetail = "正在准备会话。",
+                    StateDetail = "正在启动确定性帧调度器。",
+                    OutputFps = outputFps,
+                    TargetFrameCount = targetFrameCount,
                 };
                 _session = session;
 
@@ -109,16 +111,23 @@ namespace ADOFAI.Renderist.Export
                 {
                     LastStartRejectReason = "写入初始 metadata 失败";
                     Log.Exception("EditorExportController: 写入初始 metadata 失败", ex);
-                    session.State = EditorExportState.Failed;
-                    session.StateDetail = "写入初始 metadata 失败。";
-                    session.EndedAtUtc = DateTime.UtcNow;
-                    session.StopReason = "failed";
-                    TryWriteMetadataBestEffort(session);
+                    MarkSessionFailed(session, "写入初始 metadata 失败。", "failed");
+                    return false;
+                }
+
+                // 启动正式 scheduler。失败时 session 置 Failed，且 scheduler 已恢复。
+                string reject = DeterministicFrameScheduler.TryStart(
+                    session.OutputDirectory, outputFps, targetFrameCount);
+                if (reject != null)
+                {
+                    LastStartRejectReason = reject;
+                    Log.Warn(UiText.Format(UiText.LogEditorExportStartRejectedFormat, reject));
+                    MarkSessionFailed(session, "无法启动确定性帧调度器：" + reject, "failed");
                     return false;
                 }
 
                 session.State = EditorExportState.Running;
-                session.StateDetail = "会话运行中（Phase 2.4 未实现截图）。";
+                session.StateDetail = "确定性帧调度器运行中。";
                 TryWriteMetadataBestEffort(session);
 
                 LastStartRejectReason = null;
@@ -143,16 +152,11 @@ namespace ADOFAI.Renderist.Export
 
             try
             {
-                s.State = EditorExportState.Cleaning;
-                s.StateDetail = "正在清理会话（用户停止）。";
-                TryWriteMetadataBestEffort(s);
-
-                s.State = EditorExportState.Completed;
-                s.StateDetail = "会话已完成（用户停止）。";
-                s.EndedAtUtc = DateTime.UtcNow;
-                s.StopReason = "user";
-                TryWriteMetadataBestEffort(s);
-                Log.Info(UiText.LogEditorExportStopped);
+                if (DeterministicFrameScheduler.IsRunning)
+                {
+                    DeterministicFrameScheduler.StopNow("user", "user");
+                }
+                FinalizeFromScheduler();
             }
             catch (Exception ex)
             {
@@ -174,16 +178,12 @@ namespace ADOFAI.Renderist.Export
 
             try
             {
-                s.State = EditorExportState.Cleaning;
-                s.StateDetail = "正在清理会话（取消：" + (reason ?? "?") + "）。";
-                TryWriteMetadataBestEffort(s);
-
-                s.State = EditorExportState.Cancelled;
-                s.EndedAtUtc = DateTime.UtcNow;
-                s.StopReason = "cancelled";
-                s.StateDetail = "会话已取消：" + (reason ?? "?");
-                TryWriteMetadataBestEffort(s);
-                Log.Info(UiText.Format(UiText.LogEditorExportCancelledFormat, reason ?? "?"));
+                string cleanReason = string.IsNullOrEmpty(reason) ? "cancelled" : reason;
+                if (DeterministicFrameScheduler.IsRunning)
+                {
+                    DeterministicFrameScheduler.StopNow("cancelled", cleanReason);
+                }
+                FinalizeFromScheduler();
             }
             catch (Exception ex)
             {
@@ -191,7 +191,7 @@ namespace ADOFAI.Renderist.Export
             }
         }
 
-        /// <summary>每 OnUpdate 调用。只维护生命周期与 Tick 计数，不截图。</summary>
+        /// <summary>每 OnUpdate 调用。推进 scheduler 并观察终态。</summary>
         public static void Tick()
         {
             EditorExportSession s = _session;
@@ -202,15 +202,63 @@ namespace ADOFAI.Renderist.Export
             {
                 if (!IsEnvironmentStillValid(s, out string reason))
                 {
-                    Cancel(reason);
-                    return;
+                    DeterministicFrameScheduler.StopNow("cancelled", reason);
                 }
+                else
+                {
+                    DeterministicFrameScheduler.Tick();
+                }
+
                 s.TickCount++;
+
+                if (DeterministicFrameScheduler.Status == DeterministicFrameScheduler.SchedulerStatus.Completed ||
+                    DeterministicFrameScheduler.Status == DeterministicFrameScheduler.SchedulerStatus.Cancelled ||
+                    DeterministicFrameScheduler.Status == DeterministicFrameScheduler.SchedulerStatus.Failed)
+                {
+                    FinalizeFromScheduler();
+                }
             }
             catch (Exception ex)
             {
                 Fail(ex, "Tick 异常");
             }
+        }
+
+        /// <summary>根据 scheduler 的终态回填 session。非终态时无副作用。</summary>
+        private static void FinalizeFromScheduler()
+        {
+            EditorExportSession s = _session;
+            if (s == null) return;
+            if (s.State != EditorExportState.Running) return;
+
+            DeterministicFrameScheduler.SchedulerStatus status = DeterministicFrameScheduler.Status;
+            switch (status)
+            {
+                case DeterministicFrameScheduler.SchedulerStatus.Completed:
+                    s.State = EditorExportState.Completed;
+                    s.StopReason = DeterministicFrameScheduler.StopReason ?? "user";
+                    s.StateDetail = "导出已完成。";
+                    break;
+                case DeterministicFrameScheduler.SchedulerStatus.Cancelled:
+                    s.State = EditorExportState.Cancelled;
+                    s.StopReason = DeterministicFrameScheduler.StopReason ?? "cancelled";
+                    s.StateDetail = "导出已取消。";
+                    break;
+                case DeterministicFrameScheduler.SchedulerStatus.Failed:
+                    s.State = EditorExportState.Failed;
+                    s.StopReason = DeterministicFrameScheduler.StopReason ?? "failed";
+                    s.StateDetail = "导出失败。";
+                    break;
+                default:
+                    return;
+            }
+
+            s.EndedAtUtc = DateTime.UtcNow;
+            s.CaptureRequestCount = DeterministicFrameScheduler.CaptureRequestCount;
+            s.CapturedFrameCount = DeterministicFrameScheduler.CapturedFrameCount;
+            TryWriteMetadataBestEffort(s);
+            Log.Info(UiText.Format(UiText.LogEditorExportFinishedFormat,
+                s.State.ToString(), s.StopReason));
         }
 
         /// <summary>轻量环境校验：Mod 启用、未离开编辑器、F9/F10 未占用、定期校验当前会话固定目录。</summary>
@@ -239,10 +287,6 @@ namespace ADOFAI.Renderist.Export
 
             if (s.TickCount % _dirRecheckInterval == 0)
             {
-                // Phase 2.4 缺陷修复：复核对象是“当前会话自己的固定目录”，
-                // 而不是实时全局 Settings.OutputDirectory。
-                // 运行中修改 Settings 只影响下一次 Start，
-                // 不得因新全局路径非法而取消、切换或改写当前健康会话。
                 string sessionDir = s.OutputDirectory;
                 if (string.IsNullOrEmpty(sessionDir) || !Directory.Exists(sessionDir))
                 {
@@ -252,6 +296,15 @@ namespace ADOFAI.Renderist.Export
             }
 
             return true;
+        }
+
+        private static void MarkSessionFailed(EditorExportSession s, string detail, string reason)
+        {
+            s.State = EditorExportState.Failed;
+            s.StateDetail = detail;
+            s.EndedAtUtc = DateTime.UtcNow;
+            s.StopReason = reason;
+            TryWriteMetadataBestEffort(s);
         }
 
         private static void TryWriteMetadataBestEffort(EditorExportSession s)
@@ -268,6 +321,12 @@ namespace ADOFAI.Renderist.Export
 
         private static void Fail(Exception ex, string context)
         {
+            // 任何 controller 层未处理异常都必须保证 scheduler 回到恢复态。
+            if (DeterministicFrameScheduler.IsRunning)
+            {
+                try { DeterministicFrameScheduler.StopNow("cancelled", "controller-fail"); } catch { }
+            }
+
             EditorExportSession s = _session;
             if (s == null)
             {

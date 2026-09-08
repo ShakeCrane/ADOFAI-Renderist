@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -42,12 +43,14 @@ namespace ADOFAI.Renderist.Diagnostics
     {
         private const int OutputFps = 60;
         private const int TargetLogicalFrames = 180;          // 3.0 秒 @ 60 FPS
+        private const int FrameOrderProbeLogicalFrameCount = 64;
         private const int PlaybackReadyTimeoutFrames = OutputFps * 30;   // 30 秒上限，防死等
         private const int MaxHitsPerFrame = 16;
         private const double HitDueToleranceSeconds = 0.000001;
         private const double PitchOneTolerance = 0.0001;
         private const string DiagnosticsSubdir = "diagnostics";
         private const string LogFileBase = "visual-clock-poc";
+        private const string FrameOrderProbeLogFileBase = "frame-order-probe";
         private const string Unavailable = "unavailable";
         private const double AnchorInvalidThresholdSeconds = 3600.0; // 明显异常锚点判据（仅供终止测试，不做复杂修复）
 
@@ -74,6 +77,8 @@ namespace ADOFAI.Renderist.Diagnostics
         private static bool _running;                    // 生命周期内（Preparing..Restoring）为 true
         private static bool _forcedActive;               // Forced Clock 是否已真正启用（_state==Active 时才 true）
         private static bool _dvaProbeEnabled;
+        private static bool _frameOrderProbeEnabled;
+        private static bool _stopAfterCaptureBoundary;
         private static string _pendingStopEvent;
         private static string _pendingStopReason;
 
@@ -83,6 +88,8 @@ namespace ADOFAI.Renderist.Diagnostics
         private static int _lastUnityFrame = -1;
         private static int _activationUnityFrame = -1;
         private static int _awaitFrameCount;
+        private static long _probeSequence;
+        private static int _playerFloorAtPlayerControlPrefix = -1;
 
         private static double _pitch = 1.0;
         private static bool _pitchUnavailable;
@@ -125,9 +132,31 @@ namespace ADOFAI.Renderist.Diagnostics
         private static FieldInfo _fCurrentSeq;
         private static MethodInfo _mConductorUpdate;
         private static MethodInfo _mControllerUpdate;
+        private static MethodInfo _mPlayerControlUpdate;
+        private static MethodInfo _mControllerLateUpdate;
         private static MethodInfo _mPlayerHit;
         private static MethodInfo _mPlanetRefreshAngles;
         private static bool _hooksRegistered;
+        private static GameObject _frameOrderProbeHost;
+
+        private sealed class EndOfFrameProbeBehaviour : MonoBehaviour
+        {
+            private Coroutine _routine;
+
+            internal void Begin()
+            {
+                if (_routine == null) _routine = StartCoroutine(Observe());
+            }
+
+            private IEnumerator Observe()
+            {
+                while (true)
+                {
+                    yield return new WaitForEndOfFrame();
+                    OnEndOfFrameCaptureBoundary();
+                }
+            }
+        }
 
         // ---------------- 上一帧参考（事件检测） ----------------
         private static int _prevPlayerFloor = -1;
@@ -135,8 +164,11 @@ namespace ADOFAI.Renderist.Diagnostics
 
         public static bool IsRunning => _running;
         public static bool IsDvaProbe => _running && _dvaProbeEnabled;
+        public static bool IsFrameOrderProbe => _running && _frameOrderProbeEnabled;
         public static string LogPath => _logPath;
         public static int LogicalFrameIndex => _logicalFrameIndex;
+        public static int TargetLogicalFrameCount =>
+            _frameOrderProbeEnabled ? FrameOrderProbeLogicalFrameCount : TargetLogicalFrames;
         public static string StateName => _state.ToString();
         public static int CurrentPlayerFloor => ReadPlayerFloor();
         public static int TotalHitCount => _totalHitCount;
@@ -155,15 +187,24 @@ namespace ADOFAI.Renderist.Diagnostics
 
         public static bool Start()
         {
-            return StartCore(false);
+            return StartCore(false, false);
         }
 
         public static bool StartDvaProbe()
         {
-            return StartCore(true);
+            return StartCore(true, false);
         }
 
-        private static bool StartCore(bool enableDva)
+        /// <summary>
+        /// 仅记录当前 DLL 的 Conductor / PlayerControl / LateUpdate / EndOfFrame 顺序。
+        /// 不写 PNG，不调用 DVA，不自行 Hit。
+        /// </summary>
+        public static bool StartFrameOrderProbe()
+        {
+            return StartCore(false, true);
+        }
+
+        private static bool StartCore(bool enableDva, bool enableFrameOrderProbe)
         {
             if (_running)
             {
@@ -176,7 +217,7 @@ namespace ADOFAI.Renderist.Diagnostics
                 EnsureTypes();
 
                 // ---- 启动条件（section 6）----
-                string reject = ValidateStartConditions(enableDva);
+                string reject = ValidateStartConditions(enableDva, enableFrameOrderProbe);
                 if (reject != null)
                 {
                     Log.Warn(UiText.Format(UiText.LogVcPocStartRejectedFormat, reject));
@@ -190,9 +231,15 @@ namespace ADOFAI.Renderist.Diagnostics
                     return false;
                 }
 
+                _dvaProbeEnabled = enableDva;
+                _frameOrderProbeEnabled = enableFrameOrderProbe;
+
                 string dir = Path.Combine(root, DiagnosticsSubdir);
                 Directory.CreateDirectory(dir);
-                string path = ResolveUniqueLogPath(dir, _dvaProbeEnabled ? "visual-advancement-probe" : LogFileBase);
+                string baseName = _dvaProbeEnabled
+                    ? "visual-advancement-probe"
+                    : (_frameOrderProbeEnabled ? FrameOrderProbeLogFileBase : LogFileBase);
+                string path = ResolveUniqueLogPath(dir, baseName);
                 if (string.IsNullOrEmpty(path))
                 {
                     Log.Error(UiText.LogVcPocNoOutputDir);
@@ -204,9 +251,11 @@ namespace ADOFAI.Renderist.Diagnostics
                 _writer = writer;
                 _logPath = path;
 
-                _dvaProbeEnabled = enableDva;
                 _hitCountThisFrame = 0;
                 _totalHitCount = 0;
+                _probeSequence = 0;
+                _playerFloorAtPlayerControlPrefix = -1;
+                _stopAfterCaptureBoundary = false;
                 _pendingStopEvent = null;
                 _pendingStopReason = null;
                 WriteHeader();
@@ -239,13 +288,22 @@ namespace ADOFAI.Renderist.Diagnostics
                 // ---- 注册三个观察/控制点（section 12）----
                 RegisterHooks();
 
-                string startEvent = _dvaProbeEnabled ? "DvaStarted" : "PocStarted";
-                WriteLine(BuildEventLine(startEvent, "outputFPS=" + OutputFps + "|targetLogicalFrames=" + TargetLogicalFrames +
+                if (_frameOrderProbeEnabled && !StartEndOfFrameObserver())
+                {
+                    WriteLine(BuildEventLine("FrameOrderProbeError", "reason=end-of-frame-observer-unavailable"), flush: true);
+                    FailRestore("frame-order-probe-error", "end-of-frame-observer-unavailable");
+                    return false;
+                }
+
+                string startEvent = _dvaProbeEnabled ? "DvaStarted" :
+                    (_frameOrderProbeEnabled ? "FrameOrderProbeStarted" : "PocStarted");
+                WriteLine(BuildEventLine(startEvent, "outputFPS=" + OutputFps + "|targetLogicalFrames=" + TargetLogicalFrameCount +
                     "|captureFramerate=" + Time.captureFramerate + "|targetFrameRate=" + Application.targetFrameRate +
                     "|vSyncCount=" + QualitySettings.vSyncCount + "|rdcAutoMode=" + _selectedRdcAutoMode +
                     "|rdcAuto=" + Fmt(ReadRdcAuto())), flush: true);
 
-                Log.Info(_dvaProbeEnabled ? UiText.LogDvaProbeStarted : UiText.LogVcPocStarted);
+                Log.Info(_dvaProbeEnabled ? UiText.LogDvaProbeStarted :
+                    (_frameOrderProbeEnabled ? UiText.LogFrameOrderProbeStarted : UiText.LogVcPocStarted));
                 Log.Info(UiText.Format(UiText.LogVcPocLogPathFormat, path));
                 return true;
             }
@@ -391,9 +449,19 @@ namespace ADOFAI.Renderist.Diagnostics
             }
 
             // logicalFrame 达到上限 → 自动完成（section 15）
-            if (_logicalFrameIndex >= TargetLogicalFrames)
+            int lastLogicalFrame = _frameOrderProbeEnabled
+                ? FrameOrderProbeLogicalFrameCount - 1
+                : TargetLogicalFrames;
+            if (_logicalFrameIndex >= lastLogicalFrame)
             {
-                SafeStop("completed", null);
+                if (_frameOrderProbeEnabled)
+                {
+                    _stopAfterCaptureBoundary = true;
+                }
+                else
+                {
+                    SafeStop("completed", null);
+                }
             }
         }
 
@@ -404,7 +472,9 @@ namespace ADOFAI.Renderist.Diagnostics
         private static void OnConductorUpdatePrefix()
         {
             if (!_running) return;
+            if (_pendingStopReason != null) return;
             WriteExecutionOrder("ConductorPrefix");
+            WriteFrameOrderEvent("ConductorPrefix");
 
             // 尚未进入 Active：什么也不做，放行。
             if (_state != PocState.Active) return;
@@ -428,6 +498,7 @@ namespace ADOFAI.Renderist.Diagnostics
                     "|startSongPosition=" + Fmt(_startSongPosition) + "|pitch=" + Fmt(_pitch) +
                     (_pitchUnavailable ? "|pitchUnavailable=true" : string.Empty)), flush: true);
                 WriteLogicalFrameLine();
+                WriteFrameOrderEvent("ForcedTimePrepared");
                 return;
             }
 
@@ -441,13 +512,16 @@ namespace ADOFAI.Renderist.Diagnostics
 
                 // 每个 logical frame 记录一行（section 17）
                 WriteLogicalFrameLine();
+                WriteFrameOrderEvent("ForcedTimePrepared");
             }
         }
 
         private static void OnConductorUpdatePostfix()
         {
             if (!_running) return;
+            if (_pendingStopReason != null) return;
             WriteExecutionOrder("ConductorPostfix");
+            WriteFrameOrderEvent("ConductorPostfix");
             if (!_dvaProbeEnabled || !_forcedActive || _state != PocState.Active || _pendingStopReason != null) return;
 
             object state = ReadControllerState();
@@ -728,7 +802,8 @@ namespace ADOFAI.Renderist.Diagnostics
                 string eventName;
                 if (string.Equals(eventOrReason, "completed", StringComparison.Ordinal))
                 {
-                    eventName = _dvaProbeEnabled ? "DvaCompleted" : "PocCompleted";
+                    eventName = _dvaProbeEnabled ? "DvaCompleted" :
+                        (_frameOrderProbeEnabled ? "FrameOrderProbeCompleted" : "PocCompleted");
                 }
                 else if (string.Equals(eventOrReason, "unexpected-fail", StringComparison.Ordinal))
                 {
@@ -765,6 +840,7 @@ namespace ADOFAI.Renderist.Diagnostics
             RestoreRdcAuto();
             RestoreState();
             UnregisterHooks();
+            StopEndOfFrameObserver();
             FailSafeClose();
 
             _state = PocState.Idle;
@@ -772,6 +848,8 @@ namespace ADOFAI.Renderist.Diagnostics
             _lastUnityFrame = -1;
             _activationUnityFrame = -1;
             _dvaProbeEnabled = false;
+            _frameOrderProbeEnabled = false;
+            _stopAfterCaptureBoundary = false;
 
             if (wasRunning)
             {
@@ -785,11 +863,14 @@ namespace ADOFAI.Renderist.Diagnostics
             RestoreRdcAuto();
             RestoreState();
             UnregisterHooks();
+            StopEndOfFrameObserver();
             FailSafeClose();
             _running = false;
             _state = PocState.Idle;
             _forcedActive = false;
             _ownsPlayback = false;
+            _frameOrderProbeEnabled = false;
+            _stopAfterCaptureBoundary = false;
             Log.Warn(UiText.Format(UiText.LogVcPocStartRejectedFormat, reason + " " + detail));
         }
 
@@ -1076,6 +1157,10 @@ namespace ADOFAI.Renderist.Diagnostics
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
                 _mControllerUpdate = _tController.GetMethod("Update",
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                _mPlayerControlUpdate = _tController.GetMethod("PlayerControl_Update",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                _mControllerLateUpdate = _tController.GetMethod("LateUpdate",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
             }
             if (_tPlayer != null)
             {
@@ -1299,6 +1384,71 @@ namespace ADOFAI.Renderist.Diagnostics
                 "|logicalFrame=" + _logicalFrameIndex +
                 "|forcedSongPosition=" + Fmt(_forcedSongPosition)), flush: false);
         }
+
+        private static void WriteFrameOrderEvent(string eventName, string extra = null)
+        {
+            if (!_frameOrderProbeEnabled || _writer == null) return;
+
+            var sb = new StringBuilder(640);
+            AppendField(sb, "timestamp", NowStamp(), true);
+            AppendField(sb, "unityFrame", Time.frameCount.ToString(CultureInfo.InvariantCulture), false);
+            AppendField(sb, "probeSequence", (++_probeSequence).ToString(CultureInfo.InvariantCulture), false);
+            AppendField(sb, "logicalFrame", _logicalFrameIndex.ToString(CultureInfo.InvariantCulture), false);
+            AppendField(sb, "event", eventName, false);
+            AppendField(sb, "forcedSongPosition", Fmt(_forcedSongPosition), false);
+            AppendField(sb, "songposition_minusi", Fmt(ReadProperty(_tConductor, _pSongPosI)), false);
+            AppendField(sb, "controllerState", Fmt(ReadProperty(_tController, _pState)), false);
+            AppendField(sb, "playerFloor", Fmt(ReadPlayerFloor()), false);
+            AppendField(sb, "currentSeqID", Fmt(ReadCurrentSeqId()), false);
+            AppendField(sb, "rdcAuto", Fmt(ReadRdcAuto()), false);
+            if (!string.IsNullOrEmpty(extra)) AppendField(sb, "extra", extra, false);
+            WriteLine(sb.ToString(), flush: string.Equals(eventName, "CaptureBoundaryEndOfFrame", StringComparison.Ordinal));
+        }
+
+        private static bool StartEndOfFrameObserver()
+        {
+            try
+            {
+                StopEndOfFrameObserver();
+                _frameOrderProbeHost = new GameObject("ADOFAI.Renderist.FrameOrderProbe");
+                _frameOrderProbeHost.hideFlags = HideFlags.HideAndDontSave;
+                UnityEngine.Object.DontDestroyOnLoad(_frameOrderProbeHost);
+                EndOfFrameProbeBehaviour observer = _frameOrderProbeHost.AddComponent<EndOfFrameProbeBehaviour>();
+                observer.Begin();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("EditorVisualClockPoc: 创建 EndOfFrame 观察器失败", ex);
+                StopEndOfFrameObserver();
+                return false;
+            }
+        }
+
+        private static void StopEndOfFrameObserver()
+        {
+            GameObject host = _frameOrderProbeHost;
+            _frameOrderProbeHost = null;
+            if (host == null) return;
+            try { UnityEngine.Object.Destroy(host); } catch { }
+        }
+
+        private static void OnEndOfFrameCaptureBoundary()
+        {
+            if (!_running || !_frameOrderProbeEnabled || !_forcedActive ||
+                _state != PocState.Active || _pendingStopReason != null)
+            {
+                return;
+            }
+
+            WriteFrameOrderEvent("CaptureBoundaryEndOfFrame");
+            if (_stopAfterCaptureBoundary)
+            {
+                // 先记录最终画面的 EndOfFrame，再撤销 Forced Clock；下一次 ModEntry.OnUpdate 完成恢复。
+                _forcedActive = false;
+                RequestSafeStop("completed", "frame-order-probe-complete");
+            }
+        }
         private static void ReadSelectedFloorSeqs(List<int> into)
         {
             try
@@ -1405,7 +1555,7 @@ namespace ADOFAI.Renderist.Diagnostics
         private static bool? ReadStaticNullableBool(Type type, string member) => ToBool(StaticValue(type, member));
 
         /// <summary>启动条件校验，返回拒绝原因；null 表示可启动。</summary>
-        private static string ValidateStartConditions(bool enableDva)
+        private static string ValidateStartConditions(bool enableDva, bool enableFrameOrderProbe)
         {
             EnsureTypes();
             if (_tAdoBase == null || _tConductor == null || _tController == null || _tEditor == null)
@@ -1418,6 +1568,18 @@ namespace ADOFAI.Renderist.Diagnostics
                               _mPlanetRefreshAngles == null || _pRdcAuto == null || _fCurrentSeq == null))
             {
                 return "dva-api-unavailable";
+            }
+
+            if (enableFrameOrderProbe && (_mConductorUpdate == null || _mPlayerControlUpdate == null ||
+                                          _mControllerLateUpdate == null || _mPlanetRefreshAngles == null ||
+                                          _pRdcAuto == null))
+            {
+                return "frame-order-probe-api-unavailable";
+            }
+
+            if (enableFrameOrderProbe && ReadRdcAuto() != true)
+            {
+                return "official-autoplay-not-enabled";
             }
 
             if (ReadStaticNullableBool(_tAdoBase, "isLevelEditor") != true)
@@ -1507,6 +1669,21 @@ namespace ADOFAI.Renderist.Diagnostics
                         prefix: new HarmonyMethod(typeof(EditorVisualClockPoc), nameof(ControllerUpdatePrefix)),
                         postfix: new HarmonyMethod(typeof(EditorVisualClockPoc), nameof(ControllerUpdatePostfix)));
                 }
+                if (_frameOrderProbeEnabled)
+                {
+                    harmony.Patch(_mPlayerControlUpdate,
+                        prefix: new HarmonyMethod(typeof(EditorVisualClockPoc), nameof(PlayerControlUpdatePrefix)),
+                        postfix: new HarmonyMethod(typeof(EditorVisualClockPoc), nameof(PlayerControlUpdatePostfix)));
+                    harmony.Patch(_mPlayerHit,
+                        prefix: new HarmonyMethod(typeof(EditorVisualClockPoc), nameof(PlayerHitPrefix)),
+                        postfix: new HarmonyMethod(typeof(EditorVisualClockPoc), nameof(PlayerHitPostfix)));
+                    harmony.Patch(_mControllerLateUpdate,
+                        prefix: new HarmonyMethod(typeof(EditorVisualClockPoc), nameof(ControllerLateUpdatePrefix)),
+                        postfix: new HarmonyMethod(typeof(EditorVisualClockPoc), nameof(ControllerLateUpdatePostfix)));
+                    harmony.Patch(_mPlanetRefreshAngles,
+                        prefix: new HarmonyMethod(typeof(EditorVisualClockPoc), nameof(PlanetRefreshAnglesPrefix)),
+                        postfix: new HarmonyMethod(typeof(EditorVisualClockPoc), nameof(PlanetRefreshAnglesPostfix)));
+                }
 
                 _hooksRegistered = true;
             }
@@ -1540,6 +1717,10 @@ namespace ADOFAI.Renderist.Diagnostics
                     if (setter != null) harmony.Unpatch(setter, HarmonyPatchType.All, ModEntry.HarmonyId);
                     if (_mConductorUpdate != null) harmony.Unpatch(_mConductorUpdate, HarmonyPatchType.All, ModEntry.HarmonyId);
                     if (_mControllerUpdate != null) harmony.Unpatch(_mControllerUpdate, HarmonyPatchType.All, ModEntry.HarmonyId);
+                    if (_mPlayerControlUpdate != null) harmony.Unpatch(_mPlayerControlUpdate, HarmonyPatchType.All, ModEntry.HarmonyId);
+                    if (_mPlayerHit != null) harmony.Unpatch(_mPlayerHit, HarmonyPatchType.All, ModEntry.HarmonyId);
+                    if (_mControllerLateUpdate != null) harmony.Unpatch(_mControllerLateUpdate, HarmonyPatchType.All, ModEntry.HarmonyId);
+                    if (_mPlanetRefreshAngles != null) harmony.Unpatch(_mPlanetRefreshAngles, HarmonyPatchType.All, ModEntry.HarmonyId);
                 }
                 catch (Exception ex)
                 {
@@ -1588,6 +1769,54 @@ namespace ADOFAI.Renderist.Diagnostics
             WriteExecutionOrder("ControllerUpdatePostfix");
         }
 
+        private static void PlayerControlUpdatePrefix()
+        {
+            _playerFloorAtPlayerControlPrefix = ReadPlayerFloor();
+            WriteFrameOrderEvent("PlayerControlPrefix");
+        }
+
+        private static void PlayerControlUpdatePostfix()
+        {
+            int afterFloor = ReadPlayerFloor();
+            WriteFrameOrderEvent("PlayerControlPostfix");
+            if (_playerFloorAtPlayerControlPrefix >= 0 && afterFloor >= 0 &&
+                _playerFloorAtPlayerControlPrefix != afterFloor)
+            {
+                WriteFrameOrderEvent("OfficialAutoplayFloorAdvanced",
+                    "beforeFloor=" + _playerFloorAtPlayerControlPrefix + "|afterFloor=" + afterFloor);
+            }
+        }
+
+        private static void PlayerHitPrefix()
+        {
+            WriteFrameOrderEvent("PlayerHitPrefix");
+        }
+
+        private static void PlayerHitPostfix()
+        {
+            WriteFrameOrderEvent("PlayerHitPostfix");
+        }
+
+        private static void ControllerLateUpdatePrefix()
+        {
+            WriteFrameOrderEvent("ControllerLateUpdatePrefix");
+        }
+
+        private static void ControllerLateUpdatePostfix()
+        {
+            WriteFrameOrderEvent("ControllerLateUpdatePostfix");
+        }
+
+        private static void PlanetRefreshAnglesPrefix()
+        {
+            WriteFrameOrderEvent("PlanetRefreshAnglesPrefix");
+        }
+
+        private static void PlanetRefreshAnglesPostfix()
+        {
+            WriteFrameOrderEvent("PlanetRefreshAnglesPostfix");
+        }
+
         // ================================================================
         // 日志
         // ================================================================
@@ -1618,12 +1847,15 @@ namespace ADOFAI.Renderist.Diagnostics
             if (_writer == null) return;
             _writer.WriteLine(_dvaProbeEnabled
                 ? "# ADOFAI Renderist DVA Runtime Probe v1"
-                : "# ADOFAI Renderist Editor Forced Visual Clock PoC v1");
+                : (_frameOrderProbeEnabled
+                    ? "# ADOFAI Renderist Frame Order Probe v1"
+                    : "# ADOFAI Renderist Editor Forced Visual Clock PoC v1"));
             _writer.WriteLine("# version=" + ModEntry.ModVersion);
             _writer.WriteLine("# startedAt=" + NowStamp());
             _writer.WriteLine("# outputFPS=" + OutputFps);
-            _writer.WriteLine("# targetLogicalFrames=" + TargetLogicalFrames);
+            _writer.WriteLine("# targetLogicalFrames=" + TargetLogicalFrameCount);
             _writer.WriteLine("# autoHit=" + (_dvaProbeEnabled ? "runtime-probe" : "disabled"));
+            _writer.WriteLine("# frameOrderProbe=" + _frameOrderProbeEnabled);
             _writer.WriteLine("# rdcAutoMode=" + _selectedRdcAutoMode);
             _writer.WriteLine("# maxHitsPerFrame=" + MaxHitsPerFrame);
             _writer.WriteLine("# unityVersion=" + Application.unityVersion);

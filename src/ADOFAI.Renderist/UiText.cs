@@ -154,11 +154,11 @@ namespace ADOFAI.Renderist
         public const string GuiEditorExportEnvIsFocusedPrefix = "Application.isFocused：";
         public const string GuiEditorExportEnvScreenSizePrefix = "屏幕分辨率：";
 
-        // ---------------- GUI: 编辑器导出骨架段（Phase 2.4） ----------------
+        // ---------------- GUI: 编辑器导出控制段（Phase 3.1） ----------------
 
-        public const string GuiEditorExportSkeletonSectionTitle = "编辑器导出骨架（实验性）";
-        public const string GuiEditorExportSkeletonNotImplementedWarn =
-            "Phase 2.4 尚未执行真实截图或非实时渲染。";
+        public const string GuiEditorExportControlSectionTitle = "编辑器导出（实验性，Phase 3.1）";
+        public const string GuiEditorExportControlWarn =
+            "Phase 3.1：Official Autoplay + 确定性帧调度 + 当前分辨率短 PNG 序列。";
         public const string GuiEditorExportStatePrefix = "会话状态：";
         public const string GuiEditorExportStateDetailPrefix = "状态说明：";
         public const string GuiEditorExportSessionDirPrefix = "会话目录：";
@@ -177,6 +177,12 @@ namespace ADOFAI.Renderist
         public const string GuiEditorExportBtnStart = "开始编辑器导出";
         public const string GuiEditorExportBtnStop = "停止编辑器导出";
 
+        // ---------------- GUI: Deterministic Frame Scheduler（Phase 3.1） ----------------
+
+        public const string GuiSchedulerOutputFramePrefix = "scheduler outputFrame：";
+        public const string GuiSchedulerCapturedPrefix = "scheduler 已捕获帧：";
+        public const string GuiSchedulerStatusPrefix = "scheduler 状态：";
+
         // ---------------- GUI: 编辑器时间链探针（Phase 3.0） ----------------
 
         public const string GuiTimeProbeSectionTitle = "编辑器时间链探针（实验性）";
@@ -193,9 +199,10 @@ namespace ADOFAI.Renderist
         public const string GuiVcPocStatusPrefix = "PoC 状态：";
         public const string GuiVcPocIdle = "未运行";
         public const string GuiVcPocRunning = "运行中";
-        public const string GuiVcPocFramePrefix = "logicalFrame / 180：";
+        public const string GuiVcPocFramePrefix = "logicalFrame：";
         public const string GuiVcPocLogPathPrefix = "日志路径：";
         public const string GuiVcPocBtnStart = "开始 Visual Clock PoC";
+        public const string GuiFrameOrderProbeBtnStart = "运行 Frame Order Probe（64 帧，需先开启 Auto）";
         public const string GuiVcPocBtnStop = "停止 Visual Clock PoC";
         public const string GuiVcPocNotRunning = "（无活动 PoC）";
         public const string GuiDvaModePrefix = "RDC.auto 对照模式：";
@@ -204,10 +211,12 @@ namespace ADOFAI.Renderist
         public const string GuiDvaProbeBtnStart = "开始 DVA Runtime Probe";
         public const string GuiDvaProbeRunning = "当前模式：DVA Runtime Probe";
         public const string GuiVcOnlyRunning = "当前模式：Visual Clock only";
+        public const string GuiFrameOrderProbeRunning = "当前模式：Frame Order Probe（仅日志，无 PNG / DVA）";
 
         // ---------------- Log: Editor Visual Clock PoC（Phase 3.0） ----------------
 
         public const string LogVcPocStarted = "Visual Clock PoC 已启动（不含 auto-hit）。";
+        public const string LogFrameOrderProbeStarted = "Frame Order Probe 已启动（64 帧，仅观察，不写 PNG / 不调用 Hit）。";
         public const string LogDvaProbeStarted = "DVA Runtime Probe 已启动（仅支持简单谱面）。";
         public const string LogVcPocAlreadyRunning = "Visual Clock PoC 已在运行。";
         // {0}=reason
@@ -264,6 +273,41 @@ namespace ADOFAI.Renderist
         public const string LogEditorExportFailedFormat = "编辑器导出会话失败：{0}";
         public const string LogEditorExportF9F10Blocked =
             "编辑器导出会话进行中，已阻止 F9/F10 截图请求。";
+
+        // ---------------- Log: Deterministic Frame Scheduler（Phase 3.1） ----------------
+
+        // {0}=outputFps, {1}=targetFrameCount, {2}=outputDirectory
+        public const string LogSchedulerStartedFormat =
+            "确定性帧调度器已启动：outputFps={0}, targetFrameCount={1}, 输出目录={2}";
+        // {0}=reason
+        public const string LogSchedulerStartRejectedFormat =
+            "确定性帧调度器启动被拒绝：{0}";
+        public const string LogSchedulerPlaybackRequested =
+            "已请求官方 Editor Play（floor 0 + Official Autoplay）。";
+        // {0}=canonicalStartTime
+        public const string LogSchedulerCanonicalAnchorFormat =
+            "CanonicalStartTime 已建立：{0}（来自 floors[0].entryTime）。";
+        public const string LogSchedulerForcedClockInstalled =
+            "Forced Visual Clock 已安装并激活（editor.Play() 前 hold canonical time）。";
+        public const string LogSchedulerInitHoldStarted =
+            "Initialization Hold 已开始：不推进输出帧、不捕获。";
+        public const string LogSchedulerEditorPlayCalled =
+            "已调用 editor.Play()。";
+        // {0}=canonicalStartTime, {1}=pitch
+        public const string LogSchedulerInitHoldReleasedFormat =
+            "回放就绪，Initialization Hold 已释放：CanonicalStartTime={0}, pitch={1}。";
+        // {0}=forcedSongPosition
+        public const string LogSchedulerFrame0ForcedFormat =
+            "frame 0 ForcedSongPosition={0}。";
+        // {0}=reason, {1}=terminalStatus
+        public const string LogSchedulerStoppedFormat =
+            "确定性帧调度器已停止（{0}），终态={1}。";
+        // {0}=frameIndex, {1}=error
+        public const string LogSchedulerCaptureFailedFormat =
+            "确定性帧调度器：输出帧 {0} 捕获失败：{1}";
+        // {0}=terminalState, {1}=stopReason
+        public const string LogEditorExportFinishedFormat =
+            "编辑器导出会话结束：state={0}, stopReason={1}。";
 
         // ---------------- Log: 编辑器时间链探针（Phase 3.0） ----------------
 

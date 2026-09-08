@@ -1,10 +1,10 @@
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 编辑器导出会话状态枚举（Phase 2.4）。
+    /// 编辑器导出会话状态枚举（Phase 3.1）。
     ///
-    /// Phase 2.4 不执行真实截图或非实时渲染，因此不使用 <c>Capturing</c> 这一术语，
-    /// 避免误导用户认为有图片落盘。<c>Running</c> 仅表示会话存活、Tick 在推进计数。
+    /// Phase 3.1 由 DeterministicFrameScheduler 驱动真实 PNG 捕获；
+    /// <c>Running</c> 表示会话存活且 scheduler 正在推进 / 捕获。
     ///
     /// 终止状态（Completed / Cancelled / Failed）保留供 GUI 查看，下一次 Start 可重新进入 Preparing。
     /// </summary>
@@ -16,7 +16,7 @@ namespace ADOFAI.Renderist.Export
         /// <summary>准备中：Start 已调用，正在校验环境与创建会话目录。</summary>
         Preparing,
 
-        /// <summary>运行中：会话存活，Tick 推进计数；不产生截图。</summary>
+        /// <summary>运行中：DeterministicFrameScheduler 正在推进并捕获。</summary>
         Running,
 
         /// <summary>清理中：正在写入最终 metadata 并收尾。</summary>

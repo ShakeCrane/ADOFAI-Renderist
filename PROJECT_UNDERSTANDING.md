@@ -26,7 +26,7 @@ ADOFAI Renderist 是面向 **A Dance of Fire and Ice（ADOFAI）** 的 **Unity M
 
 - 优先编辑器内导出
 - 优先脱离 replay 依赖
-- autoplay 仅作为辅助验证手段
+- Official-Autoplay-only 不能单独作为 deterministic production authority；Route B 正在验证 `RenderistAutoPlay`
 - replay / 第三方 replay Mod 适配延后
 - 音频与视频编码后置
 - 仅支持 UMM
@@ -51,8 +51,8 @@ ADOFAI Renderist 是面向 **A Dance of Fire and Ice（ADOFAI）** 的 **Unity M
 | 项目 | 当前基线 |
 | --- | --- |
 | Mod ID / DLL / Namespace | `ADOFAI.Renderist` |
-| 当前版本 | `0.2.4.0` |
-| 当前阶段 | `Phase 2.4 editor export skeleton` |
+| 当前 PoC 版本 | `0.3.1.0`（不作为正式发布） |
+| 当前阶段 | `Phase 3 deterministic render core PoC` |
 | ADOFAI | **`v3.3.1`（最新正式版目标基线）** |
 | Unity | **待基于 ADOFAI v3.3.1 实机重新确认**；上一已确认值为 `6000.3.10f1` |
 | Unity 运行形态 | **待基于 v3.3.1 重新确认**；上一已确认为 Mono（`MonoBleedingEdge/` 存在，`GameAssembly.dll` 不存在） |
@@ -76,6 +76,34 @@ scripts/set-version.ps1
 
 ---
 
+## 当前 Phase 3 状态（长期基线）
+
+- 0.3.1.0 当前只保留架构验证 PoC，不修改版本号、不作为正式发布；若 PoC 成功，Route B 正式 deterministic render core 的候选目标版本为 0.4.0.0。
+- Official Autoplay 指 ADOFAI 原生 `RDC.auto` / PlayerControl 路径。它仍提供官方 `Hit` 行为和正常 floor 状态迁移，但 Official-Autoplay-only 已否定为 deterministic production authority。
+- `RenderistAutoPlay` 是当前 Route B 候选：Offline Master Timeline 决定 floor 是否 due，然后调用官方 `scrPlayer.Hit(isAuto:true)`；不重写 ADOFAI Hit 行为，不等同于旧 EditorVisualClockPoc DVA。
+- 旧 DVA 仅保留历史诊断价值，不直接迁移生产。
+- Phase 3 PoC 允许并需要评估 Unity `AudioRenderer` 作为 offline timing infrastructure；不输出最终音频文件、不做 FFmpeg / Video/VFX bridge。
+- 0.3.1.0 canonical anchor 修复已验证 frame 0 回到 floor 0 canonical time，但用户实机观察 Planet 抢跑没有明显改善，因此 anchor 不是完整根因。
+
+本轮 PoC 的最小闭环为：
+
+```text
+OfflineAudioClock（AudioRenderer discard-buffer）
+  ↓
+expectedFrameTime / CapturedSeconds / forcedSongPosition
+  ↓
+Forced Conductor
+  ↓
+RenderistAutoPlay → 官方 scrPlayer.Hit(true)
+  ↓
+Planet angle / cache 与游戏状态
+  ↓
+WaitForEndOfFrame FrameBoundary
+```
+
+当前 DLL 事实（ADOFAI `Assembly-CSharp.dll` 0.4.3.0，Unity 6000.3.10f1）：`scrConductor.Update()`、`scrController.PlayerControl_Update()`、`scrController.LateUpdate()`、`scrPlayer.Hit(bool)`、`scrPlanet.Update_RefreshAngles()` 与 `AsyncInputUtils.AdjustAngle(scrPlayer, ulong)` 均可由当前诊断按签名解析；实际 runtime 结果仍以本轮两次 PoC 日志为准。
+
+---
 ## 3. Agent 与协作方式
 
 当前本地编码 Agent：
@@ -358,7 +386,7 @@ capturedFrameCount = 0
 
 ---
 
-## 7. Phase 进度
+## 7. Phase 进度（Phase 2 为历史记录）
 
 ### Phase 2.0 — 已实现
 
@@ -388,7 +416,7 @@ capturedFrameCount = 0
 - EditorExportReadiness
 - 编辑器导出就绪检测
 
-### Phase 2.4 — 修复复验已通过，进入实机验证
+### Phase 2.4 — 历史记录（不代表当前阶段）
 
 已完成代码实现：
 
@@ -740,7 +768,7 @@ DSH 必须基于实际 UMM 0.33.0 包或已安装目录确认：
 
 在 DSH 实际读取前，本文件不把 `2.3.6.0` 声称为已确认的新基线。
 
-### 9.4 Mod 自身版本
+### 9.4 Mod 自身版本（历史 Phase 2.4 记录）
 
 当前：
 
@@ -762,74 +790,51 @@ Phase 2.4 editor export skeleton
 - 不运行 `set-version.ps1`
 - 不改变 Phase 2.4 功能边界
 
-### 9.5 `Assembly-CSharp.dll`
+### 9.5 `Assembly-CSharp.dll`（当前 Phase 3 已重新确认）
 
-当前 Phase 2.4 仍：
+历史 Phase 2.4 记录：
 
 > 不作为编译引用引入。
 
-为了检查 v3.3.1 兼容性，可以读取文件存在性、版本、大小、hash 等基础事实；如需反编译分析必须单独说明，但本轮不得把它加入 csproj 或提交仓库。
+当前 Phase 3 已通过本机 ADOFAI `Assembly-CSharp.dll` 0.4.3.0 的运行时反射核对内部 API；该 DLL 仍不作为编译引用或仓库文件提交。
 
 ---
 
-## 10. 当前明确未实现
+## 10. 当前未完成能力
 
-以下能力当前不存在：
+当前尚未形成正式生产能力：
 
-- 编辑器真实截图后端
-- 非实时帧推进
-- 可控游戏时间
-- `Time.captureFramerate` 驱动
-- `Time.timeScale` 驱动
-- 编辑器相机锁定
-- UI / Canvas 隐藏
-- ADOFAI 内部 Editor Hook
-- Harmony Patch
-- replay 驱动
-- TUFReplay / Creplay 适配
-- 音频同步
-- 视频编码
+- Route B deterministic render core；
+- 正式 Deterministic Frame Scheduler / Frame Capture Backend 的最终收敛；
+- OfflineAudioClock 与 Master Timeline 的正式 ownership 决策；
+- 完整离线 PNG Sequence 产品化、最终音频输出和视频编码；
+- 自定义输出分辨率 / 宽高比；
+- replay / TUFReplay / Creplay 适配；
+- 最终 Camera / UI / Video / VFX / DOTween / Animator 同步桥接。
 
-任何 Agent 报告不得把这些能力描述为已经存在。
+当前已具备 PoC 代码边界：
+
+- Forced Conductor；
+- `RenderistAutoPlay` due-floor 诊断和官方 `scrPlayer.Hit(true)` 调用；
+- `AudioRenderer` discard-buffer 采样；
+- calibration_i=0、AdjustAngle suppression、Planet 状态和 `WaitForEndOfFrame` FrameBoundary 记录。
+
+这些能力仍须通过至少两次同谱面实机运行证明重复性，不能据此宣称正式生产可用。
 
 ---
-
 ## 11. 下一步接续点
 
-在 Phase 2.4 游戏内实机验证前，先执行：
+完成 `OfflineAudioClockPoC` 的至少两次实机运行，并审查：
 
-> **最新环境基线对齐：ADOFAI v3.3.1 + UMM 0.33.0。**
+1. `AudioRenderer` 是否进入 offline capture mode，正常实时音乐输出是否被停止 / 静音；
+2. 每帧 sample count / `CapturedSeconds` 与 `N/FPS` 的误差、舍入和重复性；
+3. `RenderistAutoPlay` 是否只在 due frame 调用官方 Hit；
+4. first Hit、playerFloor、currentSeqID、Planet angle/cache 是否跨运行一致；
+5. wall-clock 耗时变化是否不改变逻辑结果。
 
-DSH 当前批准任务：
-
-1. 检查本机游戏是否已是 ADOFAI v3.3.1。
-2. 重新确认 Unity / Mono / Managed / DLL 基线。
-3. 检查或准备 UMM 0.33.0。
-4. 从实际 UMM 0.33.0 读取 `UnityModManager.dll` / `0Harmony.dll` 版本。
-5. 更新仓库中所有真实的基线数据位置。
-6. 保持 Renderist `0.2.4.0` 和 Phase 2.4 不变。
-7. 使用新引用重新构建、打包、验证。
-8. 不修改 `PROJECT_UNDERSTANDING.md`。
-9. 不提交、不 push，先交网页版 GPT 审查。
-
-对齐通过后：
-
-> **Phase 2.4 游戏内实机验证（在 ADOFAI v3.3.1 + UMM 0.33.0 上）。**
-
-实机验证通过后，网页版 GPT 再判断：
-
-- Phase 2.4 是否正式完成
-- 是否提交当前 Phase 2.4 修复 + 基线对齐修改
-- 下一阶段编号与目标
-- 是否开始真实 Editor Capture Backend
-- 是否需要分析 `Assembly-CSharp.dll`
-- 是否引入有限 Harmony Hook
-- 是否变更 Renderist 版本号
-
-DSH 不得自行进入下一阶段。
+PoC 成功后，再评估是否进入 0.4.0.0 Route B 正式架构；在此之前不交付正式 Scheduler。失败时只记录最小证据缺口，不扩大到视频、音频文件或自定义分辨率。
 
 ---
-
 ## 12. 工程红线
 
 始终遵守：
