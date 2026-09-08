@@ -2,9 +2,9 @@
 
 > **维护权说明**
 >
-> 本文件由 **网页版 GPT 独占维护**，用于记录 ADOFAI Renderist 的当前事实、阶段进度、工程边界和下一步接续点。
+> 本文件由参与项目工作的 Agent 按 `AGENTS.md` 和实际证据共同维护，用于记录 ADOFAI Renderist 的当前事实、阶段进度、工程边界和下一步接续点。
 >
-> **DSH（DeepSeek Harness）只读本文件，不得修改、重写、补充或格式化本文件。**
+> DSH、GPT Work 和其它参与 Agent 均须读取本文件；是否修改以 `AGENTS.md`、当前用户要求和实际证据为准。
 >
 > 如 DSH 在分析或实现过程中发现本文件与仓库事实不一致，应在最终报告中列出差异，由用户交回网页版 GPT 更新本文件。
 >
@@ -26,7 +26,7 @@ ADOFAI Renderist 是面向 **A Dance of Fire and Ice（ADOFAI）** 的 **Unity M
 
 - 优先编辑器内导出
 - 优先脱离 replay 依赖
-- Official-Autoplay-only 不能单独作为 deterministic production authority；Route B 正在验证 `RenderistAutoPlay`
+- Route B deterministic core PoC 已根据用户提供的两次运行结果在测试条件内 PASS；当前阶段为 `Phase 3.2.0`，正式非实时离线导出尚未完成。
 - replay / 第三方 replay Mod 适配延后
 - 音频与视频编码后置
 - 仅支持 UMM
@@ -51,13 +51,13 @@ ADOFAI Renderist 是面向 **A Dance of Fire and Ice（ADOFAI）** 的 **Unity M
 | 项目 | 当前基线 |
 | --- | --- |
 | Mod ID / DLL / Namespace | `ADOFAI.Renderist` |
-| 当前 PoC 版本 | `0.3.1.0`（不作为正式发布） |
-| 当前阶段 | `Phase 3 deterministic render core PoC` |
-| ADOFAI | **`v3.3.1`（最新正式版目标基线）** |
-| Unity | **待基于 ADOFAI v3.3.1 实机重新确认**；上一已确认值为 `6000.3.10f1` |
-| Unity 运行形态 | **待基于 v3.3.1 重新确认**；上一已确认为 Mono（`MonoBleedingEdge/` 存在，`GameAssembly.dll` 不存在） |
+| 当前 PoC 版本 | `0.3.2.0`（Session-Owned Playback Lifecycle Observer PoC；不作为正式发布） |
+| 当前阶段 | `Phase 3.2.0 — Route B 正式非实时离线导出前的内部行为调查、PoC 与实现准备` |
+| ADOFAI | **`Assembly-CSharp.dll` `0.4.3.0`（本机 Steam 安装已确认）** |
+| Unity | **`6000.3.10f1`（当前本机安装基线）** |
+| Unity 运行形态 | **Mono（当前安装存在 `MonoBleedingEdge/`）** |
 | UMM | **`0.33.0`（最新稳定主文件目标基线）** |
-| Harmony | **待从 UMM 0.33.0 实际 `0Harmony.dll` 读取 FileVersion 后确定**；上一基线为 `2.3.6.0` |
+| Harmony | **`2.3.6.0`（本机 UMM 0.33.0 实际 `0Harmony.dll` 已确认）** |
 | TargetFramework | `net48` |
 | LangVersion | `9.0` |
 | License | Apache-2.0 |
@@ -76,14 +76,41 @@ scripts/set-version.ps1
 
 ---
 
-## 当前 Phase 3 状态（长期基线）
+## 当前 Phase 3.2.0 状态（长期基线）
 
-- 0.3.1.0 当前只保留架构验证 PoC，不修改版本号、不作为正式发布；若 PoC 成功，Route B 正式 deterministic render core 的候选目标版本为 0.4.0.0。
+- 0.3.2.0 当前只保留调查和 PoC，不作为正式发布。只有真正实现并经过实机验证的非实时逐帧离线导出才进入 `Phase 4.0.0`；0.3.1.0 是前一调查基线。
 - Official Autoplay 指 ADOFAI 原生 `RDC.auto` / PlayerControl 路径。它仍提供官方 `Hit` 行为和正常 floor 状态迁移，但 Official-Autoplay-only 已否定为 deterministic production authority。
-- `RenderistAutoPlay` 是当前 Route B 候选：Offline Master Timeline 决定 floor 是否 due，然后调用官方 `scrPlayer.Hit(isAuto:true)`；不重写 ADOFAI Hit 行为，不等同于旧 EditorVisualClockPoc DVA。
+- `RenderistAutoPlay` 是当前 Route B 候选 gameplay advancement authority：Master Timeline 决定 floor 是否 due，然后调用官方 `scrPlayer.Hit(isAuto:true)`；不重写 ADOFAI Hit 行为，不等同于旧 EditorVisualClockPoc DVA。
+- `0.3.2.0` 新增的 `PlaybackLifecyclePoC` 仅用于验证 session-owned playback lifecycle correlation，不实现 production MasterTimeline、Frame 0、PNG、EOF export loop 或 AudioRenderer production timing。
+- 当前 DLL 的 `MonsterLove.StateMachine.StateEngine.Changed` 已静态确认为公开 `event Action<Enum> Changed`；PoC 在 `Play()` 前从当前 `scrController.stateMachine` 取得该实例并订阅，只接受仍属于当前 controller state machine 的 commit。
+- `scrController.OnMusicScheduled()` 以独立 Harmony owner 的 Postfix 只观察、不改变 original；没有加入 `Start_Rewind` patch，因为 `StateEngine.Changed + OnMusicScheduled` 已覆盖本轮需要验证的启动关联信号，是否需要辅助 marker 留到 runtime 证据。
+- lifecycle PoC 的 startup scope 由 Renderist 自己创建并关联本次 `scnEditor.Play()`；`scopeActive`、`playRequested`、`playReturned` 只是本地 correlation context，不是 ADOFAI 官方 playback generation/session token。
+- PoC readiness candidate 要求本 scope 发起且返回 `Play()`、scope 内观察到 `Start` commit、`OnMusicScheduled`、`Countdown` commit、`PlayerControl` commit，并确认 player alive、not paused、未进入 Fail/Fail2；旧 fresh-bootstrap heuristic 仍只作 diagnostics fallback。该候选尚待用户实机 trace，当前不能宣称 runtime PASS。
 - 旧 DVA 仅保留历史诊断价值，不直接迁移生产。
-- Phase 3 PoC 允许并需要评估 Unity `AudioRenderer` 作为 offline timing infrastructure；不输出最终音频文件、不做 FFmpeg / Video/VFX bridge。
-- 0.3.1.0 canonical anchor 修复已验证 frame 0 回到 floor 0 canonical time，但用户实机观察 Planet 抢跑没有明显改善，因此 anchor 不是完整根因。
+- Phase 3.2.0 PoC 允许并需要评估 Unity `AudioRenderer` 作为 offline timing infrastructure；不输出最终音频文件、不做 FFmpeg / Video/VFX bridge。
+- `T_N=N/FPS`、AudioRenderer slave / validator、Official Hit、floor/currentSeqID 和两次 90 logical frames comparison PASS 属于已确认的 PoC 事实；不等于正式离线导出已完成。
+- Canonical Startup Boundary 尚未确定；startup controller state、`hasSongStarted` 和 Planet 特殊状态仍需 runtime probe / matrix。
+- `HitScope`、临时 `RDC.auto`、`keyTimes` / multipress 清理和 Planet `targetExitAngle → cachedAngle` 的通用适用范围尚未实机定案。
+- `calibration_i=0` 目前只是候选 deterministic bridge 策略；其属性和调用来源已可静态确认，但“生产必须固定为 0”的必要性尚未独立实机确认。`AsyncInputUtils.AdjustAngle` suppression 同样只是候选 suppression，不能视为生产必需 Patch。
+- 已退役的 `CanonicalStartupProbe` v1 运行结果确认：Play 前的 `controllerState` 可能继承此前编辑器 / 游戏会话；`scnEditor.Play()` 返回后旧状态也可能短暂保留，随后才经过 `Start` / `Countdown`。因此 Play 返回值和单一旧状态都不是 canonical playback boundary。
+- 已退役的 `GameplayHandoffProbe` 实机 trace 已确认：普通 floor0、`RDC.auto=false`、无输入且不使用 RenderistAutoPlay 时，官方流程会自然完成 Countdown 并进入 `PlayerControl`。旧 `CanonicalStartupProbe` v1 的 120 Update watchdog 确实不足以覆盖该测试谱面的完整启动周期（首次 Countdown 约 frame 12527，首次 `PlayerControl_Update` 为 frame 12800），所以旧 probe 未观察到 `PlayerControl` 不能作为 handoff 缺失证据。`hasSongStarted=false` → `true` 仍明显早于 `PlayerControl`，不能单独定义 gameplay readiness。
+- 当前 PoC 的实际调用链是 `forced scrConductor.Update` → Postfix → `RenderistAutoPlay.CatchUp` → 官方 `scrPlayer.Hit(true)`。其中 `CatchUp` 静态门槛包含 `controller.state == PlayerControl`、未暂停和 player alive；PoC 启动时 `RDC.auto=false`，仅在 due-hit 期间临时置为 `true`。deterministic phase 内的 Hit / floor / Planet 闭环已验证；普通 floor0 的 startup handoff 已由 runtime 排除，剩余风险收窄为接管发生时的调用顺序和是否存在晚一拍时间消费。
+- Startup Probe v1 已完成“发现启动状态污染、确认 Play 返回不可靠、确认 `hasSongStarted` 非边界”的任务；不应通过机械扩大 watchdog 或修改现有探针来替代 handoff 调查。Official Autoplay reference probe 仍只能作为诊断手段，不能改变生产 authority 决策。
+- 当前 DLL 静态状态机显示：`OnMusicScheduled` 在普通 floor0、非 `forceNoCountdown` 情况下设置 `Countdown`；`Countdown_Update` 在 `beatNumber >= adjustedCountdownTicks`，或非 gameworld / `forceNoCountdown` 时直接进入 `PlayerControl`。因此第一 Hit 不负责把普通流程从 Countdown 推入 PlayerControl。
+- `RenderistAutoPlay` 的 `PlayerControl` gate 是 Renderist PoC 自己的安全门，不是 `scrPlayer.Hit(bool)` 的官方硬性要求。`Hit(true)` 不检查 controller state，且 `HitInputEvent(true, ...)` 静态上绕过物理输入；当前普通 floor0 trace 已确认进入 `PlayerControl` 后约 111 Unity frame 才发生 `Die`，因此 Countdown 内 synthetic Hit 不是 startup 解决方案。Die 的更深层 caller 根因不属于本轮 ordering 调查范围。
+- 对当前普通 floor0 路径，"必须 Hit 才能进入 PlayerControl，但 Renderist 必须等 PlayerControl 才 Hit" 的 startup handoff deadlock 已被 runtime 排除（RUNTIME EXCLUDED）。官方首次 `PlayerControl_Update` 到 `Die` 相隔约 111 Unity frame，当前 `RenderistAutoPlay` 的 `PlayerControl` gate 不是 startup blocker；该结论不外推到 Hold、Midspin、Twirl、特殊 startup 或 checkpoint start。参考 ChartRendering 也采用 `RDC.auto=false` 启动编辑器播放并在 `controller.state == PlayerControl` 后才运行 AutoPlayer；该实现仅作为参考证据，不替代当前 DLL 结论。
+- 最新 deterministic core comparison 只比较 gameplay / Planet 等字段，未比较 `controllerState`：一次 deterministic phase 起点为 `Countdown`，另一次为 `PlayerControl`，随后第二次短暂出现 `Start` / `Countdown`，但 frame 0–89 的既有比较仍全部相同。因此 core PoC PASS 不代表 startup controller state 已经 canonical。
+- `Bootstrap Ready` ≠ `Frame 0 Canonical State` 现在获得了普通 floor0 runtime 支持的候选分层：Bootstrap Ready 可候选表示新 Play 已完成、controller 已进入真实 `PlayerControl` lifecycle、player alive、not paused、floor0 基础状态有效且未 Fail；不加入 `hasSongStarted=true`，也不把 `currentSeqID == playerFloor` 写成通用 equality invariant。该分层仍未完成正式 ordering 验证，不能用 `Countdown OR PlayerControl`、`Play()` 返回或单一 state 代替正式边界。
+- Handoff Ordering Probe runtime 已确认：`ChangeState(PlayerControl)` request 是 deferred，ChangeState Postfix 仍可观察到 `Countdown`；随后下一帧仍为 Countdown，再下一帧的 `scrConductor.Update()` Prefix 首次看到 `PlayerControl`。该 Unity frame 内顺序为 `Conductor.Update` → Renderist `OnUpdate` → `PlayerControl_Update`，因此在 Renderist `OnUpdate` 才激活 forced clock 存在 runtime-confirmed late-tick 风险；Conductor 已在该 marker 前消费了 realtime songposition。普通 floor0 的最强 handoff 候选点是首个满足 `PlayerControl`、player alive、not paused 且 session active 的 `Conductor.Update Prefix`，但仍是 `RUNTIME-SUPPORTED CANDIDATE`，不是 production-final boundary。
+- `GameplayHandoffProbe` 已完成 Handoff Ordering 调查使命，现已删除代码和 GUI；其 ring-buffer 结论保留在本文件，不再要求重复运行。
+- 最小 `DeterministicHandoffPoc` 的历史实机运行只能判定为 `PARTIAL PASS`：activation 曾在 Play 请求同一帧的遗留 `PlayerControl` 上提前发生，随后才观察到本次启动的 `Start` / `Countdown` / 新 `PlayerControl`。该代码和 GUI 已删除；其 fresh-bootstrap heuristic 结论仅保留为 diagnostics-only 历史事实，不作为 production boundary。
+- 新 HandoffTrace 已确认 `Die` 与 `FailAction` 可在同一 Unity frame 连续发生；`Fail2Action` 被调用时 trace 中 `controllerState` 仍为 `Fail`，因此不能仅凭方法名宣称已观察到 `state == Fail2`。这些自然失败事实不是当前 startup blocker。
+- 当前 `Assembly-CSharp.dll` `0.4.3.0` 的完整静态链已确认：编辑器 `scnEditor.Play()` 在 editor 路径中调用 `scnGame.Play(startFloor)`；后者依次执行 conductor/controller rewind、`scrController.Awake_Rewind()` 请求 `Start`、`scrConductor.Start()`、`scrController.Start_Rewind()`，而 `Start_Rewind()` 启动 `StartMusic(PostSong, OnMusicScheduled)` 协程。音乐 schedule 回调再为普通 floor0 请求 `Countdown`（`forceNoCountdown` 时请求 `PlayerControl`），`Countdown_Update()` 在 countdown beat 条件满足后请求 `PlayerControl`。
+- 当前官方实现不存在可直接读取的 playback generation/session token。`waitForStartCoCallCount` 只是使 `WaitForStartCo` 的旧实例失效的递增计数，并不是 `editor.Play()` generation；`hasSongStarted` 也只是音频/DSP 时序标志。全程序集写入点为 `scrController.Start_Rewind`、checkpoint 分支的 `scrController.OnMusicScheduled`、`scrConductor.Rewind` 和 `scrConductor.ToggleHasSongStarted`，不能单独作为 fresh playback marker。
+- `MonsterLove.StateMachine.StateEngine.ChangeState()` 只设置 destination 并启动 deferred `ChangeToNewStateRoutine`；真正 commit 在该 routine 设置 `currentState`、完成 Enter 后发生，并随后触发公开的 `Changed` event。正式 startup 设计应由 RenderSession 自己发起 `Play()`，结合预期的官方 lifecycle 请求与 `StateEngine.Changed` commit 观察建立 session-owned boundary；不能用旧 `controller.state`、`hasSongStarted` 或 `Countdown OR PlayerControl` 代替。已退役 Probe 的 Start/Countdown fresh-bootstrap heuristic 仅保留为历史 diagnostics 结论，不是 production boundary。
+- 参考仓库 `ADOFAI.EditorTweaks.ChartRendering` main（研究快照 commit `7e79127bfa5b89496b911215817f401eb9c6acd0`）的 `ChartRenderPlaybackController.IsPlaybackScheduled()` 仍是 `hasSongStarted || state == Countdown || state == PlayerControl`，未使用 generation、`StateEngine.Changed` 或新的 Play-session marker；因此它没有真正解决 Renderist 已发现的 stale startup，startup readiness 弱于正式 Route B 需求。可借鉴的是 visual clock / auto-player / capture 的职责分离，而不是该 readiness 条件。
+- Route B 的主要正式候选已收敛为：`FrameIndex N → T_N=N/OutputFps → 在 Conductor.Update 前暴露本帧 forced chart time → 原生 Conductor.Update 消费 T_N → Conductor.Update Postfix 执行 per-frame due-floor CatchUp 并调用官方 Hit(true) → 其余 gameplay/Planet/camera/VFX Update → WaitForEndOfFrame capture → 提交 frame N → N++`。现有 runtime 已确认 `Conductor.Update → Renderist OnUpdate → PlayerControl_Update`，且参考实现也在 `scrConductor.Update` Postfix 调 AutoPlayer，因此 Postfix 是当前证据最强的 Hit 位置；Renderist OnUpdate 不应继续承担该 authority。
+- 参考实现以 `ChartUnityAudioCapture.CapturedSeconds` 驱动下一帧 visual clock，并以 `index/fps` 作为 fallback；Renderist 正式目标保持相反 ownership：`T_N` 由 FrameIndex 计算，AudioRenderer 只作 offline audio slave / validator。当前 DLL 的 songposition 计算已将 pitch 纳入 conductor chart time，正式映射只允许对 output seconds 乘 pitch 一次：`forcedSongPosition_N = canonicalStart + (N/OutputFps) * pitch`。
 
 本轮 PoC 的最小闭环为：
 
@@ -143,7 +170,7 @@ AGENTS.md
     DSH 的仓库执行约束和 Agent 行为规范。
 
 PROJECT_UNDERSTANDING.md
-    本文件。由网页版 GPT 维护，DSH 只读。
+    本文件。由参与项目工作的 Agent 按实际证据维护。
 
 Directory.Build.props
     .NET / C# 全局构建配置，并导入本地 local.props。
@@ -383,6 +410,24 @@ capturedFrameCount = 0
 - 不推进时间
 - 不控制相机
 - 不操作 ADOFAI 内部游戏状态
+
+### 6.3 当前 Diagnostics 基线
+
+当前 UMM 面板只暴露仍在进行的 `PlaybackLifecyclePoC`。它验证 Renderist 自己发起的 `editor.Play()` 与官方 lifecycle commit 的关联；MasterTimeline、Frame 0 和正式离线导出仍未实现。
+
+保留但隐藏入口的底层 PoC：
+
+- `EditorVisualClockPoc.cs`：保留 forced-time / Planet 观察与未来 bridge 评估价值，不作为当前时间权威。
+- `OfflineAudioClockPoC.cs`：保留 AudioRenderer discard-buffer、`RenderistAutoPlay`、due-floor 与官方 `Hit(true)` 的 Route B 验证实现；AudioRenderer 不拥有 Master Timeline。
+
+已完成使命并退役的 diagnostics 代码：
+
+- `CanonicalStartupProbe.cs`
+- `GameplayHandoffProbe.cs`
+- `DeterministicHandoffPoc.cs`
+- `EditorTimeProbe.cs`
+
+这些 Probe 的 runtime/static 结论已转入本文件，旧 GUI 入口、Tick wiring 和互斥引用已移除。
 
 ---
 
@@ -817,22 +862,16 @@ Phase 2.4 editor export skeleton
 - Forced Conductor；
 - `RenderistAutoPlay` due-floor 诊断和官方 `scrPlayer.Hit(true)` 调用；
 - `AudioRenderer` discard-buffer 采样；
-- calibration_i=0、AdjustAngle suppression、Planet 状态和 `WaitForEndOfFrame` FrameBoundary 记录。
+- calibration_i=0 bridge 候选、AdjustAngle suppression 候选、Planet 状态和 `WaitForEndOfFrame` FrameBoundary 记录。
 
-这些能力仍须通过至少两次同谱面实机运行证明重复性，不能据此宣称正式生产可用。
+这些能力仍属于 Phase 3.2.0 调查和 PoC 边界，不能据此宣称正式非实时离线导出可用。
 
 ---
 ## 11. 下一步接续点
 
-完成 `OfflineAudioClockPoC` 的至少两次实机运行，并审查：
+当前下一步是由用户实机运行 `PlaybackLifecyclePoC`，审查 `StateEngine.Changed`、`OnMusicScheduled`、scope correlation、stale state rejection 和 cleanup 的实际日志。
 
-1. `AudioRenderer` 是否进入 offline capture mode，正常实时音乐输出是否被停止 / 静音；
-2. 每帧 sample count / `CapturedSeconds` 与 `N/FPS` 的误差、舍入和重复性；
-3. `RenderistAutoPlay` 是否只在 due frame 调用官方 Hit；
-4. first Hit、playerFloor、currentSeqID、Planet angle/cache 是否跨运行一致；
-5. wall-clock 耗时变化是否不改变逻辑结果。
-
-PoC 成功后，再评估是否进入 0.4.0.0 Route B 正式架构；在此之前不交付正式 Scheduler。失败时只记录最小证据缺口，不扩大到视频、音频文件或自定义分辨率。
+随后才继续评估：AudioRenderer sample cursor、`T_N=N/FPS`、RenderistAutoPlay due-floor、Planet canonicalization、Frame 0 与正式 RenderSession。Phase 4.0.0 的门槛仍是实际非实时逐帧导出、PNG 序列、wall-clock independence 与失败恢复全部完成并通过实机验证。
 
 ---
 ## 12. 工程红线

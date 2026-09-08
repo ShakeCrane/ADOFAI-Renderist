@@ -6,7 +6,7 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 正式 Forced Visual Clock（Phase 3.1）。
+    /// 保留的 Forced Visual Clock bridge；当前尚未接入 production MasterTimeline。
     ///
     /// 职责（严格限定）：
     ///   * 保存原时间锚点（startSongPosition / pitch）

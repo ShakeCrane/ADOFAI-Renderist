@@ -14,7 +14,7 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Diagnostics
 {
     /// <summary>
-    /// Editor Forced Visual Clock / DVA Runtime Probe（Phase 3.x 诊断工具）。
+    /// Retained legacy forced-time / DVA diagnostics; no current UMM GUI entry.
     ///
     /// 目的（本轮唯一目标）：验证
     ///   官方 editor.Play()
@@ -1541,7 +1541,7 @@ namespace ADOFAI.Renderist.Diagnostics
         }
         private static bool IsProbablyEditorNow()
         {
-            // 与 EditorTimeProbe 一致：以实机验证场景名 scnEditor 为主，ADOBase.isLevelEditor 为辅助。
+            // 以实机验证场景名 scnEditor 为主，ADOBase.isLevelEditor 为辅助。
             if (string.Equals(SceneName(), "scnEditor", StringComparison.Ordinal)) return true;
             return ReadStaticNullableBool(_tAdoBase, "isLevelEditor") == true;
         }
@@ -1613,11 +1613,6 @@ namespace ADOFAI.Renderist.Diagnostics
             if (EditorExportController.IsBusy)
             {
                 return "editor-export-busy";
-            }
-
-            if (EditorTimeProbe.IsRunning)
-            {
-                return "time-probe-running";
             }
 
             if (CaptureService.IsRecording)

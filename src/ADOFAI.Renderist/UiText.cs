@@ -124,100 +124,40 @@ namespace ADOFAI.Renderist
         public const string GuiSeeLogForDetails = "详情请查看日志。";
         public const string GuiDebugInfoTitle = "调试信息（详细日志模式）";
 
-        // ---------------- GUI: 编辑器导出就绪段（Phase 2.3） ----------------
+        // ---------------- GUI: Developer Diagnostics ----------------
 
-        public const string GuiEditorExportSectionTitle = "编辑器导出就绪（实验性）";
-        public const string GuiEditorExportNotImplementedWarn = "注意：编辑器逐帧导出尚未实现。";
-        public const string GuiEditorExportEnabledToggle = " 启用编辑器导出就绪检查";
+        public const string GuiDeveloperDiagnosticsSectionTitle = "开发者 Diagnostics";
 
-        public const string GuiEditorExportReadinessPrefix = "就绪状态：";
-        public const string GuiEditorExportReasonPrefix = "原因：";
-        public const string GuiEditorExportTargetFrameRatePrefix = "目标帧率（仅意图）：";
-        public const string GuiEditorExportIsRecordingPrefix = "实时序列占用：";
+        // ---------------- GUI: Session-Owned Playback Lifecycle PoC（Phase 3.2.0） ----------------
 
-        public const string GuiEditorExportReadinessDisabled = "已禁用";
-        public const string GuiEditorExportReadinessNotInEditor = "非编辑器场景";
-        public const string GuiEditorExportReadinessUnknownEnvironment = "环境不确定";
-        public const string GuiEditorExportReadinessBlocked = "未就绪";
-        public const string GuiEditorExportReadinessReady = "已就绪（未实现导出）";
+        public const string GuiLifecyclePocSectionTitle = "Playback Lifecycle Observer PoC（实验性）";
+        public const string GuiLifecyclePocStatusPrefix = "生命周期状态：";
+        public const string GuiLifecyclePocIdle = "未运行";
+        public const string GuiLifecyclePocRunning = "观察中";
+        public const string GuiLifecyclePocPass = "PASS（待用户确认日志）";
+        public const string GuiLifecyclePocStopped = "已停止";
+        public const string GuiLifecyclePocRejected = "已拒绝：";
+        public const string GuiLifecyclePocUpdatePrefix = "观察 Update：";
+        public const string GuiLifecyclePocLogPathPrefix = "日志路径：";
+        public const string GuiLifecyclePocReasonPrefix = "结束原因：";
+        public const string GuiLifecyclePocBtnStart = "运行 Playback Lifecycle PoC";
+        public const string GuiLifecyclePocBtnStop = "停止 Playback Lifecycle PoC";
 
-        public const string GuiEditorExportReasonNone = "无";
-        public const string GuiEditorExportReasonFeatureDisabled = "实验性开关未启用";
-        public const string GuiEditorExportReasonEditorSceneNotDetected = "未检测到编辑器场景";
-        public const string GuiEditorExportReasonEnvironmentUnavailable = "环境信息不可用";
-        public const string GuiEditorExportReasonCaptureBusy = "实时序列截图正在运行";
-        public const string GuiEditorExportReasonInvalidTargetFrameRate = "目标帧率不合法";
-        public const string GuiEditorExportReasonInvalidOutputDirectory = "输出目录非法";
-
-        public const string GuiEditorExportEnvTimeScalePrefix = "Time.timeScale：";
-        public const string GuiEditorExportEnvCaptureFrameratePrefix = "Time.captureFramerate：";
-        public const string GuiEditorExportEnvIsFocusedPrefix = "Application.isFocused：";
-        public const string GuiEditorExportEnvScreenSizePrefix = "屏幕分辨率：";
-
-        // ---------------- GUI: 编辑器导出控制段（Phase 3.1） ----------------
-
-        public const string GuiEditorExportControlSectionTitle = "编辑器导出（实验性，Phase 3.1）";
-        public const string GuiEditorExportControlWarn =
-            "Phase 3.1：Official Autoplay + 确定性帧调度 + 当前分辨率短 PNG 序列。";
-        public const string GuiEditorExportStatePrefix = "会话状态：";
-        public const string GuiEditorExportStateDetailPrefix = "状态说明：";
-        public const string GuiEditorExportSessionDirPrefix = "会话目录：";
-        public const string GuiEditorExportStartedAtPrefix = "开始时间：";
-        public const string GuiEditorExportTickCountPrefix = "Tick 计数：";
-        public const string GuiEditorExportNotRunning = "（无活动会话）";
-
-        public const string GuiEditorExportStateIdle = "空闲";
-        public const string GuiEditorExportStatePreparing = "准备中";
-        public const string GuiEditorExportStateRunning = "运行中";
-        public const string GuiEditorExportStateCleaning = "清理中";
-        public const string GuiEditorExportStateCompleted = "已完成";
-        public const string GuiEditorExportStateCancelled = "已取消";
-        public const string GuiEditorExportStateFailed = "已失败";
-
-        public const string GuiEditorExportBtnStart = "开始编辑器导出";
-        public const string GuiEditorExportBtnStop = "停止编辑器导出";
-
-        // ---------------- GUI: Deterministic Frame Scheduler（Phase 3.1） ----------------
-
-        public const string GuiSchedulerOutputFramePrefix = "scheduler outputFrame：";
-        public const string GuiSchedulerCapturedPrefix = "scheduler 已捕获帧：";
-        public const string GuiSchedulerStatusPrefix = "scheduler 状态：";
-
-        // ---------------- GUI: 编辑器时间链探针（Phase 3.0） ----------------
-
-        public const string GuiTimeProbeSectionTitle = "编辑器时间链探针（实验性）";
-        public const string GuiTimeProbeStatusPrefix = "探针状态：";
-        public const string GuiTimeProbeIdle = "未运行";
-        public const string GuiTimeProbeRunning = "运行中";
-        public const string GuiTimeProbeLogPathPrefix = "日志路径：";
-        public const string GuiTimeProbeBtnStart = "开始时间探针";
-        public const string GuiTimeProbeBtnStop = "停止时间探针";
-
-        // ---------------- GUI: Editor Forced Visual Clock PoC（Phase 3.0） ----------------
-
-        public const string GuiVcPocSectionTitle = "Visual Clock PoC（实验性）";
-        public const string GuiVcPocStatusPrefix = "PoC 状态：";
-        public const string GuiVcPocIdle = "未运行";
-        public const string GuiVcPocRunning = "运行中";
-        public const string GuiVcPocFramePrefix = "logicalFrame：";
-        public const string GuiVcPocLogPathPrefix = "日志路径：";
-        public const string GuiVcPocBtnStart = "开始 Visual Clock PoC";
-        public const string GuiFrameOrderProbeBtnStart = "运行 Frame Order Probe（64 帧，需先开启 Auto）";
-        public const string GuiVcPocBtnStop = "停止 Visual Clock PoC";
-        public const string GuiVcPocNotRunning = "（无活动 PoC）";
-        public const string GuiDvaModePrefix = "RDC.auto 对照模式：";
-        public const string GuiDvaModePreserve = "Preserve";
-        public const string GuiDvaModeTemporaryTrue = "TemporaryTrueDuringHit";
-        public const string GuiDvaProbeBtnStart = "开始 DVA Runtime Probe";
-        public const string GuiDvaProbeRunning = "当前模式：DVA Runtime Probe";
-        public const string GuiVcOnlyRunning = "当前模式：Visual Clock only";
-        public const string GuiFrameOrderProbeRunning = "当前模式：Frame Order Probe（仅日志，无 PNG / DVA）";
-
-        // ---------------- Log: Editor Visual Clock PoC（Phase 3.0） ----------------
+        // ---------------- Log: retained legacy Visual Clock / DVA diagnostics ----------------
 
         public const string LogVcPocStarted = "Visual Clock PoC 已启动（不含 auto-hit）。";
         public const string LogFrameOrderProbeStarted = "Frame Order Probe 已启动（64 帧，仅观察，不写 PNG / 不调用 Hit）。";
         public const string LogDvaProbeStarted = "DVA Runtime Probe 已启动（仅支持简单谱面）。";
+        public const string LogLifecyclePocStarted = "Playback Lifecycle Observer PoC 已启动。";
+        public const string LogLifecyclePocStartFailed = "Playback Lifecycle Observer PoC 启动失败";
+        public const string LogLifecyclePocTickError = "Playback Lifecycle Observer PoC 运行异常";
+        public const string LogLifecyclePocCleanupError = "Playback Lifecycle Observer PoC 清理异常";
+        // {0}=reason
+        public const string LogLifecyclePocStartRejectedFormat = "Playback Lifecycle Observer PoC 启动被拒绝：{0}";
+        // {0}=log file path
+        public const string LogLifecyclePocLogPathFormat = "Playback Lifecycle Observer PoC 日志：{0}";
+        // {0}=reason
+        public const string LogLifecyclePocStoppedFormat = "Playback Lifecycle Observer PoC 已停止（{0}）。";
         public const string LogVcPocAlreadyRunning = "Visual Clock PoC 已在运行。";
         // {0}=reason
         public const string LogVcPocStartRejectedFormat = "Visual Clock PoC 启动被拒绝：{0}";
@@ -274,7 +214,7 @@ namespace ADOFAI.Renderist
         public const string LogEditorExportF9F10Blocked =
             "编辑器导出会话进行中，已阻止 F9/F10 截图请求。";
 
-        // ---------------- Log: Deterministic Frame Scheduler（Phase 3.1） ----------------
+        // ---------------- Log: retained legacy deterministic scheduler ----------------
 
         // {0}=outputFps, {1}=targetFrameCount, {2}=outputDirectory
         public const string LogSchedulerStartedFormat =
@@ -283,7 +223,7 @@ namespace ADOFAI.Renderist
         public const string LogSchedulerStartRejectedFormat =
             "确定性帧调度器启动被拒绝：{0}";
         public const string LogSchedulerPlaybackRequested =
-            "已请求官方 Editor Play（floor 0 + Official Autoplay）。";
+            "已请求旧版 Editor Play（仅保留作历史诊断，不代表当前 Route B authority）。";
         // {0}=canonicalStartTime
         public const string LogSchedulerCanonicalAnchorFormat =
             "CanonicalStartTime 已建立：{0}（来自 floors[0].entryTime）。";
@@ -308,20 +248,6 @@ namespace ADOFAI.Renderist
         // {0}=terminalState, {1}=stopReason
         public const string LogEditorExportFinishedFormat =
             "编辑器导出会话结束：state={0}, stopReason={1}。";
-
-        // ---------------- Log: 编辑器时间链探针（Phase 3.0） ----------------
-
-        public const string LogTimeProbeStarted = "编辑器时间探针已启动（仅观察，不修改播放状态）。";
-        // {0}=log file path
-        public const string LogTimeProbeLogPathFormat = "探针日志：{0}";
-        // {0}=reason
-        public const string LogTimeProbeStoppedFormat = "编辑器时间探针已停止（{0}）。";
-        public const string LogTimeProbeAlreadyRunning = "时间探针已在运行。";
-        public const string LogTimeProbeRejectedNotEditor = "时间探针仅可在编辑器中使用，已拒绝启动。";
-        public const string LogTimeProbeNoOutputDir = "无法准备探针输出目录；时间探针已中止。";
-        // {0}=error message
-        public const string LogTimeProbeStartFailedFormat = "时间探针启动失败：{0}";
-        public const string LogTimeProbeError = "编辑器时间探针运行异常";
 
         // ---------------- Log: CaptureService ----------------
 

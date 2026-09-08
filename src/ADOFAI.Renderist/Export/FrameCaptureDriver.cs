@@ -8,7 +8,7 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 正式当前分辨率同步捕获后端（Phase 3.1）。
+    /// 保留的旧当前分辨率同步捕获后端；当前尚未接入 production RenderSession。
     ///
     /// 只支持：当前游戏实际渲染分辨率（Screen.width × Screen.height）。
     /// 捕获点：WaitForEndOfFrame。

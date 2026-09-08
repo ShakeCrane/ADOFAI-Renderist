@@ -7,7 +7,7 @@ using System.Reflection;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 正式 Editor Export 路径的只读 ADOFAI 运行时反射工具（Phase 3.1）。
+    /// 保留的旧 Editor Export / diagnostics 路径的只读 ADOFAI 运行时反射工具。
     ///
     /// 与 Diagnostics.EditorVisualClockPoc 的反射块职责相同，但独立、只保留
     /// 正式路径需要的最小集合：类型 / 成员发现 + 只读状态读取 + RDC.auto 写入。

@@ -26,7 +26,7 @@ namespace ADOFAI.Renderist
         /// 由 scripts/set-version.ps1 自动同步。供 CaptureService metadata.json version 字段引用，
         /// 避免 metadata version 与 mod version 脱节。
         /// </summary>
-        internal const string ModVersion = "0.3.1.0";
+        internal const string ModVersion = "0.3.2.0";
 
         internal static UnityModManager.ModEntry Mod;
         internal static UnityModManager.ModEntry.ModLogger Logger;
@@ -40,7 +40,6 @@ namespace ADOFAI.Renderist
         private static float _lastPreflightCacheRealtime = float.NegativeInfinity;
         private static PreflightReport _cachedPreflightReport;
         private static EditorEnvSnapshot _cachedEditorEnvSnapshot;
-        private static EditorExportReadinessReport _cachedEditorExportReadinessReport;
         private static DirectoryBrowserState _directoryBrowserState;
 
         /// <summary>
@@ -60,10 +59,10 @@ namespace ADOFAI.Renderist
                 modEntry.OnSaveGUI = OnSaveGUI;
                 modEntry.OnUpdate = OnUpdate;
 
-                // Instantiate Harmony but do NOT PatchAll in Phase 2.
+                // Instantiate the shared Harmony owner; active diagnostics install their own scoped patches.
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.3.1.0 (Phase 3.1 Official Autoplay Deterministic Frame Scheduler).");
+                Log.Info("Loaded ADOFAI Renderist 0.3.2.0 (Phase 3.2.0 Session-Owned Playback Lifecycle Observer PoC / Route B investigation).");
                 Log.Warn(UiText.LogStartupPerfWarn);
                 return true;
             }
@@ -95,9 +94,9 @@ namespace ADOFAI.Renderist
                     }
                     // Phase 2.4: Mod 禁用时安全取消编辑器导出会话。
                     EditorExportController.Cancel("mod-disabled");
-                    // Phase 3.0: Mod 禁用时安全停止并关闭时间探针日志。
-                    EditorTimeProbe.Stop("mod-disabled");
-                    // Phase 3.0: Mod 禁用时安全停止并恢复 Visual Clock PoC。
+                    // 停止当前生命周期观察和保留的底层 PoC，避免禁用时留下 Harmony/音频状态。
+                    PlaybackLifecyclePoC.Stop("mod-disabled");
+                    // 保留底层 PoC 的安全恢复路径；它们当前没有 UMM GUI 入口。
                     EditorVisualClockPoc.Stop("mod-disabled");
                     OfflineAudioClockPoC.Stop("mod-disabled");
                     // Always safe to call even when no patches are registered.
@@ -166,7 +165,6 @@ namespace ADOFAI.Renderist
             }
             _cachedPreflightReport = Preflight.Run();
             _cachedEditorEnvSnapshot = _cachedPreflightReport.EditorEnv;
-            _cachedEditorExportReadinessReport = EditorExportPreflight.Run();
             _lastPreflightCacheRealtime = now;
         }
 
@@ -367,398 +365,40 @@ namespace ADOFAI.Renderist
                 GUILayout.Label(UiText.GuiEnvDetectionPrefix + detectionText, GUI.skin.label);
 
                 GUILayout.Space(6f);
-                DrawEditorExportReadinessGui();
-                GUILayout.Space(6f);
-                DrawTimeProbeGui();
-                GUILayout.Space(6f);
-                DrawVisualClockPocGui();
-                GUILayout.Space(6f);
-                DrawDeterministicCorePocGui();
+                 GUILayout.Label(UiText.GuiDeveloperDiagnosticsSectionTitle, GUI.skin.label);
+                 GUILayout.Space(4f);
+                 DrawPlaybackLifecyclePocGui();
+                 GUILayout.Space(6f);
             }
         }
 
         /// <summary>
-        /// 绘制「编辑器导出就绪」段（Phase 2.3）。
-        /// 仅在 Detailed Log / VerboseLogging 区域显示，不增加默认界面复杂度。
-        /// 不实现任何导出执行器，只展示就绪状态、环境与阻断原因。
+        /// Phase 3.2.0 session-owned playback lifecycle observer.
+        /// The observer calls the official editor.Play() once and records only
+        /// official lifecycle commit signals for that local startup scope.
         /// </summary>
-        private static void DrawEditorExportReadinessGui()
+        private static void DrawPlaybackLifecyclePocGui()
         {
-            GUILayout.Label(UiText.GuiEditorExportSectionTitle, GUI.skin.label);
-            GUILayout.Label(UiText.GuiEditorExportNotImplementedWarn, GUI.skin.label);
+            GUILayout.Label(UiText.GuiLifecyclePocSectionTitle, GUI.skin.label);
+            GUILayout.Label(UiText.GuiLifecyclePocStatusPrefix + PlaybackLifecyclePoC.StatusText, GUI.skin.label);
+            if (PlaybackLifecyclePoC.IsRunning)
+                GUILayout.Label(UiText.GuiLifecyclePocUpdatePrefix + PlaybackLifecyclePoC.UpdateCount.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
+            if (!string.IsNullOrEmpty(PlaybackLifecyclePoC.LogPath))
+                GUILayout.Label(UiText.GuiLifecyclePocLogPathPrefix + PlaybackLifecyclePoC.LogPath, GUI.skin.label);
+            if (!string.IsNullOrEmpty(PlaybackLifecyclePoC.LastReason))
+                GUILayout.Label(UiText.GuiLifecyclePocReasonPrefix + PlaybackLifecyclePoC.LastReason, GUI.skin.label);
 
-            // 实验性开关
-            bool newEnabled = GUILayout.Toggle(
-                Settings.EditorExportEnabled,
-                UiText.GuiEditorExportEnabledToggle);
-            if (newEnabled != Settings.EditorExportEnabled)
+            if (GUILayout.Button(PlaybackLifecyclePoC.IsRunning
+                ? UiText.GuiLifecyclePocBtnStop
+                : UiText.GuiLifecyclePocBtnStart))
             {
-                Settings.EditorExportEnabled = newEnabled;
-                // 强制刷新缓存，使状态立即更新
-                _lastPreflightCacheRealtime = float.NegativeInfinity;
-            }
-
-            // 目标帧率输入（仅意图参数）
-            GUILayout.BeginHorizontal();
-            GUILayout.Label(UiText.GuiEditorExportTargetFrameRatePrefix, GUI.skin.label);
-            string frameRateText = GUILayout.TextField(
-                Settings.EditorTargetFrameRate.ToString(CultureInfo.InvariantCulture),
-                GUILayout.Width(80));
-            GUILayout.EndHorizontal();
-            if (int.TryParse(frameRateText, out int parsedFrameRate) &&
-                parsedFrameRate != Settings.EditorTargetFrameRate)
-            {
-                Settings.EditorTargetFrameRate = parsedFrameRate;
-                _lastPreflightCacheRealtime = float.NegativeInfinity;
-            }
-
-            EditorExportReadinessReport report = _cachedEditorExportReadinessReport;
-            if (report == null)
-            {
-                GUILayout.Label(UiText.GuiPreflightNotChecked, GUI.skin.label);
-                return;
-            }
-
-            // 就绪状态
-            string readinessText;
-            switch (report.Readiness)
-            {
-                case EditorExportReadiness.Disabled:
-                    readinessText = UiText.GuiEditorExportReadinessDisabled;
-                    break;
-                case EditorExportReadiness.NotInEditor:
-                    readinessText = UiText.GuiEditorExportReadinessNotInEditor;
-                    break;
-                case EditorExportReadiness.UnknownEnvironment:
-                    readinessText = UiText.GuiEditorExportReadinessUnknownEnvironment;
-                    break;
-                case EditorExportReadiness.Blocked:
-                    readinessText = UiText.GuiEditorExportReadinessBlocked;
-                    break;
-                case EditorExportReadiness.Ready:
-                    readinessText = UiText.GuiEditorExportReadinessReady;
-                    break;
-                default:
-                    readinessText = UiText.GuiPreflightNotChecked;
-                    break;
-            }
-            GUILayout.Label(UiText.GuiEditorExportReadinessPrefix + readinessText, GUI.skin.label);
-
-            // 原因
-            string reasonText;
-            switch (report.Reason)
-            {
-                case EditorExportReadinessReason.None:
-                    reasonText = UiText.GuiEditorExportReasonNone;
-                    break;
-                case EditorExportReadinessReason.FeatureDisabled:
-                    reasonText = UiText.GuiEditorExportReasonFeatureDisabled;
-                    break;
-                case EditorExportReadinessReason.EditorSceneNotDetected:
-                    reasonText = UiText.GuiEditorExportReasonEditorSceneNotDetected;
-                    break;
-                case EditorExportReadinessReason.EnvironmentUnavailable:
-                    reasonText = UiText.GuiEditorExportReasonEnvironmentUnavailable;
-                    break;
-                case EditorExportReadinessReason.CaptureBusy:
-                    reasonText = UiText.GuiEditorExportReasonCaptureBusy;
-                    break;
-                case EditorExportReadinessReason.InvalidTargetFrameRate:
-                    reasonText = UiText.GuiEditorExportReasonInvalidTargetFrameRate;
-                    break;
-                case EditorExportReadinessReason.InvalidOutputDirectory:
-                    reasonText = UiText.GuiEditorExportReasonInvalidOutputDirectory;
-                    break;
-                default:
-                    reasonText = UiText.GuiPreflightNotChecked;
-                    break;
-            }
-            GUILayout.Label(UiText.GuiEditorExportReasonPrefix + reasonText, GUI.skin.label);
-
-            // 环境快照
-            EditorEnvSnapshot env = report.EditorEnv;
-            string sceneName = env.SceneName == null
-                ? UiText.GuiEnvNotAvailable
-                : (string.IsNullOrEmpty(env.SceneName) ? UiText.GuiEnvSceneEmpty : env.SceneName);
-            GUILayout.Label(UiText.GuiEnvSceneNamePrefix + sceneName, GUI.skin.label);
-
-            string detectionText;
-            switch (env.Detection)
-            {
-                case EditorEnvDetection.ProbablyEditor:
-                    detectionText = UiText.GuiEnvDetectionProbablyEditor;
-                    break;
-                default:
-                    detectionText = UiText.GuiEnvDetectionUnknown;
-                    break;
-            }
-            GUILayout.Label(UiText.GuiEnvDetectionPrefix + detectionText, GUI.skin.label);
-
-            string timeScaleText = env.TimeScale.HasValue
-                ? env.TimeScale.Value.ToString("0.###", CultureInfo.InvariantCulture)
-                : UiText.GuiEnvNotAvailable;
-            GUILayout.Label(UiText.GuiEditorExportEnvTimeScalePrefix + timeScaleText, GUI.skin.label);
-
-            string captureFramerateText = env.CaptureFramerate.HasValue
-                ? env.CaptureFramerate.Value.ToString(CultureInfo.InvariantCulture)
-                : UiText.GuiEnvNotAvailable;
-            GUILayout.Label(UiText.GuiEditorExportEnvCaptureFrameratePrefix + captureFramerateText, GUI.skin.label);
-
-            string isFocusedText = env.IsFocused.HasValue
-                ? (env.IsFocused.Value ? "true" : "false")
-                : UiText.GuiEnvNotAvailable;
-            GUILayout.Label(UiText.GuiEditorExportEnvIsFocusedPrefix + isFocusedText, GUI.skin.label);
-
-            string screenSizeText = env.ScreenWidth.HasValue && env.ScreenHeight.HasValue
-                ? $"{env.ScreenWidth.Value}x{env.ScreenHeight.Value}"
-                : UiText.GuiEnvNotAvailable;
-            GUILayout.Label(UiText.GuiEditorExportEnvScreenSizePrefix + screenSizeText, GUI.skin.label);
-
-            string camCount = env.CameraCount.HasValue
-                ? env.CameraCount.Value.ToString(CultureInfo.InvariantCulture)
-                : UiText.GuiEnvNotAvailable;
-            GUILayout.Label(UiText.GuiEnvCameraCountPrefix + camCount, GUI.skin.label);
-
-            // 实时序列占用
-            GUILayout.Label(UiText.GuiEditorExportIsRecordingPrefix +
-                (report.IsRecording ? UiText.GuiStatusRecording : UiText.GuiStatusIdle), GUI.skin.label);
-
-            // 输出目录验证摘要
-            DirectoryValidationResult dirVal = report.OutputDirectoryValidation;
-            string dirSummary;
-            switch (dirVal.Outcome)
-            {
-                case DirectoryValidationOutcome.Accept:
-                    dirSummary = UiText.GuiPreflightPathCheckAccept;
-                    break;
-                case DirectoryValidationOutcome.FallBackToDefault:
-                    dirSummary = UiText.GuiPreflightPathCheckFallBack;
-                    break;
-                case DirectoryValidationOutcome.Reject:
-                    dirSummary = UiText.GuiPreflightPathCheckReject +
-                        "（" + (dirVal.RejectReason ?? "?") + "）";
-                    break;
-                default:
-                    dirSummary = UiText.GuiPreflightNotChecked;
-                    break;
-            }
-            GUILayout.Label(UiText.GuiPreflightPathCheckPrefix + dirSummary, GUI.skin.label);
-
-            // Phase 2.4: 编辑器导出骨架控制段（仅 EditorExportEnabled 时显示）
-            if (Settings.EditorExportEnabled)
-            {
-                GUILayout.Space(6f);
-                DrawEditorExportControlGui(report);
+                if (PlaybackLifecyclePoC.IsRunning)
+                    PlaybackLifecyclePoC.Stop("user");
+                else
+                    PlaybackLifecyclePoC.Start();
             }
         }
 
-        /// <summary>
-        /// 绘制编辑器导出骨架控制段（Phase 2.4）。
-        /// 仅在 Detailed Log + EditorExportEnabled 时显示。
-        /// 不新增 FPS / MaxFrames / Camera / UI / Replay 等配置控件。
-        /// </summary>
-        private static void DrawEditorExportControlGui(EditorExportReadinessReport report)
-        {
-            GUILayout.Label(UiText.GuiEditorExportControlSectionTitle, GUI.skin.label);
-            GUILayout.Label(UiText.GuiEditorExportControlWarn, GUI.skin.label);
-
-            EditorExportState state = EditorExportController.CurrentState;
-            string stateText;
-            switch (state)
-            {
-                case EditorExportState.Idle: stateText = UiText.GuiEditorExportStateIdle; break;
-                case EditorExportState.Preparing: stateText = UiText.GuiEditorExportStatePreparing; break;
-                case EditorExportState.Running: stateText = UiText.GuiEditorExportStateRunning; break;
-                case EditorExportState.Cleaning: stateText = UiText.GuiEditorExportStateCleaning; break;
-                case EditorExportState.Completed: stateText = UiText.GuiEditorExportStateCompleted; break;
-                case EditorExportState.Cancelled: stateText = UiText.GuiEditorExportStateCancelled; break;
-                case EditorExportState.Failed: stateText = UiText.GuiEditorExportStateFailed; break;
-                default: stateText = UiText.GuiEditorExportStateIdle; break;
-            }
-            GUILayout.Label(UiText.GuiEditorExportStatePrefix + stateText, GUI.skin.label);
-
-            EditorExportSession session = EditorExportController.CurrentSession;
-            string detail = (session != null && !string.IsNullOrEmpty(session.StateDetail))
-                ? session.StateDetail
-                : UiText.GuiEditorExportNotRunning;
-            GUILayout.Label(UiText.GuiEditorExportStateDetailPrefix + detail, GUI.skin.label);
-
-            string dir = (session != null && !string.IsNullOrEmpty(session.OutputDirectory))
-                ? session.OutputDirectory
-                : UiText.GuiEditorExportNotRunning;
-            GUILayout.Label(UiText.GuiEditorExportSessionDirPrefix + dir, GUI.skin.label);
-
-            string startedAt = (session != null && session.StartedAtUtc.HasValue)
-                ? session.StartedAtUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
-                : UiText.GuiEditorExportNotRunning;
-            GUILayout.Label(UiText.GuiEditorExportStartedAtPrefix + startedAt, GUI.skin.label);
-
-            long tick = session != null ? session.TickCount : 0;
-            GUILayout.Label(UiText.GuiEditorExportTickCountPrefix +
-                tick.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
-
-            if (DeterministicFrameScheduler.IsRunning)
-            {
-                GUILayout.Label(UiText.GuiSchedulerOutputFramePrefix +
-                    DeterministicFrameScheduler.OutputFrameIndex.ToString(CultureInfo.InvariantCulture) +
-                    " / " + DeterministicFrameScheduler.TargetFrameCount.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
-                GUILayout.Label(UiText.GuiSchedulerCapturedPrefix +
-                    DeterministicFrameScheduler.CapturedFrameCount.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
-                GUILayout.Label(UiText.GuiSchedulerStatusPrefix +
-                    DeterministicFrameScheduler.Status.ToString(), GUI.skin.label);
-            }
-
-            GUILayout.Space(4f);
-            GUILayout.BeginHorizontal();
-            bool canStart = !EditorExportController.IsBusy &&
-                report != null && report.Readiness == EditorExportReadiness.Ready;
-            GUI.enabled = canStart;
-            if (GUILayout.Button(UiText.GuiEditorExportBtnStart))
-            {
-                EditorExportController.Start();
-            }
-            GUI.enabled = EditorExportController.IsBusy;
-            if (GUILayout.Button(UiText.GuiEditorExportBtnStop))
-            {
-                EditorExportController.Stop();
-            }
-            GUI.enabled = true;
-            GUILayout.EndHorizontal();
-        }
-
-        /// <summary>
-        /// 绘制编辑器时间链探针控制段（Phase 3.0 临时诊断工具）。
-        /// 仅提供 Start / Stop 与日志路径展示，不承载任何导出配置。
-        /// 后续可随诊断完成而删除。
-        /// </summary>
-        private static void DrawTimeProbeGui()
-        {
-            GUILayout.Label(UiText.GuiTimeProbeSectionTitle, GUI.skin.label);
-
-            string status = EditorTimeProbe.IsRunning
-                ? UiText.GuiTimeProbeRunning
-                : UiText.GuiTimeProbeIdle;
-            GUILayout.Label(UiText.GuiTimeProbeStatusPrefix + status, GUI.skin.label);
-
-            string path = EditorTimeProbe.LogPath;
-            if (!string.IsNullOrEmpty(path))
-            {
-                GUILayout.Label(UiText.GuiTimeProbeLogPathPrefix + path, GUI.skin.label);
-            }
-
-            GUILayout.Space(4f);
-            GUILayout.BeginHorizontal();
-            if (!EditorTimeProbe.IsRunning)
-            {
-                if (GUILayout.Button(UiText.GuiTimeProbeBtnStart))
-                {
-                    EditorTimeProbe.Start();
-                }
-            }
-            else
-            {
-                if (GUILayout.Button(UiText.GuiTimeProbeBtnStop))
-                {
-                    EditorTimeProbe.Stop("user");
-                }
-            }
-            GUILayout.EndHorizontal();
-        }
-
-        /// <summary>
-        /// 绘制 Editor Forced Visual Clock PoC 控制段（Phase 3.0 临时诊断工具）。
-        /// 最小入口：开始/停止、状态、logicalFrame、日志路径。不承载导出配置。
-        /// </summary>
-        private static void DrawVisualClockPocGui()
-        {
-            GUILayout.Label(UiText.GuiVcPocSectionTitle, GUI.skin.label);
-
-            bool running = EditorVisualClockPoc.IsRunning;
-            GUILayout.Label(UiText.GuiVcPocStatusPrefix +
-                (running ? UiText.GuiVcPocRunning : UiText.GuiVcPocIdle), GUI.skin.label);
-
-            if (running)
-            {
-                GUILayout.Label(UiText.GuiVcPocFramePrefix +
-                    EditorVisualClockPoc.LogicalFrameIndex.ToString(CultureInfo.InvariantCulture) + " / " +
-                    EditorVisualClockPoc.TargetLogicalFrameCount.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
-                GUILayout.Label("运行状态：" + EditorVisualClockPoc.StateName, GUI.skin.label);
-                GUILayout.Label("playerFloor：" +
-                    EditorVisualClockPoc.CurrentPlayerFloor.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
-                GUILayout.Label("totalHitCount：" +
-                    EditorVisualClockPoc.TotalHitCount.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
-            }
-
-            string path = EditorVisualClockPoc.LogPath;
-            if (!string.IsNullOrEmpty(path))
-            {
-                GUILayout.Label(UiText.GuiVcPocLogPathPrefix + path, GUI.skin.label);
-            }
-
-            GUILayout.Label(UiText.GuiDvaModePrefix +
-                EditorVisualClockPoc.SelectedRdcAutoMode, GUI.skin.label);
-
-            GUILayout.Space(4f);
-            if (!running)
-            {
-                GUILayout.BeginHorizontal();
-                if (GUILayout.Button(UiText.GuiDvaModePreserve))
-                {
-                    EditorVisualClockPoc.SelectedRdcAutoMode =
-                        EditorVisualClockPoc.RdcAutoExperimentMode.Preserve;
-                }
-                if (GUILayout.Button(UiText.GuiDvaModeTemporaryTrue))
-                {
-                    EditorVisualClockPoc.SelectedRdcAutoMode =
-                        EditorVisualClockPoc.RdcAutoExperimentMode.TemporaryTrueDuringHit;
-                }
-                GUILayout.EndHorizontal();
-
-                GUILayout.BeginHorizontal();
-                if (GUILayout.Button(UiText.GuiVcPocBtnStart))
-                {
-                    EditorVisualClockPoc.Start();
-                }
-                if (GUILayout.Button(UiText.GuiFrameOrderProbeBtnStart))
-                {
-                    EditorVisualClockPoc.StartFrameOrderProbe();
-                }
-                if (GUILayout.Button(UiText.GuiDvaProbeBtnStart))
-                {
-                    EditorVisualClockPoc.StartDvaProbe();
-                }
-                GUILayout.EndHorizontal();
-            }
-            else
-            {
-                GUILayout.Label(EditorVisualClockPoc.IsDvaProbe
-                    ? UiText.GuiDvaProbeRunning
-                    : (EditorVisualClockPoc.IsFrameOrderProbe
-                        ? UiText.GuiFrameOrderProbeRunning
-                        : UiText.GuiVcOnlyRunning), GUI.skin.label);
-                if (GUILayout.Button(UiText.GuiVcPocBtnStop))
-                {
-                    EditorVisualClockPoc.Stop("user");
-                }
-            }
-        }
-        private static void DrawDeterministicCorePocGui()
-        {
-            GUILayout.Label("Route B 核心 PoC（OfflineAudioClock + RenderistAutoPlay）", GUI.skin.label);
-            GUILayout.Label("状态：" + OfflineAudioClockPoC.StateName + "，帧："
-                + OfflineAudioClockPoC.LogicalFrameIndex + " / "
-                + OfflineAudioClockPoC.TargetLogicalFrameCount + "，Hit："
-                + OfflineAudioClockPoC.TotalHitCount, GUI.skin.label);
-            if (!string.IsNullOrEmpty(OfflineAudioClockPoC.LogPath))
-                GUILayout.Label("日志：" + OfflineAudioClockPoC.LogPath, GUI.skin.label);
-            if (!string.IsNullOrEmpty(OfflineAudioClockPoC.ComparisonPath))
-                GUILayout.Label("对比：" + OfflineAudioClockPoC.ComparisonPath, GUI.skin.label);
-            if (!OfflineAudioClockPoC.IsRunning)
-            {
-                if (GUILayout.Button("启动 Route B deterministic core PoC")) OfflineAudioClockPoC.Start();
-            }
-            else if (GUILayout.Button("停止 Route B deterministic core PoC")) OfflineAudioClockPoC.Stop("user");
-        }
         private static void DrawCaptureGUI()
         {
             // Status block — never reuses the phase label string to keep
@@ -931,9 +571,8 @@ namespace ADOFAI.Renderist
                 CaptureService.Tick();
                 // Phase 2.4: 编辑器导出会话生命周期推进（不截图、不推进时间）。
                 EditorExportController.Tick();
-                // Phase 3.0: 编辑器时间链探针采样与跃迁检测（仅观察）。
-                EditorTimeProbe.Tick();
-                // Phase 3.0: Editor Forced Visual Clock PoC 状态机推进。
+                PlaybackLifecyclePoC.Tick();
+                // 保留底层 forced-time / audio PoC 的 Tick；当前无 GUI 启动入口。
                 EditorVisualClockPoc.Tick();
                 OfflineAudioClockPoC.Tick();
             }

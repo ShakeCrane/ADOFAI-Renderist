@@ -7,7 +7,7 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 编辑器导出会话（Phase 3.1）。
+    /// 保留的旧编辑器导出会话数据模型。
     ///
     /// 保存本阶段真实存在的信息：
     ///   * 会话 ID、开始/结束时间、输出目录
@@ -20,7 +20,7 @@ namespace ADOFAI.Renderist.Export
     /// </summary>
     internal sealed class EditorExportSession
     {
-        /// <summary>Phase 3.1 已实现当前分辨率的同步 PNG 捕获后端。</summary>
+        /// <summary>旧实现使用当前分辨率同步 PNG 捕获后端；不代表当前正式导出能力。</summary>
         public const bool CaptureImplemented = true;
 
         public string SessionId;
@@ -37,11 +37,11 @@ namespace ADOFAI.Renderist.Export
         public long CaptureRequestCount;
         public long CapturedFrameCount;
 
-        private const string PhaseLabel = "Phase 3.1 Official Autoplay Deterministic Frame Scheduler";
+        private const string PhaseLabel = "Phase 3.2.0 legacy editor export skeleton";
         private const string ModeLabel = "editor-export-png-sequence";
         private const string MetadataFileName = "metadata.json";
         private const string NoteText =
-            "Phase 3.1 deterministic frame scheduler: official autoplay drives gameplay, forced visual clock drives output time, current-resolution sync PNG sequence.";
+            "Phase 3.2.0 legacy editor export skeleton: retained for audit only; not current Route B production export.";
 
         public EditorExportSession(string sessionId, string outputDirectory, string sceneName)
         {

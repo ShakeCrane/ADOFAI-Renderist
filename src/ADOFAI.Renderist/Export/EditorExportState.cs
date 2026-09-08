@@ -1,9 +1,9 @@
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 编辑器导出会话状态枚举（Phase 3.1）。
+    /// 保留的旧编辑器导出会话状态枚举。
     ///
-    /// Phase 3.1 由 DeterministicFrameScheduler 驱动真实 PNG 捕获；
+    /// 旧实现曾由 DeterministicFrameScheduler 驱动 PNG 捕获；
     /// <c>Running</c> 表示会话存活且 scheduler 正在推进 / 捕获。
     ///
     /// 终止状态（Completed / Cancelled / Failed）保留供 GUI 查看，下一次 Start 可重新进入 Preparing。

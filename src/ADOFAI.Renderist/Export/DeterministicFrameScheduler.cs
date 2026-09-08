@@ -12,12 +12,12 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 正式 Deterministic Frame Scheduler（Phase 3.1）。
+    /// 保留的旧 deterministic scheduler 骨架，不是当前 Route B production authority。
     ///
     /// 数据流：
     ///   outputFrameIndex
     ///     → PrepareFrame（scrConductor.Update Prefix：设置本帧视觉时间）
-    ///     → ADOFAI 原生 Update（由 Official Autoplay 推进）
+    ///     → ADOFAI 原生 Update（旧版 Official Autoplay 路径）
     ///     → WaitForEndOfFrame
     ///     → FrameCaptureDriver 同步 PNG
     ///     → CommitFrame（成功后 outputFrameIndex++）
@@ -711,11 +711,6 @@ namespace ADOFAI.Renderist.Export
             if (CaptureService.IsRecording)
             {
                 return "capture-recording";
-            }
-            // 仅做互斥保护，不依赖诊断探针的能力或结果。
-            if (EditorTimeProbe.IsRunning)
-            {
-                return "time-probe-running";
             }
             if (EditorVisualClockPoc.IsRunning)
             {
