@@ -39,7 +39,7 @@ ADOFAI-Renderist 是一个基于 **Unity Mod Manager（UMM）** 的 ADOFAI 模�
 - 技术路线
 - 阶段设计
 - 计划审查
-- 维护 `PROJECT_UNDERSTANDING.md`
+- 定期审查 `PROJECT_UNDERSTANDING.md`
 
 ### GPT Work
 
@@ -229,6 +229,8 @@ Harmony Patch 前必须确认：
 - 旧版本 Hook 直接复用
 
 ADOFAI 已更新时，内部 API 必须重新基于当前游戏 DLL 确认。
+
+遇到依赖游戏运行时状态、编辑器实际表现、当前版本 DLL、未文档化内部行为、本地日志或只能由用户在游戏中直接观察的信息，且现有仓库与公开资料不足以可靠判断时，应先向用户取得最小必要信息或请求一次针对性实机验证，再继续调查；已有仓库、日志、代码或公开资料足够时直接自行解决。
 
 ---
 
