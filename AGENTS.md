@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件是 **ADOFAI-Renderist** 仓库的唯一 Coding Agent 指令文件，主要供 **DeepSeek Harness（DSH）** 使用。
+本文件是 ADOFAI-Renderist 仓库的唯一 Coding Agent 指令文件，主要供 GPT Work 与 DeepSeek Harness（DSH）使用。
 
 ## 1. 项目定位
 
@@ -41,6 +41,20 @@ ADOFAI-Renderist 是一个基于 **Unity Mod Manager（UMM）** 的 ADOFAI 模�
 - 计划审查
 - 维护 `PROJECT_UNDERSTANDING.md`
 
+### GPT Work
+
+负责：
+
+- 高难度或高风险任务
+- 架构设计和复杂重构
+- 复杂 Debug
+- Hook 和 ADOFAI 内部行为调查
+- 核心渲染流程
+- 修正或接管 DSH 无法可靠完成的任务
+- 完成重要调查、验证或实现后，主动检查 `PROJECT_UNDERSTANDING.md` 是否需要同步
+
+越复杂、越不确定、越关键，越优先交给 GPT Work。
+
 ### DeepSeek Harness
 
 负责：
@@ -54,6 +68,7 @@ ADOFAI-Renderist 是一个基于 **Unity Mod Manager（UMM）** 的 ADOFAI 模�
 - Git 检查
 - 提交
 - 按任务需要维护 `CHANGELOG.md` / `DEVLOG.md`
+- 方案明确后优先由 DSH 执行具体实现和验证；DSH 无法可靠完成、验证持续失败或任务风险显著上升时，转交 GPT Work，不重复执行同一任务。
 
 ### PROJECT_UNDERSTANDING.md
 

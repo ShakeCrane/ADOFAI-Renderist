@@ -6,7 +6,7 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 保留的 Forced Visual Clock bridge；当前尚未接入 production MasterTimeline。
+    /// MasterTimeline Deterministic Gameplay Handoff 使用的 Forced Visual Clock bridge。
     ///
     /// 职责（严格限定）：
     ///   * 保存原时间锚点（startSongPosition / pitch）
@@ -17,7 +17,7 @@ namespace ADOFAI.Renderist.Export
     ///   * 撤销 Patch 与关闭强制
     ///
     /// 绝不包含：DVA catch-up、scrPlayer.Hit、Planet 对齐、Multipress 清理。
-    /// 生产路径不依赖 Diagnostics.EditorVisualClockPoc。
+    /// 生产路径不依赖任何已退役的 Diagnostics PoC。
     /// </summary>
     internal static class EditorVisualClock
     {

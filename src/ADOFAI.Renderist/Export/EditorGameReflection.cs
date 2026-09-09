@@ -9,7 +9,7 @@ namespace ADOFAI.Renderist.Export
     /// <summary>
     /// 保留的旧 Editor Export / diagnostics 路径的只读 ADOFAI 运行时反射工具。
     ///
-    /// 与 Diagnostics.EditorVisualClockPoc 的反射块职责相同，但独立、只保留
+    /// 与已退役的 Diagnostics 反射块职责相同，但独立、只保留
     /// 正式路径需要的最小集合：类型 / 成员发现 + 只读状态读取 + RDC.auto 写入。
     ///
     /// 不引入 Assembly-CSharp.dll 编译引用；所有成员按名称在运行时解析，
@@ -29,14 +29,18 @@ namespace ADOFAI.Renderist.Export
         private static Type _tPlayer;
         private static Type _tFloor;
         private static Type _tRdc;
+        private static Type _tAsyncInputUtils;
 
         private static PropertyInfo _pSongPosI;
         private static PropertyInfo _pSongPosMinusV;
+        private static PropertyInfo _pAdjustedCountdownTicks;
         private static PropertyInfo _pState;
         private static PropertyInfo _pRdcAuto;
         private static FieldInfo _fCurrentSeq;
+        private static FieldInfo _fCrotchetAtStart;
 
         private static MethodInfo _mConductorUpdate;
+        private static MethodInfo _mAsyncInputAdjustAngle;
         private static MethodInfo _mEditorPlay;
         private static MethodInfo _mEditorSelectFloor;
         private static MethodInfo _mEditorSwitchToEditMode;
@@ -79,11 +83,15 @@ namespace ADOFAI.Renderist.Export
             try { _tPlayer = _tPlayer ?? _gameAssembly.GetType("scrPlayer"); } catch { }
             try { _tFloor = _tFloor ?? _gameAssembly.GetType("scrFloor"); } catch { }
             try { _tRdc = _tRdc ?? _gameAssembly.GetType("RDC"); } catch { }
+            try { _tAsyncInputUtils = _tAsyncInputUtils ?? _gameAssembly.GetType("AsyncInputUtils"); } catch { }
 
             if (_tConductor != null)
             {
                 _pSongPosI = GetProperty(_tConductor, "songposition_minusi");
                 _pSongPosMinusV = GetProperty(_tConductor, "songposition_minusv");
+                _pAdjustedCountdownTicks = GetProperty(_tConductor, "adjustedCountdownTicks");
+                _fCrotchetAtStart = _tConductor.GetField("crotchetAtStart",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
                 _mConductorUpdate = _tConductor.GetMethod("Update",
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
             }
@@ -110,6 +118,13 @@ namespace ADOFAI.Renderist.Export
             {
                 _pRdcAuto = _tRdc.GetProperty("auto",
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+            }
+
+            if (_tAsyncInputUtils != null && _tPlayer != null)
+            {
+                _mAsyncInputAdjustAngle = _tAsyncInputUtils.GetMethod("AdjustAngle",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+                    null, new[] { _tPlayer, typeof(ulong) }, null);
             }
 
             _resolved = true;
@@ -161,6 +176,20 @@ namespace ADOFAI.Renderist.Export
             {
                 EnsureTypes();
                 return _mConductorUpdate;
+            }
+        }
+
+        /// <summary>
+        /// 当前游戏版本 AsyncInputUtils.AdjustAngle(scrPlayer, ulong) 的异步角度刷新入口。
+        /// 确定性 forced clock 活跃时由 Scheduler 暂时抑制该入口，避免它用 tick 时钟
+        /// 覆盖 native Conductor 已写入的本帧角度。
+        /// </summary>
+        public static MethodInfo AsyncInputAdjustAngleMethod
+        {
+            get
+            {
+                EnsureTypes();
+                return _mAsyncInputAdjustAngle;
             }
         }
 
@@ -244,6 +273,57 @@ namespace ADOFAI.Renderist.Export
             return conductor == null || _pSongPosMinusV == null
                 ? null
                 : ReadPropertyValue(conductor, _pSongPosMinusV);
+        }
+
+        /// <summary>
+        /// 根据当前 native Conductor 的 countdown 参数，读取 gameplay-start 的
+        /// chart-time 偏移。该值不使用 wall clock；Countdown_Update 的 beatNumber
+        /// 从 nextBeatTime=0 开始，在达到 adjusted ticks 前跨过 adjusted ticks-1
+        /// 个 crotchet，因此阈值是 (adjusted ticks - 1) × crotchet。pitch 在 native
+        /// countdown 调度与 songposition 计算中相互抵消。
+        /// </summary>
+        public static bool TryReadGameplayStartOffset(out double offset, out string rejectReason)
+        {
+            offset = 0.0;
+            rejectReason = null;
+
+            try
+            {
+                object conductor = Conductor();
+                if (conductor == null || _pAdjustedCountdownTicks == null || _fCrotchetAtStart == null)
+                {
+                    rejectReason = "conductor-countdown-api-unavailable";
+                    return false;
+                }
+
+                double? adjustedTicks = ToDouble(ReadPropertyValue(conductor, _pAdjustedCountdownTicks));
+                double? crotchet = ToDouble(_fCrotchetAtStart.GetValue(conductor));
+                if (!adjustedTicks.HasValue || !crotchet.HasValue ||
+                    double.IsNaN(adjustedTicks.Value) || double.IsInfinity(adjustedTicks.Value) ||
+                    double.IsNaN(crotchet.Value) || double.IsInfinity(crotchet.Value) ||
+                    adjustedTicks.Value < 0.0 || crotchet.Value <= 0.0001)
+                {
+                    rejectReason = "conductor-countdown-values-invalid";
+                    return false;
+                }
+
+                // scrConductor.Update starts nextBeatTime at zero. The first beat
+                // raises beatNumber from 0 to 1, so Countdown_Update observes the
+                // requested beat count after (ticks - 1) beat intervals.
+                offset = Math.Max(0.0, adjustedTicks.Value - 1.0) * crotchet.Value;
+                if (double.IsNaN(offset) || double.IsInfinity(offset) || Math.Abs(offset) > 3600.0)
+                {
+                    rejectReason = "gameplay-start-offset-invalid";
+                    return false;
+                }
+
+                return true;
+            }
+            catch
+            {
+                rejectReason = "gameplay-start-offset-read-failed";
+                return false;
+            }
         }
 
         public static bool? ReadRdcAuto()
@@ -374,9 +454,10 @@ namespace ADOFAI.Renderist.Export
         }
 
         /// <summary>
-        /// 读取 floors[0].entryTime，作为 canonical start time（chart-relative）。
+        /// 读取 floors[0].entryTime，作为 chart/floor 基准；最终 gameplay-start
+        /// anchor 在 lifecycle-ready 时结合 native countdown threshold 计算。
         ///
-        /// 与 songposition_minusi 使用同一 offset-adjusted 时间坐标系。
+        /// 该值仅作为 floor-time base，不直接作为 PlayerControl handoff time。
         /// 读取失败返回 false 并给出可诊断原因；调用方必须拒绝启动，不得猜测 0。
         /// </summary>
         public static bool TryReadFloor0EntryTime(out double entryTime, out string rejectReason)

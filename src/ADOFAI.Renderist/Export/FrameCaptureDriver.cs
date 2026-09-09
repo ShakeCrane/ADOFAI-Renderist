@@ -141,6 +141,7 @@ namespace ADOFAI.Renderist.Export
 
                     int index = _pendingIndex;
                     _pending = false;
+                    if (index == 0) Log.Info("MasterTimeline Stage=Frame0 AFTER_EOF frameIndex=0");
                     _pendingIndex = -1;
                     CaptureNow(index);
                 }

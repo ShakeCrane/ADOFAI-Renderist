@@ -5,7 +5,6 @@ using HarmonyLib;
 using UnityEngine;
 using UnityModManagerNet;
 using ADOFAI.Renderist.Capture;
-using ADOFAI.Renderist.Diagnostics;
 using ADOFAI.Renderist.Export;
 using ADOFAI.Renderist.Gui;
 using ADOFAI.Renderist.Logging;
@@ -14,7 +13,7 @@ namespace ADOFAI.Renderist
 {
     /// <summary>
     /// Unity Mod Manager entry point for ADOFAI Renderist.
-    /// Phase 2.0 scope: screenshot sequence MVP. No Harmony patches.
+    /// Screenshot MVP plus scoped Phase 3.2.0 diagnostics and MasterTimeline Deterministic Gameplay Handoff.
     /// Renderist remains passive towards replay / autoplay.
     /// </summary>
     public static class ModEntry
@@ -26,7 +25,7 @@ namespace ADOFAI.Renderist
         /// 由 scripts/set-version.ps1 自动同步。供 CaptureService metadata.json version 字段引用，
         /// 避免 metadata version 与 mod version 脱节。
         /// </summary>
-        internal const string ModVersion = "0.3.2.0";
+        internal const string ModVersion = "0.3.3.0";
 
         internal static UnityModManager.ModEntry Mod;
         internal static UnityModManager.ModEntry.ModLogger Logger;
@@ -62,7 +61,7 @@ namespace ADOFAI.Renderist
                 // Instantiate the shared Harmony owner; active diagnostics install their own scoped patches.
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.3.2.0 (Phase 3.2.0 Session-Owned Playback Lifecycle Observer PoC / Route B investigation).");
+                Log.Info("Loaded ADOFAI Renderist 0.3.3.0 (Phase 3.2.0 MasterTimeline Deterministic Gameplay Handoff).");
                 Log.Warn(UiText.LogStartupPerfWarn);
                 return true;
             }
@@ -94,11 +93,6 @@ namespace ADOFAI.Renderist
                     }
                     // Phase 2.4: Mod 禁用时安全取消编辑器导出会话。
                     EditorExportController.Cancel("mod-disabled");
-                    // 停止当前生命周期观察和保留的底层 PoC，避免禁用时留下 Harmony/音频状态。
-                    PlaybackLifecyclePoC.Stop("mod-disabled");
-                    // 保留底层 PoC 的安全恢复路径；它们当前没有 UMM GUI 入口。
-                    EditorVisualClockPoc.Stop("mod-disabled");
-                    OfflineAudioClockPoC.Stop("mod-disabled");
                     // Always safe to call even when no patches are registered.
                     Harmony?.UnpatchAll(HarmonyId);
                     Log.Info(UiText.LogDisabled);
@@ -367,38 +361,35 @@ namespace ADOFAI.Renderist
                 GUILayout.Space(6f);
                  GUILayout.Label(UiText.GuiDeveloperDiagnosticsSectionTitle, GUI.skin.label);
                  GUILayout.Space(4f);
-                 DrawPlaybackLifecyclePocGui();
+                 DrawMasterTimelineHandoffGui();
                  GUILayout.Space(6f);
             }
         }
 
-        /// <summary>
-        /// Phase 3.2.0 session-owned playback lifecycle observer.
-        /// The observer calls the official editor.Play() once and records only
-        /// official lifecycle commit signals for that local startup scope.
-        /// </summary>
-        private static void DrawPlaybackLifecyclePocGui()
+        private static void DrawMasterTimelineHandoffGui()
         {
-            GUILayout.Label(UiText.GuiLifecyclePocSectionTitle, GUI.skin.label);
-            GUILayout.Label(UiText.GuiLifecyclePocStatusPrefix + PlaybackLifecyclePoC.StatusText, GUI.skin.label);
-            if (PlaybackLifecyclePoC.IsRunning)
-                GUILayout.Label(UiText.GuiLifecyclePocUpdatePrefix + PlaybackLifecyclePoC.UpdateCount.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
-            if (!string.IsNullOrEmpty(PlaybackLifecyclePoC.LogPath))
-                GUILayout.Label(UiText.GuiLifecyclePocLogPathPrefix + PlaybackLifecyclePoC.LogPath, GUI.skin.label);
-            if (!string.IsNullOrEmpty(PlaybackLifecyclePoC.LastReason))
-                GUILayout.Label(UiText.GuiLifecyclePocReasonPrefix + PlaybackLifecyclePoC.LastReason, GUI.skin.label);
+            GUILayout.Label(UiText.GuiMasterTimelineHandoffSectionTitle, GUI.skin.label);
 
-            if (GUILayout.Button(PlaybackLifecyclePoC.IsRunning
-                ? UiText.GuiLifecyclePocBtnStop
-                : UiText.GuiLifecyclePocBtnStart))
+            EditorExportSession session = EditorExportController.CurrentSession;
+            GUILayout.Label(UiText.GuiMasterTimelineHandoffStatusPrefix +
+                EditorExportController.CurrentState.ToString(), GUI.skin.label);
+            if (session != null)
             {
-                if (PlaybackLifecyclePoC.IsRunning)
-                    PlaybackLifecyclePoC.Stop("user");
+                GUILayout.Label(UiText.GuiMasterTimelineHandoffFramesPrefix +
+                    session.CapturedFrameCount.ToString(CultureInfo.InvariantCulture) + "/" +
+                    session.TargetFrameCount.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
+            }
+
+            if (GUILayout.Button(EditorExportController.IsBusy
+                ? UiText.GuiMasterTimelineHandoffBtnStop
+                : UiText.GuiMasterTimelineHandoffBtnStart))
+            {
+                if (EditorExportController.IsBusy)
+                    EditorExportController.Stop();
                 else
-                    PlaybackLifecyclePoC.Start();
+                    EditorExportController.Start();
             }
         }
-
         private static void DrawCaptureGUI()
         {
             // Status block — never reuses the phase label string to keep
@@ -571,10 +562,6 @@ namespace ADOFAI.Renderist
                 CaptureService.Tick();
                 // Phase 2.4: 编辑器导出会话生命周期推进（不截图、不推进时间）。
                 EditorExportController.Tick();
-                PlaybackLifecyclePoC.Tick();
-                // 保留底层 forced-time / audio PoC 的 Tick；当前无 GUI 启动入口。
-                EditorVisualClockPoc.Tick();
-                OfflineAudioClockPoC.Tick();
             }
             catch (Exception ex)
             {

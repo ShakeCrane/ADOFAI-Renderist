@@ -128,51 +128,11 @@ namespace ADOFAI.Renderist
 
         public const string GuiDeveloperDiagnosticsSectionTitle = "开发者 Diagnostics";
 
-        // ---------------- GUI: Session-Owned Playback Lifecycle PoC（Phase 3.2.0） ----------------
-
-        public const string GuiLifecyclePocSectionTitle = "Playback Lifecycle Observer PoC（实验性）";
-        public const string GuiLifecyclePocStatusPrefix = "生命周期状态：";
-        public const string GuiLifecyclePocIdle = "未运行";
-        public const string GuiLifecyclePocRunning = "观察中";
-        public const string GuiLifecyclePocPass = "PASS（待用户确认日志）";
-        public const string GuiLifecyclePocStopped = "已停止";
-        public const string GuiLifecyclePocRejected = "已拒绝：";
-        public const string GuiLifecyclePocUpdatePrefix = "观察 Update：";
-        public const string GuiLifecyclePocLogPathPrefix = "日志路径：";
-        public const string GuiLifecyclePocReasonPrefix = "结束原因：";
-        public const string GuiLifecyclePocBtnStart = "运行 Playback Lifecycle PoC";
-        public const string GuiLifecyclePocBtnStop = "停止 Playback Lifecycle PoC";
-
-        // ---------------- Log: retained legacy Visual Clock / DVA diagnostics ----------------
-
-        public const string LogVcPocStarted = "Visual Clock PoC 已启动（不含 auto-hit）。";
-        public const string LogFrameOrderProbeStarted = "Frame Order Probe 已启动（64 帧，仅观察，不写 PNG / 不调用 Hit）。";
-        public const string LogDvaProbeStarted = "DVA Runtime Probe 已启动（仅支持简单谱面）。";
-        public const string LogLifecyclePocStarted = "Playback Lifecycle Observer PoC 已启动。";
-        public const string LogLifecyclePocStartFailed = "Playback Lifecycle Observer PoC 启动失败";
-        public const string LogLifecyclePocTickError = "Playback Lifecycle Observer PoC 运行异常";
-        public const string LogLifecyclePocCleanupError = "Playback Lifecycle Observer PoC 清理异常";
-        // {0}=reason
-        public const string LogLifecyclePocStartRejectedFormat = "Playback Lifecycle Observer PoC 启动被拒绝：{0}";
-        // {0}=log file path
-        public const string LogLifecyclePocLogPathFormat = "Playback Lifecycle Observer PoC 日志：{0}";
-        // {0}=reason
-        public const string LogLifecyclePocStoppedFormat = "Playback Lifecycle Observer PoC 已停止（{0}）。";
-        public const string LogVcPocAlreadyRunning = "Visual Clock PoC 已在运行。";
-        // {0}=reason
-        public const string LogVcPocStartRejectedFormat = "Visual Clock PoC 启动被拒绝：{0}";
-        public const string LogVcPocNoOutputDir = "无法准备 PoC 输出目录；Visual Clock PoC 已中止。";
-        // {0}=log file path
-        public const string LogVcPocLogPathFormat = "Visual Clock PoC 日志：{0}";
-        // {0}=reason
-        public const string LogVcPocStoppedFormat = "Visual Clock PoC 已停止（{0}）。";
-        public const string LogVcPocPlaybackRequested = "已请求官方 Editor Play（startFloor=0）。";
-        public const string LogVcPocStartFailed = "Visual Clock PoC 启动失败";
-        public const string LogVcPocTickError = "Visual Clock PoC 运行异常";
-        public const string LogVcPocRestoreError = "Visual Clock PoC 状态恢复异常";
-        public const string LogVcPocStartPlaybackFailed = "Visual Clock PoC：启动官方 Editor Play 失败";
-        public const string LogVcPocAnchorAbnormal = "Visual Clock PoC：起始锚点明显异常，终止测试（不做复杂修复）。";
-        public const string LogVcPocAnchorFailed = "Visual Clock PoC：读取时间锚点失败";
+        public const string GuiMasterTimelineHandoffSectionTitle = "MasterTimeline Deterministic Gameplay Handoff";
+        public const string GuiMasterTimelineHandoffStatusPrefix = "Handoff 状态：";
+        public const string GuiMasterTimelineHandoffFramesPrefix = "已提交帧：";
+        public const string GuiMasterTimelineHandoffBtnStart = "启动 MasterTimeline Deterministic Gameplay Handoff";
+        public const string GuiMasterTimelineHandoffBtnStop = "停止 MasterTimeline Deterministic Gameplay Handoff";
 
         // ---------------- Log: ModEntry ----------------
 
@@ -214,7 +174,7 @@ namespace ADOFAI.Renderist
         public const string LogEditorExportF9F10Blocked =
             "编辑器导出会话进行中，已阻止 F9/F10 截图请求。";
 
-        // ---------------- Log: retained legacy deterministic scheduler ----------------
+        // ---------------- Log: MasterTimeline Deterministic Gameplay Handoff ----------------
 
         // {0}=outputFps, {1}=targetFrameCount, {2}=outputDirectory
         public const string LogSchedulerStartedFormat =
@@ -223,12 +183,12 @@ namespace ADOFAI.Renderist
         public const string LogSchedulerStartRejectedFormat =
             "确定性帧调度器启动被拒绝：{0}";
         public const string LogSchedulerPlaybackRequested =
-            "已请求旧版 Editor Play（仅保留作历史诊断，不代表当前 Route B authority）。";
-        // {0}=canonicalStartTime
+            "已请求 Renderist-owned editor.Play()，等待本次 lifecycle handoff。";
+        // {0}=floor0EntryTime
         public const string LogSchedulerCanonicalAnchorFormat =
-            "CanonicalStartTime 已建立：{0}（来自 floors[0].entryTime）。";
+            "floor0 chart 基准已读取：{0}（来自 floors[0].entryTime，等待 lifecycle-ready 推导 gameplay anchor）。";
         public const string LogSchedulerForcedClockInstalled =
-            "Forced Visual Clock 已安装并激活（editor.Play() 前 hold canonical time）。";
+            "Forced Visual Clock 已安装（lifecycle-ready 前不激活，避免冻结 Countdown_Update）。";
         public const string LogSchedulerInitHoldStarted =
             "Initialization Hold 已开始：不推进输出帧、不捕获。";
         public const string LogSchedulerEditorPlayCalled =

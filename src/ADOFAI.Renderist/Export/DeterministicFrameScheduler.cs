@@ -6,25 +6,25 @@ using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
 using ADOFAI.Renderist.Capture;
-using ADOFAI.Renderist.Diagnostics;
 using ADOFAI.Renderist.Logging;
 
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 保留的旧 deterministic scheduler 骨架，不是当前 Route B production authority。
+    /// MasterTimeline Deterministic Gameplay Handoff 的逐帧调度器；尚不是完整离线渲染产品。
     ///
     /// 数据流：
     ///   outputFrameIndex
     ///     → PrepareFrame（scrConductor.Update Prefix：设置本帧视觉时间）
-    ///     → ADOFAI 原生 Update（旧版 Official Autoplay 路径）
+    ///     → ADOFAI 原生 Update
+    ///     → Conductor.Update Postfix（RenderistAutoPlay due-floor / Hit(true)）
     ///     → WaitForEndOfFrame
     ///     → FrameCaptureDriver 同步 PNG
     ///     → CommitFrame（成功后 outputFrameIndex++）
     ///
     /// 关键不变量：Frame N 未成功捕获，就不提交 N，也不开始 N+1。
     ///
-    /// 正式路径不调用 scrPlayer.Hit、不做 catch-up、不迁移 DVA。
+    /// 时间只来自 MasterTimeline；不使用 wall clock、Unity Update 次数或 AudioRenderer。
     /// Time.frameCount 仅用于启动去重与同帧防重复执行，不作为输出帧号。
     /// </summary>
     internal static class DeterministicFrameScheduler
@@ -47,6 +47,9 @@ namespace ADOFAI.Renderist.Export
         private const string FramePrefix = "frame_";
         private const int ZeroPadWidth = 6;
         private const double AnchorInvalidThresholdSeconds = 3600.0;
+        // One 60 FPS Unity frame plus floating-point / logger sampling margin;
+        // deliberately far below the previous 0.34 s structural mismatch.
+        private const double GameplayAnchorConsistencyToleranceSeconds = 0.05;
 
         private static SchedulerStatus _status = SchedulerStatus.Idle;
         private static bool _running;
@@ -62,6 +65,7 @@ namespace ADOFAI.Renderist.Export
         private static double _outputTime;
         private static double _forcedSongPosition;
         private static double _canonicalStartTime;
+        private static double _floor0EntryTime;
         private static double _pitch = 1.0;
         private static bool _pitchUnavailable;
 
@@ -71,6 +75,9 @@ namespace ADOFAI.Renderist.Export
         private static bool _clockActive;
         private static bool _pendingCapture;
         private static int _pendingCaptureIndex = -1;
+        private static string _prefixSongPosition;
+        private static string _lastFrame0Stage;
+        private static int _hitsThisFrame;
         private static string _pendingStopEvent;
         private static string _pendingStopReason;
 
@@ -81,8 +88,11 @@ namespace ADOFAI.Renderist.Export
         private static bool? _savedRdcAuto;
         private static readonly List<int> _savedSelectedFloorSeqs = new List<int>();
         private static bool _ownsPlayback;
+        private static MasterTimeline _timeline;
+        private static PlaybackLifecycleHandoff _handoff;
 
         private static bool _hooksRegistered;
+        private static bool _asyncInputAngleHookRegistered;
 
         public static bool IsRunning => _running;
         public static SchedulerStatus Status => _status;
@@ -143,6 +153,7 @@ namespace ADOFAI.Renderist.Export
                 _outputTime = 0.0;
                 _forcedSongPosition = 0.0;
                 _canonicalStartTime = 0.0;
+                _floor0EntryTime = 0.0;
                 _captureRequestCount = 0;
                 _capturedFrameCount = 0;
                 _awaitFrameCount = 0;
@@ -151,8 +162,13 @@ namespace ADOFAI.Renderist.Export
                 _clockActive = false;
                 _pendingCapture = false;
                 _pendingCaptureIndex = -1;
+                _prefixSongPosition = null;
+                _lastFrame0Stage = null;
+                _hitsThisFrame = 0;
                 _pendingStopEvent = null;
                 _pendingStopReason = null;
+                _timeline = null;
+                _handoff = null;
 
                 SaveState();
 
@@ -161,8 +177,8 @@ namespace ADOFAI.Renderist.Export
                 QualitySettings.vSyncCount = 0;
                 Application.targetFrameRate = Math.Max(1000, _outputFps * 4);
 
-                // ---- pitch 只读一次；正式 anchor 不再依赖 playback-ready songposition ----
-                _pitch = EditorGameReflection.ReadPitch(out _pitchUnavailable);
+                // pitch 在 editor.Play() 内部由 RemakePath / SetupConductorWithLevelData 最终确定；
+                // 因此在 Play 返回后读取，避免沿用编辑状态中的旧 pitch。
 
                 // ---- 1) SelectFloor(floor0) ----
                 if (!TrySelectFloor0(out string selectError))
@@ -170,33 +186,46 @@ namespace ADOFAI.Renderist.Export
                     return FailStart("select-floor0-failed:" + selectError);
                 }
 
-                // ---- 2) CanonicalStartTime：读取 runtime floors[0].entryTime ----
-                // 读取失败必须拒绝启动；禁止猜测 0 或回退 playback-ready songposition。
+                // ---- 2) 读取 runtime floors[0].entryTime chart 基准 ----
+                // 读取失败必须拒绝启动；最终 gameplay anchor 在 lifecycle-ready 时
+                // 结合 native countdown threshold 推导，禁止猜测 0 或回退 ready songposition。
                 if (!EditorGameReflection.TryReadFloor0EntryTime(out double canonical, out string entryError))
                 {
                     return FailStart("floor0-entry-time-unavailable:" + entryError);
                 }
+                _floor0EntryTime = canonical;
                 _canonicalStartTime = canonical;
                 _forcedSongPosition = canonical;
 
                 Log.Info(UiText.Format(UiText.LogSchedulerCanonicalAnchorFormat,
                     _canonicalStartTime.ToString("0.######", CultureInfo.InvariantCulture)));
 
-                // ---- 3) 安装并激活 Forced Clock（必须在 editor.Play() 之前 hold canonical time）----
+                // ---- 3) 安装 Forced Clock（editor.Play() 前只注册，lifecycle-ready 后激活）----
                 RegisterConductorUpdateHook();
+                if (!RegisterAsyncInputAngleHook())
+                {
+                    return FailStart("async-input-angle-hook-failed");
+                }
                 if (!EditorVisualClock.RegisterForcedClockHooks())
                 {
                     return FailStart("forced-clock-hooks-failed");
                 }
                 EditorVisualClock.SetForcedSongPosition(_canonicalStartTime);
-                EditorVisualClock.SetActive(true);
+                // 官方 Countdown 必须先使用原生 Conductor 时间推进；到 lifecycle-ready 后再激活 forced clock。
+                EditorVisualClock.SetActive(false);
                 Log.Info(UiText.LogSchedulerForcedClockInstalled);
                 Log.Info(UiText.LogSchedulerInitHoldStarted);
 
-                // ---- 4) 启用官方 Auto（原值已由 SaveState 保存）----
-                if (!EditorGameReflection.TryWriteRdcAuto(true))
+                // ---- 4) Handoff observer：必须在本次 editor.Play() 前安装 ----
+                _handoff = new PlaybackLifecycleHandoff(ModEntry.Harmony);
+                if (!_handoff.Begin(out string handoffError))
                 {
-                    return FailStart("rdc-auto-write-failed");
+                    return FailStart("lifecycle-handoff-unavailable:" + handoffError);
+                }
+
+                if (!RenderistAutoPlay.EnsureAvailable(out string autoPlayError))
+                {
+                    return FailStart("autoplay-api-unavailable:" + autoPlayError);
                 }
 
                 // ---- 5) 捕获后端 ----
@@ -207,10 +236,16 @@ namespace ADOFAI.Renderist.Export
                 }
 
                 // ---- 6) 官方 editor.Play() ----
+                _handoff.MarkPlayRequested();
                 if (!TryPlay(out string playError))
                 {
                     return FailStart("start-playback-failed:" + playError);
                 }
+                _handoff.MarkPlayReturned();
+                _pitch = EditorGameReflection.ReadPitch(out _pitchUnavailable);
+                // MasterTimeline 的 gameplay anchor 要等 native lifecycle-ready 后，
+                // 读取本次 Play 已建立的 countdown 参数；此处只保留 floor0 基准。
+                _timeline = null;
                 Log.Info(UiText.LogSchedulerEditorPlayCalled);
 
                 _status = SchedulerStatus.InitializationHold;
@@ -301,6 +336,10 @@ namespace ADOFAI.Renderist.Export
             _awaitFrameCount++;
 
             object state = EditorGameReflection.ReadControllerState();
+            if (_awaitFrameCount == 1)
+            {
+                Log.Info("MasterTimeline InitializationHold entered: state=" + ToState(state) + " handoff=" + (_handoff == null ? "null" : _handoff.MarkerStatus) + " " + BuildRuntimeSnapshot());
+            }
             if (EditorGameReflection.IsFailureState(state))
             {
                 RequestStop("unexpected-fail", "controller-" + ToState(state));
@@ -309,6 +348,7 @@ namespace ADOFAI.Renderist.Export
 
             if (_awaitFrameCount > PlaybackReadyTimeoutFrames)
             {
+                Log.Warn("MasterTimeline InitializationHold readiness timeout: state=" + ToState(state) + " handoff=" + (_handoff == null ? "null" : _handoff.MarkerStatus) + " " + BuildRuntimeSnapshot());
                 RequestStop("playback-ready-timeout", "playback-ready-timeout");
                 return;
             }
@@ -321,6 +361,52 @@ namespace ADOFAI.Renderist.Export
             }
 
             if (!IsPlaybackReady(state)) return;
+
+            object lifecycleSongPositionValue = ReadUnforcedSongPositionValue();
+            string lifecycleSongPosition = ToValue(lifecycleSongPositionValue);
+            if (!EditorGameReflection.TryReadGameplayStartOffset(
+                    out double gameplayStartOffset, out string anchorError))
+            {
+                RequestStop("canonical-start-unavailable", anchorError);
+                return;
+            }
+
+            double gameplayStart = _floor0EntryTime + gameplayStartOffset;
+            if (double.IsNaN(gameplayStart) || double.IsInfinity(gameplayStart) ||
+                Math.Abs(gameplayStart) > AnchorInvalidThresholdSeconds)
+            {
+                RequestStop("canonical-start-invalid", "gameplay-start-out-of-range");
+                return;
+            }
+
+            double? observedSongPosition = ToDouble(lifecycleSongPositionValue);
+            if (!observedSongPosition.HasValue ||
+                Math.Abs(observedSongPosition.Value - gameplayStart) > GameplayAnchorConsistencyToleranceSeconds)
+            {
+                Log.Warn("MasterTimeline lifecycle anchor mismatch: floor0EntryTime=" +
+                         _floor0EntryTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " countdownOffset=" + gameplayStartOffset.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " deterministicGameplayStart=" + gameplayStart.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " lifecycleSongPosition=" + lifecycleSongPosition);
+                RequestStop("canonical-start-mismatch", "native-gameplay-anchor-mismatch");
+                return;
+            }
+
+            _canonicalStartTime = gameplayStart;
+            _forcedSongPosition = gameplayStart;
+            _timeline = new MasterTimeline(_outputFps, _canonicalStartTime, _pitch);
+            Log.Info("MasterTimeline lifecycle-ready: lifecycleReadySongPosition=" + lifecycleSongPosition +
+                     " floor0EntryTime=" + _floor0EntryTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " countdownOffset=" + gameplayStartOffset.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " gameplayStart=" + _canonicalStartTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " forcedSongPosition=" + _canonicalStartTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " frameIndex=0 " + BuildRuntimeSnapshot());
+
+            // 就绪后才接管 Conductor 时间，避免冻结官方 Countdown_Update 的 beatNumber。
+            // 此时 forced value 与 native PlayerControl handoff 在同一 chart-time 坐标，
+            // 不会把已完成 countdown 的 Planet / gameplay 状态倒退到 floor0.entryTime。
+            EditorVisualClock.SetForcedSongPosition(_canonicalStartTime);
+            EditorVisualClock.SetActive(true);
 
             // 就绪：释放 initialization hold，下一 Unity Frame 从 frame 0 开始。
             // 不再读取 playback-ready 当前 songposition 作为 anchor。
@@ -354,7 +440,7 @@ namespace ADOFAI.Renderist.Export
         }
 
         // ================================================================
-        // Frame Begin：scrConductor.Update Prefix
+        // Frame Begin：scrConductor.Update Prefix / Postfix
         // ================================================================
 
         private static void ConductorUpdatePrefix()
@@ -363,7 +449,7 @@ namespace ADOFAI.Renderist.Export
 
             if (_status == SchedulerStatus.InitializationHold)
             {
-                // 初始化 Hold：不推进输出帧、不捕获，只把 clock 钉在 canonical start time。
+                // 初始化 Hold：不推进输出帧、不捕获；保持 canonical value 准备，但不激活 forced clock。
                 // 让 DSP / Audio 自然运行，但 chart-relative visual/game songposition 保持 hold。
                 EditorVisualClock.SetForcedSongPosition(_canonicalStartTime);
                 return;
@@ -379,7 +465,10 @@ namespace ADOFAI.Renderist.Export
                 if (frame < _activationUnityFrame) return;
                 _clockActive = true;
                 _lastPrepareUnityFrame = frame;
+                LogFrame0Stage(_outputFrameIndex, "BEFORE_CONDUCTOR");
                 PrepareFrame();
+                _prefixSongPosition = ToValue(EditorGameReflection.ReadConductorSongPosition());
+                LogFrameConductor("Prefix");
                 return;
             }
 
@@ -387,10 +476,46 @@ namespace ADOFAI.Renderist.Export
             if (frame != _lastPrepareUnityFrame)
             {
                 _lastPrepareUnityFrame = frame;
+                LogFrame0Stage(_outputFrameIndex, "BEFORE_CONDUCTOR");
                 PrepareFrame();
+                _prefixSongPosition = ToValue(EditorGameReflection.ReadConductorSongPosition());
+                LogFrameConductor("Prefix");
             }
         }
 
+        private static void ConductorUpdatePostfix()
+        {
+            if (!_running || _pendingStopReason != null || _status != SchedulerStatus.Capturing || !_clockActive)
+                return;
+
+            LogFrame0Stage(_outputFrameIndex, "AFTER_CONDUCTOR");
+            LogFrame0Stage(_outputFrameIndex, "BEFORE_AUTOPLAY");
+            if (!RenderistAutoPlay.CatchUp(_outputFrameIndex, _forcedSongPosition, out int hits, out string error))
+            {
+                Log.Warn("DeterministicFrameScheduler: RenderistAutoPlay 失败：" + error);
+                RequestStop("autoplay-failed", error ?? "autoplay-failed");
+                return;
+            }
+
+            _hitsThisFrame = hits;
+            LogFrame0Stage(_outputFrameIndex, "AFTER_AUTOPLAY");
+            if (_outputFrameIndex < 4 || hits > 0)
+            {
+                Log.Info("MasterTimeline Conductor Postfix: frameIndex=" +
+                         _outputFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                         " expectedChartTime=" + _forcedSongPosition.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " songpositionPrefix=" + (_prefixSongPosition ?? "null") +
+                         " songpositionPostfix=" + ToValue(EditorGameReflection.ReadConductorSongPosition()) +
+                         " hitsThisFrame=" + hits.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (hits > 0)
+            {
+                Log.Debug("DeterministicFrameScheduler: frame " +
+                          _outputFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                          " due hits=" + hits.ToString(CultureInfo.InvariantCulture));
+            }
+        }
         private static void PrepareFrame()
         {
             // 关键不变量：上一帧必须已捕获并提交，才允许开始下一帧。
@@ -407,15 +532,28 @@ namespace ADOFAI.Renderist.Export
             }
 
             int index = _outputFrameIndex;
-            _outputTime = (double)index / _outputFps;
-            _forcedSongPosition = _canonicalStartTime + _outputTime * _pitch;
+            LogFrame0Stage(index, "BEGIN");
+            MasterTimeline.FrameSample sample = _timeline.Prepare(index);
+            _outputTime = sample.OutputTime;
+            _forcedSongPosition = sample.ChartTime;
+            _hitsThisFrame = 0;
 
             EditorVisualClock.SetForcedSongPosition(_forcedSongPosition);
+
+            if (index == 0)
+            {
+                Log.Info("MasterTimeline Frame0 prepared: outputTime=" +
+                         _outputTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " chartTime=" +
+                         _forcedSongPosition.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " " + BuildRuntimeSnapshot());
+            }
 
             _captureRequestCount++;
             _pendingCapture = true;
             _pendingCaptureIndex = index;
             FrameCaptureDriver.RequestCapture(index);
+            LogFrame0Stage(index, "BEFORE_EOF");
 
             string forcedText = _forcedSongPosition.ToString("0.######", CultureInfo.InvariantCulture);
             if (index == 0)
@@ -447,6 +585,15 @@ namespace ADOFAI.Renderist.Export
             _pendingCapture = false;
             _pendingCaptureIndex = -1;
 
+            if (success)
+            {
+                Log.Debug("MasterTimeline FrameBoundary: frameIndex=" + frameIndex.ToString(CultureInfo.InvariantCulture) +
+                          " outputTime=" + (frameIndex / (double)_outputFps).ToString("0.######", CultureInfo.InvariantCulture) +
+                          " expectedChartTime=" + (_canonicalStartTime + frameIndex / (double)_outputFps * _pitch).ToString("0.######", CultureInfo.InvariantCulture) +
+                          " hitsThisFrame=" + _hitsThisFrame.ToString(CultureInfo.InvariantCulture) +
+                          " " + BuildRuntimeSnapshot());
+            }
+
             if (!success)
             {
                 Log.Error(UiText.Format(UiText.LogSchedulerCaptureFailedFormat,
@@ -468,6 +615,7 @@ namespace ADOFAI.Renderist.Export
                 return;
             }
 
+            LogFrame0Stage(frameIndex, "COMMIT");
             _capturedFrameCount++;
             _outputFrameIndex++;
 
@@ -516,7 +664,11 @@ namespace ADOFAI.Renderist.Export
             FrameCaptureDriver.Stop();
             EditorVisualClock.SetActive(false);
             EditorVisualClock.UnregisterForcedClockHooks();
+            UnregisterAsyncInputAngleHook();
             UnregisterConductorUpdateHook();
+            _handoff?.Dispose();
+            _handoff = null;
+            _timeline = null;
 
             RestoreRdcAuto();
             RestorePlayback();
@@ -691,6 +843,11 @@ namespace ADOFAI.Renderist.Export
                 return "not-in-editor";
             }
 
+            if (EditorGameReflection.IsFailureState(EditorGameReflection.ReadControllerState()))
+            {
+                return "controller-fail-state";
+            }
+
             object editor = EditorGameReflection.Editor();
             if (editor == null)
             {
@@ -712,11 +869,6 @@ namespace ADOFAI.Renderist.Export
             {
                 return "capture-recording";
             }
-            if (EditorVisualClockPoc.IsRunning)
-            {
-                return "visual-clock-poc-running";
-            }
-
             return null;
         }
 
@@ -797,9 +949,14 @@ namespace ADOFAI.Renderist.Export
 
         private static bool IsPlaybackReady(object state)
         {
-            string s = ToState(state);
-            return string.Equals(s, "PlayerControl", StringComparison.Ordinal) ||
-                   string.Equals(s, "Countdown", StringComparison.Ordinal);
+            if (_handoff == null) return false;
+
+            object controller = EditorGameReflection.Controller();
+            object player = controller == null ? null : ReadInstanceMember(controller, "playerOne");
+            bool playerAlive = ReadBool(ReadInstanceMember(player, "alive"));
+            bool paused = ReadBool(ReadInstanceMember(controller, "paused"));
+
+            return _handoff.IsReady(state, playerAlive, paused);
         }
 
         private static string CheckEarlyTermination()
@@ -831,7 +988,8 @@ namespace ADOFAI.Renderist.Export
                 if (harmony == null || update == null) return;
 
                 harmony.Patch(update,
-                    prefix: new HarmonyMethod(typeof(DeterministicFrameScheduler), nameof(ConductorUpdatePrefix)));
+                    prefix: new HarmonyMethod(typeof(DeterministicFrameScheduler), nameof(ConductorUpdatePrefix)),
+                    postfix: new HarmonyMethod(typeof(DeterministicFrameScheduler), nameof(ConductorUpdatePostfix)));
                 _hooksRegistered = true;
             }
             catch (Exception ex)
@@ -839,6 +997,67 @@ namespace ADOFAI.Renderist.Export
                 Log.Exception("DeterministicFrameScheduler: 注册 conductor.Update Prefix 失败", ex);
                 UnregisterConductorUpdateHook();
             }
+        }
+
+        /// <summary>
+        /// 确定性帧期间阻止 ADOFAI 的异步 tick 角度刷新覆盖 native Conductor
+        /// 已经根据 forced songposition 写入的 Planet 角度。生命周期等待期间
+        /// 不注册为 active，故官方 Countdown 仍完全使用原生路径。
+        /// </summary>
+        private static bool RegisterAsyncInputAngleHook()
+        {
+            UnregisterAsyncInputAngleHook();
+
+            try
+            {
+                Harmony harmony = ModEntry.Harmony;
+                MethodInfo adjustAngle = EditorGameReflection.AsyncInputAdjustAngleMethod;
+                if (harmony == null || adjustAngle == null)
+                {
+                    Log.Warn("MasterTimeline AsyncInput angle hook unavailable: AdjustAngle signature not found");
+                    return false;
+                }
+
+                harmony.Patch(adjustAngle,
+                    prefix: new HarmonyMethod(typeof(DeterministicFrameScheduler), nameof(AsyncInputAdjustAnglePrefix)));
+                _asyncInputAngleHookRegistered = true;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("DeterministicFrameScheduler: 注册 AsyncInput angle hook 失败", ex);
+                UnregisterAsyncInputAngleHook();
+                return false;
+            }
+        }
+
+        private static void UnregisterAsyncInputAngleHook()
+        {
+            if (!_asyncInputAngleHookRegistered) return;
+            Harmony harmony = ModEntry.Harmony;
+            if (harmony != null)
+            {
+                try
+                {
+                    MethodInfo adjustAngle = EditorGameReflection.AsyncInputAdjustAngleMethod;
+                    if (adjustAngle != null) harmony.Unpatch(adjustAngle, HarmonyPatchType.All, ModEntry.HarmonyId);
+                }
+                catch (Exception ex)
+                {
+                    Log.Exception("DeterministicFrameScheduler: 撤销 AsyncInput angle hook 失败", ex);
+                }
+            }
+            _asyncInputAngleHookRegistered = false;
+        }
+
+        private static bool AsyncInputAdjustAnglePrefix(object __0, ulong __1)
+        {
+            if (!_running || _pendingStopReason != null || _status != SchedulerStatus.Capturing || !_clockActive)
+                return true;
+
+            object controller = EditorGameReflection.Controller();
+            object currentPlayer = ReadInstanceMember(controller, "playerOne");
+            return currentPlayer == null || !ReferenceEquals(__0, currentPlayer);
         }
 
         private static void UnregisterConductorUpdateHook()
@@ -864,10 +1083,100 @@ namespace ADOFAI.Renderist.Export
         // helpers
         // ================================================================
 
+        private static object ReadInstanceMember(object instance, string name)
+        {
+            if (instance == null) return null;
+            try
+            {
+                Type type = instance.GetType();
+                PropertyInfo property = type.GetProperty(name,
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (property != null) return property.GetValue(instance, null);
+                FieldInfo field = type.GetField(name,
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                return field?.GetValue(instance);
+            }
+            catch { return null; }
+        }
+
+        private static bool ReadBool(object value)
+        {
+            if (value == null) return false;
+            try { return Convert.ToBoolean(value, CultureInfo.InvariantCulture); }
+            catch { return false; }
+        }
+        private static void LogFrame0Stage(int frameIndex, string stage)
+        {
+            if (frameIndex != 0 || string.Equals(_lastFrame0Stage, stage, StringComparison.Ordinal)) return;
+            _lastFrame0Stage = stage;
+            Log.Info("MasterTimeline Stage=Frame0 " + stage + " frameIndex=0 " + BuildRuntimeSnapshot());
+        }
         private static string ToState(object v)
         {
             if (v == null) return null;
             return v is Enum e ? e.ToString() : Convert.ToString(v, CultureInfo.InvariantCulture);
+        }
+
+        private static object ReadUnforcedSongPositionValue()
+        {
+            bool active = EditorVisualClock.IsActive;
+            if (active) EditorVisualClock.SetActive(false);
+            try { return EditorGameReflection.ReadConductorSongPosition(); }
+            finally
+            {
+                if (active)
+                {
+                    EditorVisualClock.SetForcedSongPosition(_forcedSongPosition);
+                    EditorVisualClock.SetActive(true);
+                }
+            }
+        }
+
+        private static double? ToDouble(object value)
+        {
+            if (value == null) return null;
+            try { return Convert.ToDouble(value, CultureInfo.InvariantCulture); }
+            catch { return null; }
+        }
+
+        private static void LogFrameConductor(string phase)
+        {
+            if (_outputFrameIndex < 4)
+            {
+                Log.Info("MasterTimeline Conductor " + phase + ": frameIndex=" +
+                         _outputFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                         " expectedChartTime=" + _forcedSongPosition.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " songposition=" + (_prefixSongPosition ?? "null"));
+            }
+        }
+
+        private static string BuildRuntimeSnapshot()
+        {
+            object controller = EditorGameReflection.Controller();
+            object player = ReadInstanceMember(controller, "playerOne");
+            object current = ReadInstanceMember(player, "currFloor");
+            object next = ReadInstanceMember(current, "nextfloor");
+            object system = ReadInstanceMember(player, "planetarySystem");
+            object planet = ReadInstanceMember(system, "chosenPlanet");
+            return "controllerState=" + ToState(EditorGameReflection.ReadControllerState()) +
+                   " currentFloor=" + ToValue(ReadInstanceMember(current, "seqID")) +
+                   " nextFloor=" + ToValue(ReadInstanceMember(next, "seqID")) +
+                   " nextFloorEntryTime=" + ToValue(ReadInstanceMember(next, "entryTime")) +
+                   " playerAlive=" + ToValue(ReadInstanceMember(player, "alive")) +
+                   " paused=" + ToValue(ReadInstanceMember(controller, "paused")) +
+                   " chosenPlanetAngle=" + ToValue(ReadInstanceMember(planet, "angle")) +
+                   " cachedAngle=" + ToValue(ReadInstanceMember(planet, "cachedAngle")) +
+                   " targetExitAngle=" + ToValue(ReadInstanceMember(planet, "targetExitAngle")) +
+                   " currentSeqID=" + EditorGameReflection.ReadCurrentSeqId().ToString(CultureInfo.InvariantCulture) +
+                   " rdcAuto=" + ToValue(EditorGameReflection.ReadRdcAuto());
+        }
+
+        private static string ToValue(object value)
+        {
+            if (value == null) return "null";
+            if (value is bool b) return b ? "true" : "false";
+            try { return Convert.ToDouble(value, CultureInfo.InvariantCulture).ToString("0.######", CultureInfo.InvariantCulture); }
+            catch { return Convert.ToString(value, CultureInfo.InvariantCulture) ?? "null"; }
         }
 
         private static string FormatAuto(bool? v)

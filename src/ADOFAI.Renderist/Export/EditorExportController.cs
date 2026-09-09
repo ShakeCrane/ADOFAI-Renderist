@@ -7,7 +7,7 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 保留的旧编辑器导出会话骨架；当前 Phase 3.2.0 没有 GUI 启动入口。
+    /// 编辑器导出会话骨架；当前 Phase 3.2.0 提供 MasterTimeline Deterministic Gameplay Handoff GUI 启动入口。
     ///
     /// 本类维护会话生命周期（Preparing / Running / 终态）并把真实导出工作
     /// 交给 <see cref="DeterministicFrameScheduler"/>：
