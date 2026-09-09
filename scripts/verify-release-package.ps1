@@ -1,9 +1,10 @@
 <#
 .SYNOPSIS
-    Verifies an ADOFAI.Renderist release zip against Phase 2.0 packaging rules.
+    Verifies an ADOFAI.Renderist release zip against current packaging rules.
 
 .DESCRIPTION
-    Phase 2.0 screenshot sequence MVP — packaging rules unchanged since 1.4.
+    Enforces a fixed three-file release zip (`Info.json` + DLL + `LICENSE`)
+    with no subdirectories and no banned content.
 
     Asserts the following on the supplied zip:
       * Top-level files only — exactly:
@@ -42,7 +43,7 @@
 param(
     [Parameter(Mandatory=$true)]
     [string]$ZipPath,
-    [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')]
+    [ValidatePattern('^\d+\.\d+\.\d+\.\d+$')]
     [string]$ExpectedVersion,
     [switch]$Strict
 )

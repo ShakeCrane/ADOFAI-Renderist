@@ -14,7 +14,8 @@ namespace ADOFAI.Renderist.Export
     ///
     /// 不引入 Assembly-CSharp.dll 编译引用；所有成员按名称在运行时解析，
     /// 解析失败时返回 null / false，调用方据此拒绝启动而不是抛异常。
-    /// 本类不执行 Harmony Patch，不修改游戏状态（唯一的例外是 TryWriteRdcAuto）。
+    /// 本类不执行 Harmony Patch；除 TryWriteRdcAuto 外，只有明确限定的
+    /// terminal restart 会调用 ADOFAI 官方 ChangeToStartState 状态迁移。
     /// </summary>
     internal static class EditorGameReflection
     {
@@ -41,6 +42,7 @@ namespace ADOFAI.Renderist.Export
 
         private static MethodInfo _mConductorUpdate;
         private static MethodInfo _mAsyncInputAdjustAngle;
+        private static MethodInfo _mControllerChangeToStartState;
         private static MethodInfo _mEditorPlay;
         private static MethodInfo _mEditorSelectFloor;
         private static MethodInfo _mEditorSwitchToEditMode;
@@ -101,6 +103,9 @@ namespace ADOFAI.Renderist.Export
                 _pState = GetProperty(_tController, "state");
                 _fCurrentSeq = _tController.GetField("currentSeqID",
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                _mControllerChangeToStartState = _tController.GetMethod("ChangeToStartState",
+                    BindingFlags.Public | BindingFlags.Instance,
+                    null, Type.EmptyTypes, null);
             }
 
             if (_tEditor != null)
@@ -199,6 +204,20 @@ namespace ADOFAI.Renderist.Export
             {
                 EnsureTypes();
                 return _mEditorPlay;
+            }
+        }
+
+        /// <summary>
+        /// 当前 ADOFAI 版本用于把 terminal controller state 重新置为 Start 的
+        /// 官方公开入口。仅供 terminal restart re-arm 使用；不属于普通启动的
+        /// scheduler API gate，也不直接写入 controller.state。
+        /// </summary>
+        public static MethodInfo ControllerChangeToStartStateMethod
+        {
+            get
+            {
+                EnsureTypes();
+                return _mControllerChangeToStartState;
             }
         }
 

@@ -3,16 +3,17 @@ using System.Globalization;
 using System.IO;
 using ADOFAI.Renderist.Capture;
 using ADOFAI.Renderist.Logging;
+using UnityEngine;
 
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 编辑器导出会话骨架；当前 Phase 3.2.0 提供 MasterTimeline Deterministic Gameplay Handoff GUI 启动入口。
+    /// 编辑器确定性导出会话（Phase 3.3.0）。
     ///
     /// 本类维护会话生命周期（Preparing / Running / 终态）并把真实导出工作
     /// 交给 <see cref="DeterministicFrameScheduler"/>：
     ///   * Start：校验就绪 + 创建独立会话目录 + 启动 scheduler
-    ///   * Stop：用户主动停止 → scheduler StopNow("user") → 终态 Completed
+    ///   * Stop：用户主动停止 → scheduler StopNow("user", "user-stop") → 终态 Cancelled
     ///   * Cancel：环境失效 / Mod 禁用 → scheduler StopNow("cancelled") → 终态 Cancelled
     ///   * Tick：推进 scheduler 并观察其是否进入 Completed / Cancelled / Failed
     ///
@@ -22,19 +23,29 @@ namespace ADOFAI.Renderist.Export
     {
         private static EditorExportSession _session;
         private static int _dirRecheckInterval = 60;
+        private const double TerminalRearmTimeoutSeconds = 2.0;
+        private static bool _terminalRearmPending;
+        private static double _terminalRearmDeadlineRealtime;
 
         /// <summary>当前会话（可能为 null 或处于终止状态）。</summary>
         public static EditorExportSession CurrentSession => _session;
 
         /// <summary>当前状态。无会话时为 Idle。</summary>
-        public static EditorExportState CurrentState => _session?.State ?? EditorExportState.Idle;
+        public static EditorExportState CurrentState =>
+            _terminalRearmPending ? EditorExportState.Preparing : _session?.State ?? EditorExportState.Idle;
 
-        /// <summary>是否占用：Preparing / Running / Cleaning。</summary>
+        /// <summary>是否占用：Preparing / Running。</summary>
         public static bool IsBusy =>
+            _terminalRearmPending ||
+            (_session != null &&
+             (_session.State == EditorExportState.Preparing ||
+              _session.State == EditorExportState.Running));
+
+        private static bool HasTerminalSession =>
             _session != null &&
-            (_session.State == EditorExportState.Preparing ||
-             _session.State == EditorExportState.Running ||
-             _session.State == EditorExportState.Cleaning);
+            (_session.State == EditorExportState.Completed ||
+             _session.State == EditorExportState.Cancelled ||
+             _session.State == EditorExportState.Failed);
 
         /// <summary>最近一次 Start 被拒绝的原因（机器可读短句），null 表示无拒绝或已成功。</summary>
         internal static string LastStartRejectReason { get; private set; }
@@ -77,6 +88,73 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
+                // terminal session 只是上一轮结果；只有 residual gate 通过后，
+                // 才允许把正常的 ADOFAI controller Fail/Fail2 交给新一轮 editor.Play() 重置。
+                bool allowExpectedTerminalControllerFail = HasTerminalSession;
+
+                // scheduler 的 residual / game-state gate 必须在创建 session 目录前完成。
+                string schedulerReject = DeterministicFrameScheduler.ValidatePreStartConditions(
+                    allowExpectedTerminalControllerFail);
+                if (schedulerReject != null)
+                {
+                    LastStartRejectReason = schedulerReject;
+                    Log.Warn(UiText.Format(UiText.LogEditorExportStartRejectedFormat, schedulerReject));
+                    return false;
+                }
+
+                // ADOFAI 在上一轮失败/完成后可能仍处于 terminal Fail/Fail2。
+                // 该状态迁移是异步的，不能在同一调用中 Play 两次，也不能先创建
+                // 一个注定失败的 Renderist session；先只请求官方 re-arm，后续
+                // Tick 确认 Start 后再进入正常 session / editor.Play 流程。
+                if (allowExpectedTerminalControllerFail &&
+                    DeterministicFrameScheduler.IsTerminalControllerFailure)
+                {
+                    if (!BeginTerminalControllerRearm(out string rearmError))
+                    {
+                        LastStartRejectReason = rearmError;
+                        Log.Warn(UiText.Format(UiText.LogEditorExportStartRejectedFormat, rearmError));
+                        return false;
+                    }
+
+                    _terminalRearmPending = true;
+                    _terminalRearmDeadlineRealtime =
+                        Time.realtimeSinceStartupAsDouble + TerminalRearmTimeoutSeconds;
+                    LastStartRejectReason = null;
+                    return true;
+                }
+
+                return StartSession(settings, report);
+            }
+            catch (Exception ex)
+            {
+                LastStartRejectReason = "Start 异常";
+                Log.Exception("EditorExportController.Start 异常", ex);
+                Fail(ex, "Start 异常");
+                return false;
+            }
+        }
+
+        private static bool BeginTerminalControllerRearm(out string error)
+        {
+            error = null;
+            if (!DeterministicFrameScheduler.IsTerminalControllerFailure)
+            {
+                error = "controller-state-changed";
+                return false;
+            }
+
+            return DeterministicFrameScheduler.TryBeginTerminalControllerRearm(out error);
+        }
+
+        /// <summary>
+        /// 只有完成 terminal controller re-arm 且重新通过普通 gate 后，才创建
+        /// session 目录并进入唯一一次 editor.Play()。
+        /// </summary>
+        private static bool StartSession(Settings settings, EditorExportReadinessReport report)
+        {
+            EditorExportSession session = null;
+            try
+            {
                 // 确定性唯一会话目录：绝不静默复用已存在的目录。
                 string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
                 string baseSessionName = "editor_" + stamp;
@@ -94,7 +172,7 @@ namespace ADOFAI.Renderist.Export
                     : DeterministicFrameScheduler.OutputFps;
                 int targetFrameCount = DeterministicFrameScheduler.DefaultTargetFrameCount;
 
-                var session = new EditorExportSession(sessionId, dir, report.EditorEnv.SceneName)
+                session = new EditorExportSession(sessionId, dir, report.EditorEnv.SceneName)
                 {
                     State = EditorExportState.Preparing,
                     StateDetail = "正在启动确定性帧调度器。",
@@ -115,9 +193,9 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
-                // 启动正式 scheduler。失败时 session 置 Failed，且 scheduler 已恢复。
+                // 这里是 terminal re-arm 后的正常路径；只允许一次 official Play。
                 string reject = DeterministicFrameScheduler.TryStart(
-                    session.OutputDirectory, outputFps, targetFrameCount);
+                    session.OutputDirectory, outputFps, targetFrameCount, false);
                 if (reject != null)
                 {
                     LastStartRejectReason = reject;
@@ -137,15 +215,100 @@ namespace ADOFAI.Renderist.Export
             catch (Exception ex)
             {
                 LastStartRejectReason = "Start 异常";
-                Log.Exception("EditorExportController.Start 异常", ex);
-                Fail(ex, "Start 异常");
+                Log.Exception("EditorExportController.StartSession 异常", ex);
+                if (session != null)
+                    MarkSessionFailed(session, "会话启动异常。", "controller-fail");
                 return false;
+            }
+        }
+
+        private static void RejectTerminalControllerRearm(string reason)
+        {
+            _terminalRearmPending = false;
+            _terminalRearmDeadlineRealtime = 0.0;
+            LastStartRejectReason = reason;
+            Log.Warn(UiText.Format(UiText.LogEditorExportStartRejectedFormat, reason));
+        }
+
+        private static void CancelTerminalControllerRearm(string reason)
+        {
+            _terminalRearmPending = false;
+            _terminalRearmDeadlineRealtime = 0.0;
+            Log.Info("EditorExportController: terminal controller re-arm cancelled: " +
+                     (string.IsNullOrEmpty(reason) ? "cancelled" : reason));
+        }
+
+        private static void TickTerminalControllerRearm()
+        {
+            if (!_terminalRearmPending) return;
+
+            try
+            {
+                if (!ModEntry.Enabled)
+                {
+                    CancelTerminalControllerRearm("mod-disabled");
+                    return;
+                }
+
+                if (Time.realtimeSinceStartupAsDouble > _terminalRearmDeadlineRealtime)
+                {
+                    RejectTerminalControllerRearm("terminal-controller-rearm-timeout");
+                    return;
+                }
+
+                if (!DeterministicFrameScheduler.IsControllerStartState)
+                    return;
+
+                Settings settings = ModEntry.Settings;
+                if (settings == null)
+                {
+                    RejectTerminalControllerRearm("Settings 未加载");
+                    return;
+                }
+                if (!settings.EditorExportEnabled)
+                {
+                    RejectTerminalControllerRearm("实验性开关未启用");
+                    return;
+                }
+
+                EditorExportReadinessReport report = EditorExportPreflight.Run();
+                if (report.Readiness != EditorExportReadiness.Ready)
+                {
+                    RejectTerminalControllerRearm("就绪检查未通过：" + report.Reason);
+                    return;
+                }
+
+                // re-arm 完成后回到普通安全门；这里不再允许 Fail/Fail2。
+                string schedulerReject = DeterministicFrameScheduler.ValidatePreStartConditions();
+                if (schedulerReject != null)
+                {
+                    RejectTerminalControllerRearm(schedulerReject);
+                    return;
+                }
+
+                Log.Info("EditorExportController: terminal controller re-arm confirmed: state=Start; beginning normal session");
+                _terminalRearmPending = false;
+                _terminalRearmDeadlineRealtime = 0.0;
+                StartSession(settings, report);
+            }
+            catch (Exception ex)
+            {
+                _terminalRearmPending = false;
+                _terminalRearmDeadlineRealtime = 0.0;
+                LastStartRejectReason = "terminal-controller-rearm-exception";
+                Log.Exception("EditorExportController: terminal controller re-arm Tick 异常", ex);
             }
         }
 
         /// <summary>用户主动停止。仅 Running 可停止。</summary>
         public static void Stop()
         {
+            if (_terminalRearmPending)
+            {
+                CancelTerminalControllerRearm("user-stop");
+                return;
+            }
+
             EditorExportSession s = _session;
             if (s == null) return;
             if (s.State != EditorExportState.Running) return;
@@ -154,7 +317,7 @@ namespace ADOFAI.Renderist.Export
             {
                 if (DeterministicFrameScheduler.IsRunning)
                 {
-                    DeterministicFrameScheduler.StopNow("user", "user");
+                    DeterministicFrameScheduler.StopNow("user", "user-stop");
                 }
                 FinalizeFromScheduler();
             }
@@ -167,6 +330,12 @@ namespace ADOFAI.Renderist.Export
         /// <summary>外部取消：环境失效 / Mod 禁用。对终止状态幂等。</summary>
         public static void Cancel(string reason)
         {
+            if (_terminalRearmPending)
+            {
+                CancelTerminalControllerRearm(reason);
+                return;
+            }
+
             EditorExportSession s = _session;
             if (s == null) return;
             if (s.State == EditorExportState.Completed ||
@@ -194,6 +363,12 @@ namespace ADOFAI.Renderist.Export
         /// <summary>每 OnUpdate 调用。推进 scheduler 并观察终态。</summary>
         public static void Tick()
         {
+            if (_terminalRearmPending)
+            {
+                TickTerminalControllerRearm();
+                return;
+            }
+
             EditorExportSession s = _session;
             if (s == null) return;
             if (s.State != EditorExportState.Running) return;
@@ -236,7 +411,7 @@ namespace ADOFAI.Renderist.Export
             {
                 case DeterministicFrameScheduler.SchedulerStatus.Completed:
                     s.State = EditorExportState.Completed;
-                    s.StopReason = DeterministicFrameScheduler.StopReason ?? "user";
+                    s.StopReason = DeterministicFrameScheduler.StopReason ?? "completed";
                     s.StateDetail = "导出已完成。";
                     break;
                 case DeterministicFrameScheduler.SchedulerStatus.Cancelled:
@@ -261,7 +436,7 @@ namespace ADOFAI.Renderist.Export
                 s.State.ToString(), s.StopReason));
         }
 
-        /// <summary>轻量环境校验：Mod 启用、未离开编辑器、F9/F10 未占用、定期校验当前会话固定目录。</summary>
+        /// <summary>轻量环境校验：Mod 启用、未离开编辑器、定期校验当前会话固定目录。</summary>
         private static bool IsEnvironmentStillValid(EditorExportSession s, out string reason)
         {
             reason = null;
@@ -269,12 +444,6 @@ namespace ADOFAI.Renderist.Export
             if (!ModEntry.Enabled)
             {
                 reason = "mod-disabled";
-                return false;
-            }
-
-            if (CaptureService.IsRecording)
-            {
-                reason = "capture-busy";
                 return false;
             }
 
@@ -324,7 +493,7 @@ namespace ADOFAI.Renderist.Export
             // 任何 controller 层未处理异常都必须保证 scheduler 回到恢复态。
             if (DeterministicFrameScheduler.IsRunning)
             {
-                try { DeterministicFrameScheduler.StopNow("cancelled", "controller-fail"); } catch { }
+                try { DeterministicFrameScheduler.StopNow("failed", "controller-fail"); } catch { }
             }
 
             EditorExportSession s = _session;
@@ -336,7 +505,9 @@ namespace ADOFAI.Renderist.Export
 
             s.State = EditorExportState.Failed;
             s.EndedAtUtc = DateTime.UtcNow;
-            s.StopReason = "failed";
+            s.StopReason = DeterministicFrameScheduler.Status == DeterministicFrameScheduler.SchedulerStatus.Failed
+                ? (DeterministicFrameScheduler.StopReason ?? "controller-fail")
+                : "controller-fail";
             s.StateDetail = "会话失败：" + context;
             TryWriteMetadataBestEffort(s);
             Log.Exception("EditorExportController: " + context, ex);

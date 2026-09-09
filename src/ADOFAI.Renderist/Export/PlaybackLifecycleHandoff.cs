@@ -15,7 +15,9 @@ namespace ADOFAI.Renderist.Export
         private object _stateMachine;
         private EventInfo _changedEvent;
         private Action<Enum> _changedHandler;
+        private bool _changedSubscribed;
         private MethodInfo _musicScheduled;
+        private bool _musicScheduledPatched;
 
         internal bool PlayRequested { get; private set; }
         internal bool PlayReturned { get; private set; }
@@ -70,7 +72,11 @@ namespace ADOFAI.Renderist.Export
                 }
 
                 _changedHandler = OnStateChanged;
+                _changedSubscribed = true;
                 _changedEvent.AddEventHandler(_stateMachine, _changedHandler);
+                // Mark ownership before Patch: a partially applied/throwing Patch must
+                // remain retryable during cleanup.
+                _musicScheduledPatched = true;
                 _harmony.Patch(_musicScheduled,
                     postfix: new HarmonyMethod(typeof(PlaybackLifecycleHandoff), nameof(OnMusicScheduledPostfix)));
                 Log.Info("MasterTimeline lifecycle handoff established: state=" + initialState + " startSatisfied=" + SawStart);
@@ -80,7 +86,7 @@ namespace ADOFAI.Renderist.Export
             catch (Exception ex)
             {
                 error = ex.Message;
-                Dispose();
+                TryDispose();
                 return false;
             }
         }
@@ -124,29 +130,68 @@ namespace ADOFAI.Renderist.Export
             }
         }
 
-        public void Dispose()
+        public bool TryDispose()
         {
             if (ReferenceEquals(Active, this)) Active = null;
 
-            try
-            {
-                if (_changedEvent != null && _stateMachine != null && _changedHandler != null)
-                    _changedEvent.RemoveEventHandler(_stateMachine, _changedHandler);
-            }
-            catch { }
+            bool success = true;
 
-            try
+            if (_changedSubscribed)
             {
-                if (_musicScheduled != null)
-                    _harmony.Unpatch(_musicScheduled, HarmonyPatchType.All, ModEntry.HarmonyId);
+                try
+                {
+                    if (_changedEvent == null || _stateMachine == null || _changedHandler == null)
+                        success = false;
+                    else
+                    {
+                        _changedEvent.RemoveEventHandler(_stateMachine, _changedHandler);
+                        _changedSubscribed = false;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    success = false;
+                    Log.Exception("PlaybackLifecycleHandoff: Changed 事件取消订阅失败", ex);
+                }
             }
-            catch { }
 
-            _changedEvent = null;
-            _changedHandler = null;
-            _musicScheduled = null;
-            _stateMachine = null;
-            _controller = null;
+            if (_musicScheduledPatched)
+            {
+                try
+                {
+                    MethodInfo postfix = AccessTools.Method(typeof(PlaybackLifecycleHandoff), nameof(OnMusicScheduledPostfix));
+                    if (_musicScheduled == null || postfix == null)
+                        success = false;
+                    else
+                    {
+                        _harmony.Unpatch(_musicScheduled, postfix);
+                        _musicScheduledPatched = false;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    success = false;
+                    Log.Exception("PlaybackLifecycleHandoff: OnMusicScheduled Postfix 撤销失败", ex);
+                }
+            }
+
+            if (!_changedSubscribed)
+            {
+                _changedEvent = null;
+                _changedHandler = null;
+                _stateMachine = null;
+            }
+            if (!_musicScheduledPatched)
+                _musicScheduled = null;
+            if (!_changedSubscribed && !_musicScheduledPatched)
+                _controller = null;
+
+            return success && !_changedSubscribed && !_musicScheduledPatched;
+        }
+
+        void IDisposable.Dispose()
+        {
+            TryDispose();
         }
 
         private static object ReadMember(object instance, string name)

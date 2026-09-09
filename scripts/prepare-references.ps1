@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Generates build/local.props pointing at the local ADOFAI install and
-    verifies that the Phase 1.3 reference DLL baseline is available.
+    verifies that the current compile-time reference DLL baseline is available.
 
 .DESCRIPTION
     Strategy:
@@ -10,7 +10,7 @@
       3. Else try common Steam install paths.
       4. Else prompt the developer.
 
-    Validates the local Mono/Managed baseline and required Phase 1.3 DLLs.
+    Validates the local Mono/Managed baseline and required compile-time DLLs.
     Writes build/local.props from build/local.props.example with local paths
     substituted.
 
@@ -300,39 +300,37 @@ if (Test-Path -LiteralPath $gameAssembly -PathType Leaf) {
     Write-Ok 'GameAssembly.dll not present (Mono/Managed baseline)'
 }
 
-Write-Section 'Validating Phase 2.0 compile-time DLLs'
+Write-Section 'Validating compile-time DLLs'
 
 if (-not (Test-BaselineVersion 'UnityModManager.dll' (Join-Path $resolvedUmmDir 'UnityModManager.dll') $baselineUmmVersion)) { $missing++ }
 if (-not (Test-BaselineVersion '0Harmony.dll' (Join-Path $resolvedUmmDir '0Harmony.dll') $baselineHarmonyVersion)) { $missing++ }
 if (-not (Test-RequiredFile 'UnityEngine.CoreModule.dll' (Join-Path $managedDir 'UnityEngine.CoreModule.dll'))) { $missing++ }
 if (-not (Test-RequiredFile 'UnityEngine.IMGUIModule.dll' (Join-Path $managedDir 'UnityEngine.IMGUIModule.dll'))) { $missing++ }
-# Phase 2.0: ScreenCapture.CaptureScreenshot is the screenshot API. Required.
-if (-not (Test-RequiredFile 'UnityEngine.ScreenCaptureModule.dll' (Join-Path $managedDir 'UnityEngine.ScreenCaptureModule.dll'))) { $missing++ }
-# Phase 2.0: legacy Input.GetKeyDown / KeyCode for F9 / F10 hotkeys. Required.
-if (-not (Test-RequiredFile 'UnityEngine.InputLegacyModule.dll' (Join-Path $managedDir 'UnityEngine.InputLegacyModule.dll'))) { $missing++ }
+# Texture2D.EncodeToPNG (FrameCaptureDriver) is the real production readback path. Required.
+if (-not (Test-RequiredFile 'UnityEngine.ImageConversionModule.dll' (Join-Path $managedDir 'UnityEngine.ImageConversionModule.dll'))) { $missing++ }
 
 Write-Section 'Optional / future DLL checks'
 
 $unityUmbrella = Join-Path $managedDir 'UnityEngine.dll'
 if (Test-Path -LiteralPath $unityUmbrella -PathType Leaf) {
-    Write-Ok 'UnityEngine.dll (legacy umbrella, present; csproj references it only when present; NOT used as a fallback for Input / ScreenCapture)'
+    Write-Ok 'UnityEngine.dll (legacy umbrella, present; csproj references it only when present)'
     Write-FileMetadata 'UnityEngine.dll' $unityUmbrella
 } else {
-    Write-Warn 'UnityEngine.dll not present. Unity 6000 may not ship this legacy umbrella DLL; Phase 2.0 does not require it.'
+    Write-Warn 'UnityEngine.dll not present. Unity 6000 may not ship this legacy umbrella DLL; the project does not require it.'
 }
 
-Write-Section 'Phase 4 candidate checks (informational only)'
+Write-Section 'Assembly-CSharp checks (informational only)'
 $assemblyCSharp = Join-Path $managedDir 'Assembly-CSharp.dll'
 if (Test-Path -LiteralPath $assemblyCSharp -PathType Leaf) {
-    Write-Ok 'Assembly-CSharp.dll (candidate for later Phase 4 analysis only; not referenced by Phase 2.0 build)'
+    Write-Ok 'Assembly-CSharp.dll (runtime analysis / reflection source; intentionally NOT a compile-time reference and not committed)'
     Write-FileMetadata 'Assembly-CSharp.dll' $assemblyCSharp
 } else {
-    Write-Warn 'Assembly-CSharp.dll not present; Phase 2.0 will continue because it is not a compile-time reference.'
+    Write-Warn 'Assembly-CSharp.dll not present; the project continues because it is not a compile-time reference.'
 }
 
 $firstpass = Join-Path $managedDir 'Assembly-CSharp-firstpass.dll'
 if (Test-Path -LiteralPath $firstpass -PathType Leaf) {
-    Write-Ok 'Assembly-CSharp-firstpass.dll (candidate for later analysis only)'
+    Write-Ok 'Assembly-CSharp-firstpass.dll (informational only)'
     Write-FileMetadata 'Assembly-CSharp-firstpass.dll' $firstpass
 } else {
     Write-Warn 'Assembly-CSharp-firstpass.dll not present; informational only.'

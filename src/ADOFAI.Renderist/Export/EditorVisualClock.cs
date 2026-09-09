@@ -14,23 +14,24 @@ namespace ADOFAI.Renderist.Export
     ///   * 设置当前 output frame 的视觉时间（forcedSongPosition）
     ///   * 通过 songposition_minusi 的 getter Postfix / setter Prefix
     ///     在 Active 期间维持 forcedSongPosition
-    ///   * 撤销 Patch 与关闭强制
+    ///   * 精确撤销 Patch 与关闭强制
     ///
     /// 绝不包含：DVA catch-up、scrPlayer.Hit、Planet 对齐、Multipress 清理。
-    /// 生产路径不依赖任何已退役的 Diagnostics PoC。
     /// </summary>
     internal static class EditorVisualClock
     {
         private static bool _active;
-        private static bool _hooksRegistered;
         private static double _forcedSongPosition;
+
+        // 实际成功注册的 original MethodInfo，用于精确撤销（不依赖单一 bool）。
+        private static MethodInfo _patchedGetter;
+        private static MethodInfo _patchedSetter;
 
         public static bool IsActive => _active;
 
-        public static double ForcedSongPosition => _forcedSongPosition;
+        internal static bool HasTrackedHooks => _patchedGetter != null || _patchedSetter != null;
 
-        /// <summary>当前 forced songposition（只读，诊断/日志用）。</summary>
-        public static double Current => _forcedSongPosition;
+        public static double ForcedSongPosition => _forcedSongPosition;
 
         public static void SetActive(bool active)
         {
@@ -48,7 +49,10 @@ namespace ADOFAI.Renderist.Export
 
         public static bool RegisterForcedClockHooks()
         {
-            UnregisterForcedClockHooks();
+            if (!UnregisterForcedClockHooks())
+            {
+                return false;
+            }
 
             try
             {
@@ -59,52 +63,79 @@ namespace ADOFAI.Renderist.Export
                 {
                     return false;
                 }
-
-                if (getter != null)
+                if (getter == null || setter == null)
                 {
-                    harmony.Patch(getter,
-                        postfix: new HarmonyMethod(typeof(EditorVisualClock), nameof(SongPosGetterPostfix)));
+                    return false;
                 }
-                if (setter != null)
+
+                _patchedGetter = getter;
+                harmony.Patch(getter,
+                    postfix: new HarmonyMethod(typeof(EditorVisualClock), nameof(SongPosGetterPostfix)));
+
+                try
                 {
+                    _patchedSetter = setter;
                     harmony.Patch(setter,
                         prefix: new HarmonyMethod(typeof(EditorVisualClock), nameof(SongPosSetterPrefix)));
                 }
+                catch (Exception ex)
+                {
+                    Log.Exception("EditorVisualClock: 注册 setter Prefix 失败", ex);
+                    UnregisterForcedClockHooks();
+                    return false;
+                }
 
-                _hooksRegistered = true;
                 return true;
             }
             catch (Exception ex)
             {
                 Log.Exception("EditorVisualClock: 注册 forced clock Harmony Patch 失败", ex);
-                // 部分注册也立即撤销，避免留下半套 hook。
                 UnregisterForcedClockHooks();
                 return false;
             }
         }
 
-        public static void UnregisterForcedClockHooks()
+        public static bool UnregisterForcedClockHooks()
         {
-            if (!_hooksRegistered) return;
+            _active = false;
+            bool success = true;
 
-            Harmony harmony = ModEntry.Harmony;
-            if (harmony != null)
+            if (_patchedGetter != null)
             {
-                try
-                {
-                    if (EditorGameReflection.TryGetSongPositionAccessors(out MethodInfo getter, out MethodInfo setter))
-                    {
-                        if (getter != null) harmony.Unpatch(getter, HarmonyPatchType.All, ModEntry.HarmonyId);
-                        if (setter != null) harmony.Unpatch(setter, HarmonyPatchType.All, ModEntry.HarmonyId);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log.Exception("EditorVisualClock: 撤销 forced clock Harmony Patch 失败", ex);
-                }
+                if (PreciseUnpatch(_patchedGetter, nameof(SongPosGetterPostfix)))
+                    _patchedGetter = null;
+                else
+                    success = false;
             }
 
-            _hooksRegistered = false;
+            if (_patchedSetter != null)
+            {
+                if (PreciseUnpatch(_patchedSetter, nameof(SongPosSetterPrefix)))
+                    _patchedSetter = null;
+                else
+                    success = false;
+            }
+
+            return success && !HasTrackedHooks;
+        }
+
+        private static bool PreciseUnpatch(MethodInfo original, string patchName)
+        {
+            if (original == null) return true;
+            Harmony harmony = ModEntry.Harmony;
+            if (harmony == null) return false;
+            try
+            {
+                MethodInfo patch = AccessTools.Method(typeof(EditorVisualClock), patchName);
+                if (patch == null) return false;
+                harmony.Unpatch(original, patch);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("EditorVisualClock: 精确撤销 " + patchName + " 失败", ex);
+                return false;
+            }
         }
 
         // ---- Getter：Active 时返回 forcedSongPosition ----

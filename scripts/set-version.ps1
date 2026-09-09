@@ -11,7 +11,7 @@
     The script does not modify README.md, AGENTS.md, bin/, obj/, or game files.
 
 .PARAMETER Version
-    Required three-part version number, for example: 0.1.2.
+    Required four-part version number, for example: 0.3.3.1.
 
 .PARAMETER Phase
     Required non-empty phase label, for example: Phase 1.2 toolchain fixes.
@@ -26,7 +26,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)]
-    [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')]
+    [ValidatePattern('^\d+\.\d+\.\d+\.\d+$')]
     [string]$Version,
 
     [Parameter(Mandatory=$true)]

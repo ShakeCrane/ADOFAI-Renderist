@@ -3,15 +3,13 @@ using ADOFAI.Renderist.Capture;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 编辑器非实时导出的就绪状态（Phase 2.3）。
-    ///
-    /// 本阶段为只读就绪检测，不实现任何真实的编辑器逐帧导出。
+    /// 编辑器确定性导出的就绪状态（Phase 3.3.0）。
     /// 状态由 <see cref="EditorExportPreflight.Run"/> 从 Unity 环境、
-    /// Settings、CaptureService 状态与输出目录验证结果派生。
+    /// Settings 与输出目录验证结果派生。
     /// </summary>
     internal enum EditorExportReadiness
     {
-        /// <summary>实验性功能未启用。</summary>
+        /// <summary>功能未启用。</summary>
         Disabled,
 
         /// <summary>当前场景明确不是编辑器场景。</summary>
@@ -20,10 +18,10 @@ namespace ADOFAI.Renderist.Export
         /// <summary>场景信息不可用或识别结果无法判断，不能安全结论。</summary>
         UnknownEnvironment,
 
-        /// <summary>编辑器场景已识别，但存在阻断条件（目录非法、帧率非法或实时序列占用）。</summary>
+        /// <summary>存在阻断条件（目录非法、帧率非法）。</summary>
         Blocked,
 
-        /// <summary>已就绪。仅表示满足当前前置条件，不代表导出已开始或已实现。</summary>
+        /// <summary>已就绪。</summary>
         Ready,
     }
 
@@ -36,7 +34,7 @@ namespace ADOFAI.Renderist.Export
         /// <summary>无阻断原因。</summary>
         None,
 
-        /// <summary>实验性功能未启用。</summary>
+        /// <summary>功能未启用。</summary>
         FeatureDisabled,
 
         /// <summary>未检测到编辑器场景。</summary>
@@ -44,9 +42,6 @@ namespace ADOFAI.Renderist.Export
 
         /// <summary>环境信息不可用或无法判断。</summary>
         EnvironmentUnavailable,
-
-        /// <summary>实时序列截图（F10）正在运行。</summary>
-        CaptureBusy,
 
         /// <summary>目标帧率不合法。</summary>
         InvalidTargetFrameRate,
@@ -56,7 +51,7 @@ namespace ADOFAI.Renderist.Export
     }
 
     /// <summary>
-    /// 编辑器导出就绪报告（只读快照，Phase 2.3）。
+    /// 编辑器导出就绪报告（只读快照，Phase 3.3.0）。
     /// 与 Settings 解耦：报告生成后即使 Settings 变化，仍代表生成时刻状态。
     /// </summary>
     internal sealed class EditorExportReadinessReport
@@ -73,10 +68,7 @@ namespace ADOFAI.Renderist.Export
         /// <summary>输出目录验证结果。</summary>
         public DirectoryValidationResult OutputDirectoryValidation { get; set; }
 
-        /// <summary>当前目标帧率（仅作为意图参数）。</summary>
+        /// <summary>当前目标帧率。</summary>
         public int TargetFrameRate { get; set; }
-
-        /// <summary>实时序列是否正在运行。</summary>
-        public bool IsRecording { get; set; }
     }
 }

@@ -7,9 +7,10 @@ assemblies on your machine.
 No proprietary DLLs are committed to this repository. Every developer must
 supply them from their own local ADOFAI and UMM installation.
 
-## Current Phase 2.4 baseline
+## Current Phase 3.3.0 baseline
 
-- Phase: `Phase 2.4 editor export skeleton`
+- Phase: `Phase 3.3.0 deterministic hardening`
+- Version example (four-part): `0.3.3.1`
 - ADOFAI baseline: `v3.3.1`
 - Unity baseline: `6000.3.10f1`
 - Target framework: `net48`
@@ -37,15 +38,10 @@ references/
 ```
 
 These folders are reserved for local reference inspection or caches only. The
-Phase 1.3 script does not copy DLLs into them. DLLs, PDBs, XML documentation,
-and other local binary/reference artifacts under `references/` must not be
-committed.
+script does not copy DLLs into them. DLLs, PDBs, XML documentation, and other
+local binary/reference artifacts under `references/` must not be committed.
 
-`references/Mods/` and `references/Decompiled/` are intentionally not created in
-Phase 1.3. Mods compatibility remains a later replay/autoplay phase, and local
-decompilation remains a later game API analysis phase.
-
-## Required compile-time DLLs for Phase 2.0
+## Required compile-time DLLs
 
 The build will fail if any of these are missing:
 
@@ -54,20 +50,20 @@ The build will fail if any of these are missing:
 | `UnityModManager.dll` | UMM | `A Dance of Fire and Ice_Data\Managed\UnityModManager\UnityModManager.dll`, or explicit `-UmmDir` |
 | `0Harmony.dll` | UMM | `A Dance of Fire and Ice_Data\Managed\UnityModManager\0Harmony.dll`, or explicit `-UmmDir` |
 | `UnityEngine.CoreModule.dll` | ADOFAI Managed | `A Dance of Fire and Ice_Data\Managed\UnityEngine.CoreModule.dll` |
-| `UnityEngine.IMGUIModule.dll` | ADOFAI Managed | `A Dance of Fire and Ice_Data\Managed\UnityEngine.IMGUIModule.dll` |
-| `UnityEngine.ScreenCaptureModule.dll` | ADOFAI Managed | `A Dance of Fire and Ice_Data\Managed\UnityEngine.ScreenCaptureModule.dll` (Phase 2.0 uses `ScreenCapture.CaptureScreenshot`) |
-| `UnityEngine.InputLegacyModule.dll` | ADOFAI Managed | `A Dance of Fire and Ice_Data\Managed\UnityEngine.InputLegacyModule.dll` (Phase 2.0 hotkeys use legacy `Input.GetKeyDown` / `KeyCode`) |
-
-`UnityEngine.IMGUIModule.dll` is required because the current UMM GUI uses
-Unity IMGUI / `GUILayout` in `ModEntry.OnGUI`.
+| `UnityEngine.IMGUIModule.dll` | ADOFAI Managed | `A Dance of Fire and Ice_Data\Managed\UnityEngine.IMGUIModule.dll` (UMM GUI uses `GUILayout`) |
+| `UnityEngine.ImageConversionModule.dll` | ADOFAI Managed | `A Dance of Fire and Ice_Data\Managed\UnityEngine.ImageConversionModule.dll` (`Texture2D.EncodeToPNG`, the deterministic PNG readback path) |
 
 ## Optional / informational DLLs
 
 | DLL | Status |
 | --- | --- |
-| `UnityEngine.dll` | Legacy umbrella assembly. Unity 6000 may not ship it. The project references it only when present. **Not** used as a fallback for Input / ScreenCapture. Missing is not a Phase 2.0 error. |
-| `Assembly-CSharp.dll` | Candidate for later Phase 4 local analysis only. Not a Phase 2.0 compile reference and not a Phase 2.0 success condition. |
+| `UnityEngine.dll` | Legacy umbrella assembly. Unity 6000 may not ship it. The project references it only when present. Missing is not an error. |
+| `Assembly-CSharp.dll` | Runtime analysis / reflection source for ADOFAI internal APIs. **Not** a compile-time reference and **not** committed. |
 | `Assembly-CSharp-firstpass.dll` | Informational only if present. |
+
+ADOFAI internal APIs are resolved at runtime via `EditorGameReflection` /
+`RenderistAutoPlay`; `Assembly-CSharp.dll` is deliberately never referenced
+by the build.
 
 ## Setup steps
 
@@ -93,7 +89,7 @@ The script will:
 - resolve the UMM directory;
 - check the Managed directory;
 - check the Mono / IL2CPP indicators;
-- check required Phase 1.3 compile-time DLLs;
+- check required compile-time DLLs;
 - print DLL path, FileVersion, AssemblyVersion, and ProductVersion where available;
 - warn on baseline version differences;
 - generate `build/local.props` from `build/local.props.example`.
@@ -140,13 +136,11 @@ while preserving tracked `.gitkeep` placeholders.
 
 ## Release packaging
 
-Phase 1.4 introduces a release packaging baseline. The output is a UMM-ready
-zip placed under `dist/` (gitignored).
-
-Zip contents (top-level files only, no directories):
+The output is a UMM-ready zip placed under `dist/` (gitignored) with a fixed
+name:
 
 ```text
-ADOFAI.Renderist-v<version>.zip
+dist/ADOFAI.Renderist.zip
 ├── Info.json
 ├── ADOFAI.Renderist.dll
 └── LICENSE
@@ -168,25 +162,22 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package-releas
 - reads the target version from `mod/Info.json`;
 - cross-checks against the csproj `<Version>`;
 - stages `Info.json`, `ADOFAI.Renderist.dll`, and `LICENSE`;
-- writes `dist/ADOFAI.Renderist-v<version>.zip`;
-- writes a `dist/ADOFAI.Renderist-v<version>.zip.sha256` sidecar;
+- writes `dist/ADOFAI.Renderist.zip`;
+- writes a `dist/ADOFAI.Renderist.zip.sha256` sidecar (outside the zip);
 - invokes `scripts/verify-release-package.ps1` on the output.
 
 Useful flags:
 
 - `-SkipBuild` — assume the Release DLL already exists.
 - `-SkipVerify` — do not run the verify script.
-- `-Clean` — remove a stale zip and sidecar for the same version first.
-- `-Force` — overwrite an existing zip of the same name.
-- `-OutputDir <path>` — must live inside the repository and must not be
-  `src/`, `mod/`, `scripts/`, `build/`, `references/`, `.git/`, `.vscode/`,
-  or an ADOFAI install directory.
+- `-Clean` — remove a stale zip and sidecar first.
+- `-Force` — overwrite the existing zip.
 
 ### Verify an existing zip
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-release-package.ps1 `
-  -ZipPath .\dist\ADOFAI.Renderist-v0.1.4.zip
+  -ZipPath .\dist\ADOFAI.Renderist.zip
 ```
 
 The verify script enforces, among other things:
@@ -197,7 +188,7 @@ The verify script enforces, among other things:
   `UnityEngine*.dll`, `*.pdb`, `*.xml`, `*.cache`, `*.config`, or UMM
   runtime caches inside the zip;
 - `Info.json` fields `Id`, `AssemblyName`, `EntryMethod`, `ManagerVersion`,
-  and `Version` match the Phase 1.4 baseline;
+  and `Version` match expected values;
 - DLL FileVersion or ProductVersion matches `Info.json` Version.
 
 A missing `.sha256` sidecar is not a failure.
@@ -209,6 +200,6 @@ top-level files into `<ADOFAI install>\Mods\ADOFAI.Renderist\` manually.
 
 ### Version sync
 
-Always change version and phase via `scripts/set-version.ps1`. The packaging
-scripts do not modify source files and will fail fast on a version mismatch
-between `mod/Info.json` and `ADOFAI.Renderist.csproj`.
+Always change version and phase via `scripts/set-version.ps1` (four-part
+version only). The packaging scripts do not modify source files and will fail
+fast on a version mismatch between `mod/Info.json` and `ADOFAI.Renderist.csproj`.

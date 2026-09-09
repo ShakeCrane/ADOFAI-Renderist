@@ -1,11 +1,7 @@
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 保留的旧编辑器导出会话状态枚举。
-    ///
-    /// 旧实现曾由 DeterministicFrameScheduler 驱动 PNG 捕获；
-    /// <c>Running</c> 表示会话存活且 scheduler 正在推进 / 捕获。
-    ///
+    /// 编辑器确定性导出会话状态（Phase 3.3.0）。
     /// 终止状态（Completed / Cancelled / Failed）保留供 GUI 查看，下一次 Start 可重新进入 Preparing。
     /// </summary>
     internal enum EditorExportState
@@ -19,16 +15,13 @@ namespace ADOFAI.Renderist.Export
         /// <summary>运行中：DeterministicFrameScheduler 正在推进并捕获。</summary>
         Running,
 
-        /// <summary>清理中：正在写入最终 metadata 并收尾。</summary>
-        Cleaning,
-
-        /// <summary>已完成：用户主动停止并成功收尾。</summary>
+        /// <summary>已完成：达到 target-frame-count 并成功收尾。</summary>
         Completed,
 
-        /// <summary>已取消：环境失效、Mod 禁用或会话被外部取消。</summary>
+        /// <summary>已取消：用户停止、Mod 禁用或会话被外部取消。</summary>
         Cancelled,
 
-        /// <summary>已失败：metadata 写入失败或未处理异常。</summary>
+        /// <summary>已失败：内部错误或异常。</summary>
         Failed,
     }
 }

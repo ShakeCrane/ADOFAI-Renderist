@@ -92,7 +92,17 @@ namespace ADOFAI.Renderist.Export
                         AlignPlanet(current, planet);
                     }
 
+                    // RDC.auto 事务：必须先成功读取旧值 → 写 true → 官方 Hit → 成功恢复原值。
                     bool? oldAuto = ReadStaticBool(_tRdc, "auto");
+                    if (!oldAuto.HasValue)
+                    {
+                        error = "rdc-auto-read-failed";
+                        return false;
+                    }
+
+                    Exception hitException = null;
+                    bool restoreFailed = false;
+                    object result = null;
                     try
                     {
                         if (!SetStatic(_tRdc, "auto", true))
@@ -102,7 +112,7 @@ namespace ADOFAI.Renderist.Export
                         }
 
                         PrepareHitState(player, controller);
-                        object result = _mPlayerHit.Invoke(player, new object[] { true });
+                        result = _mPlayerHit.Invoke(player, new object[] { true });
                         hitCount++;
 
                         Log.Info("MasterTimeline Hit: frameIndex=" + frameIndex.ToString(CultureInfo.InvariantCulture) +
@@ -113,18 +123,62 @@ namespace ADOFAI.Renderist.Export
                                  " due=true hitResult=" + ToText(result) +
                                  " afterFloor=" + ToInt(ReadMember(ReadMember(player, "currFloor"), "seqID")).ToString(CultureInfo.InvariantCulture) +
                                  " alive=" + ToText(ReadMember(player, "alive")));
-
-                        if (result is bool && !(bool)result) return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        hitException = ex;
                     }
                     finally
                     {
-                        if (oldAuto.HasValue) SetStatic(_tRdc, "auto", oldAuto.Value);
+                        if (!SetStatic(_tRdc, "auto", oldAuto.Value))
+                        {
+                            restoreFailed = true;
+                        }
                     }
+
+                    if (restoreFailed)
+                    {
+                        if (hitException != null)
+                        {
+                            Log.Exception("RenderistAutoPlay: Hit 抛异常且 RDC.auto 恢复失败", hitException);
+                        }
+                        else
+                        {
+                            Log.Error("RenderistAutoPlay: RDC.auto 恢复失败");
+                        }
+                        error = "rdc-auto-restore-failed";
+                        return false;
+                    }
+
+                    if (hitException != null)
+                    {
+                        Log.Exception("RenderistAutoPlay: 官方 Hit 调用抛异常", hitException);
+                        error = "scr-player-hit-threw: " + hitException.Message;
+                        return false;
+                    }
+
+                    if (result is bool && !(bool)result) return true;
 
                     if (ReferenceEquals(current, ReadMember(player, "currFloor")))
                     {
                         error = "hit-did-not-advance";
                         return false;
+                    }
+                }
+
+                // 因达到 MaxHitsPerFrame 退出：若仍存在 due floor，则不能把 Hit 拖到下一 output frame。
+                {
+                    object current = ReadMember(player, "currFloor");
+                    object next = ReadMember(current, "nextfloor");
+                    if (next != null)
+                    {
+                        double? nextEntry = ToDouble(ReadMember(next, "entryTime"));
+                        if (nextEntry.HasValue && !double.IsNaN(nextEntry.Value) && !double.IsInfinity(nextEntry.Value) &&
+                            chartTime + DueToleranceSeconds >= nextEntry.Value)
+                        {
+                            error = "max-hits-per-frame-exceeded";
+                            return false;
+                        }
                     }
                 }
 

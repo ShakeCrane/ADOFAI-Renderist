@@ -1,11 +1,9 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
-using ADOFAI.Renderist.Capture;
 using ADOFAI.Renderist.Logging;
 
 namespace ADOFAI.Renderist.Export
@@ -25,7 +23,7 @@ namespace ADOFAI.Renderist.Export
     /// 关键不变量：Frame N 未成功捕获，就不提交 N，也不开始 N+1。
     ///
     /// 时间只来自 MasterTimeline；不使用 wall clock、Unity Update 次数或 AudioRenderer。
-    /// Time.frameCount 仅用于启动去重与同帧防重复执行，不作为输出帧号。
+    /// wall clock（Time.realtimeSinceStartupAsDouble）仅用于 watchdog 失败保护，绝不推进 timeline。
     /// </summary>
     internal static class DeterministicFrameScheduler
     {
@@ -43,17 +41,18 @@ namespace ADOFAI.Renderist.Export
         private const int DefaultOutputFps = 60;
         /// <summary>3.0 秒 @ 60 FPS（短序列验收基线）。</summary>
         public const int DefaultTargetFrameCount = 180;
-        private const int PlaybackReadyTimeoutFrames = (int)(DefaultOutputFps * 30L);
         private const string FramePrefix = "frame_";
         private const int ZeroPadWidth = 6;
         private const double AnchorInvalidThresholdSeconds = 3600.0;
-        // One 60 FPS Unity frame plus floating-point / logger sampling margin;
-        // deliberately far below the previous 0.34 s structural mismatch.
         private const double GameplayAnchorConsistencyToleranceSeconds = 0.05;
+        private const double PlaybackReadyTimeoutSeconds = 30.0;
+        private const double CaptureTimeoutSeconds = 30.0;
+        private const double MinPitch = 0.0001;
 
         private static SchedulerStatus _status = SchedulerStatus.Idle;
         private static bool _running;
         private static bool _restored;
+        private static bool _cleanupInProgress;
         private static string _terminalStopReason;
 
         private static int _outputFps = DefaultOutputFps;
@@ -81,6 +80,10 @@ namespace ADOFAI.Renderist.Export
         private static string _pendingStopEvent;
         private static string _pendingStopReason;
 
+        // wall-clock watchdog deadlines（仅失败保护，不推进 timeline）
+        private static double _initializationDeadlineRealtime;
+        private static double _captureDeadlineRealtime;
+
         // 保存需要恢复的状态
         private static int _savedCaptureFramerate;
         private static int _savedTargetFrameRate;
@@ -91,8 +94,18 @@ namespace ADOFAI.Renderist.Export
         private static MasterTimeline _timeline;
         private static PlaybackLifecycleHandoff _handoff;
 
-        private static bool _hooksRegistered;
-        private static bool _asyncInputAngleHookRegistered;
+        // run-owned hook tracking：实际成功注册的 original MethodInfo（精确撤销，不依赖单一 bool）
+        private static MethodInfo _patchedConductorUpdate;
+        private static MethodInfo _patchedAsyncInputAdjustAngle;
+        private static bool _conductorPrefixPatched;
+        private static bool _conductorPostfixPatched;
+        private static bool _asyncInputAdjustAnglePatched;
+
+        // FrameCaptureDriver generation 隔离
+        private static long _captureGeneration;
+
+        // saved Unity timing state is itself ownership until restoration succeeds
+        private static bool _ownsUnityTiming;
 
         public static bool IsRunning => _running;
         public static SchedulerStatus Status => _status;
@@ -120,18 +133,24 @@ namespace ADOFAI.Renderist.Export
         /// 尝试启动调度器。成功返回 null；失败返回机器可读拒绝原因。
         /// 启动成功后进入 Preparing → InitializationHold，由 Tick 继续推进。
         /// </summary>
-        public static string TryStart(string outputDirectory, int outputFps, int targetFrameCount)
+        public static string TryStart(string outputDirectory, int outputFps, int targetFrameCount,
+            bool allowExpectedTerminalControllerFail = false)
         {
             if (_running || !Terminal && _status != SchedulerStatus.Idle)
             {
                 return "scheduler-already-running";
             }
 
+            if (!EnsurePreviousRunCleanedUp(out string residualError))
+            {
+                return "cleanup-failed:" + residualError;
+            }
+
             try
             {
                 EditorGameReflection.EnsureTypes();
 
-                string reject = ValidateStartConditions();
+                string reject = ValidateStartConditions(allowExpectedTerminalControllerFail);
                 if (reject != null)
                 {
                     return reject;
@@ -147,28 +166,11 @@ namespace ADOFAI.Renderist.Export
                 _restored = false;
                 _terminalStopReason = null;
 
+                ResetRunStateForStart();
+
                 _outputFps = outputFps > 0 ? outputFps : DefaultOutputFps;
                 _targetFrameCount = targetFrameCount > 0 ? targetFrameCount : DefaultTargetFrameCount;
-                _outputFrameIndex = 0;
-                _outputTime = 0.0;
-                _forcedSongPosition = 0.0;
-                _canonicalStartTime = 0.0;
-                _floor0EntryTime = 0.0;
-                _captureRequestCount = 0;
-                _capturedFrameCount = 0;
-                _awaitFrameCount = 0;
-                _activationUnityFrame = -1;
-                _lastPrepareUnityFrame = -1;
-                _clockActive = false;
-                _pendingCapture = false;
-                _pendingCaptureIndex = -1;
-                _prefixSongPosition = null;
-                _lastFrame0Stage = null;
-                _hitsThisFrame = 0;
-                _pendingStopEvent = null;
-                _pendingStopReason = null;
-                _timeline = null;
-                _handoff = null;
+                _initializationDeadlineRealtime = Time.realtimeSinceStartupAsDouble + PlaybackReadyTimeoutSeconds;
 
                 SaveState();
 
@@ -177,8 +179,7 @@ namespace ADOFAI.Renderist.Export
                 QualitySettings.vSyncCount = 0;
                 Application.targetFrameRate = Math.Max(1000, _outputFps * 4);
 
-                // pitch 在 editor.Play() 内部由 RemakePath / SetupConductorWithLevelData 最终确定；
-                // 因此在 Play 返回后读取，避免沿用编辑状态中的旧 pitch。
+                // pitch 在 editor.Play() 内部最终确定，因此 Play 返回后读取。
 
                 // ---- 1) SelectFloor(floor0) ----
                 if (!TrySelectFloor0(out string selectError))
@@ -187,8 +188,6 @@ namespace ADOFAI.Renderist.Export
                 }
 
                 // ---- 2) 读取 runtime floors[0].entryTime chart 基准 ----
-                // 读取失败必须拒绝启动；最终 gameplay anchor 在 lifecycle-ready 时
-                // 结合 native countdown threshold 推导，禁止猜测 0 或回退 ready songposition。
                 if (!EditorGameReflection.TryReadFloor0EntryTime(out double canonical, out string entryError))
                 {
                     return FailStart("floor0-entry-time-unavailable:" + entryError);
@@ -200,8 +199,11 @@ namespace ADOFAI.Renderist.Export
                 Log.Info(UiText.Format(UiText.LogSchedulerCanonicalAnchorFormat,
                     _canonicalStartTime.ToString("0.######", CultureInfo.InvariantCulture)));
 
-                // ---- 3) 安装 Forced Clock（editor.Play() 前只注册，lifecycle-ready 后激活）----
-                RegisterConductorUpdateHook();
+                // ---- 3) 安装 Conductor / AsyncInput / Forced Clock hook ----
+                if (!RegisterConductorUpdateHook())
+                {
+                    return FailStart("conductor-update-hook-failed");
+                }
                 if (!RegisterAsyncInputAngleHook())
                 {
                     return FailStart("async-input-angle-hook-failed");
@@ -211,7 +213,6 @@ namespace ADOFAI.Renderist.Export
                     return FailStart("forced-clock-hooks-failed");
                 }
                 EditorVisualClock.SetForcedSongPosition(_canonicalStartTime);
-                // 官方 Countdown 必须先使用原生 Conductor 时间推进；到 lifecycle-ready 后再激活 forced clock。
                 EditorVisualClock.SetActive(false);
                 Log.Info(UiText.LogSchedulerForcedClockInstalled);
                 Log.Info(UiText.LogSchedulerInitHoldStarted);
@@ -230,10 +231,11 @@ namespace ADOFAI.Renderist.Export
 
                 // ---- 5) 捕获后端 ----
                 if (!FrameCaptureDriver.Start(outputDirectory, FramePrefix, ZeroPadWidth,
-                        OnCaptureResult, out string captureError))
+                        OnCaptureResult, out long captureGeneration, out string captureError))
                 {
                     return FailStart("capture-driver-start-failed:" + captureError);
                 }
+                _captureGeneration = captureGeneration;
 
                 // ---- 6) 官方 editor.Play() ----
                 _handoff.MarkPlayRequested();
@@ -242,9 +244,18 @@ namespace ADOFAI.Renderist.Export
                     return FailStart("start-playback-failed:" + playError);
                 }
                 _handoff.MarkPlayReturned();
+
+                // pitch 必须可用且有效，否则不得构造 MasterTimeline。
                 _pitch = EditorGameReflection.ReadPitch(out _pitchUnavailable);
-                // MasterTimeline 的 gameplay anchor 要等 native lifecycle-ready 后，
-                // 读取本次 Play 已建立的 countdown 参数；此处只保留 floor0 基准。
+                if (_pitchUnavailable)
+                {
+                    return FailStart("pitch-unavailable");
+                }
+                if (double.IsNaN(_pitch) || double.IsInfinity(_pitch) || _pitch <= MinPitch)
+                {
+                    return FailStart("pitch-invalid");
+                }
+
                 _timeline = null;
                 Log.Info(UiText.LogSchedulerEditorPlayCalled);
 
@@ -263,14 +274,157 @@ namespace ADOFAI.Renderist.Export
             }
         }
 
+        /// <summary>
+        /// 启动前 session gate。用于在 Controller 创建 session 目录前完成
+        /// scheduler busy / residual cleanup / game API gate 判断；不创建输出目录、
+        /// 不创建 capture generation，也不进入 Editor.Play。
+        /// </summary>
+        internal static string ValidatePreStartConditions(bool allowExpectedTerminalControllerFail = false)
+        {
+            if (_running || !Terminal && _status != SchedulerStatus.Idle)
+                return "scheduler-already-running";
+
+            if (!EnsurePreviousRunCleanedUp(out string residualError))
+                return "cleanup-failed:" + residualError;
+
+            try
+            {
+                EditorGameReflection.EnsureTypes();
+                return ValidateStartConditions(allowExpectedTerminalControllerFail);
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("DeterministicFrameScheduler: 启动前校验异常", ex);
+                return "pre-start-exception:" + ex.Message;
+            }
+        }
+
+        /// <summary>
+        /// terminal session 后的 ADOFAI controller Fail/Fail2 是可重置的旧播放
+        /// 状态，而不是 Renderist residual ownership。该判定只供 Controller
+        /// 在已通过 pre-start cleanup gate 后启动一次官方 re-arm。
+        /// </summary>
+        internal static bool IsTerminalControllerFailure =>
+            EditorGameReflection.IsFailureState(EditorGameReflection.ReadControllerState());
+
+        /// <summary>
+        /// 调用 ADOFAI 已确认的公开状态迁移入口。此处不调用 editor.Play、
+        /// 不建立 capture generation，也不创建 Renderist session。
+        /// </summary>
+        internal static bool TryBeginTerminalControllerRearm(out string error)
+        {
+            error = null;
+            try
+            {
+                object controller = EditorGameReflection.Controller();
+                if (controller == null)
+                {
+                    error = "controller-null";
+                    return false;
+                }
+
+                if (!IsTerminalControllerFailure)
+                    return true;
+
+                MethodInfo changeToStart = EditorGameReflection.ControllerChangeToStartStateMethod;
+                if (changeToStart == null)
+                {
+                    error = "change-to-start-state-unavailable";
+                    return false;
+                }
+
+                changeToStart.Invoke(controller, null);
+                Log.Info("DeterministicFrameScheduler: terminal controller re-arm requested via ChangeToStartState");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = "change-to-start-state-failed";
+                Log.Exception("DeterministicFrameScheduler: terminal controller re-arm 失败", ex);
+                return false;
+            }
+        }
+
+        /// <summary>只接受官方状态机已完成迁移到 Start 的结果。</summary>
+        internal static bool IsControllerStartState =>
+            string.Equals(ToState(EditorGameReflection.ReadControllerState()),
+                "Start", StringComparison.Ordinal);
+
+        /// <summary>每次新 session 显式重置 run-owned 静态状态，避免继承上一 session。</summary>
+        private static void ResetRunStateForStart()
+        {
+            _outputFrameIndex = 0;
+            _outputTime = 0.0;
+            _forcedSongPosition = 0.0;
+            _canonicalStartTime = 0.0;
+            _floor0EntryTime = 0.0;
+            _pitch = 1.0;
+            _pitchUnavailable = false;
+            _captureRequestCount = 0;
+            _capturedFrameCount = 0;
+            _awaitFrameCount = 0;
+            _activationUnityFrame = -1;
+            _lastPrepareUnityFrame = -1;
+            _clockActive = false;
+            _pendingCapture = false;
+            _pendingCaptureIndex = -1;
+            _prefixSongPosition = null;
+            _lastFrame0Stage = null;
+            _hitsThisFrame = 0;
+            _pendingStopEvent = null;
+            _pendingStopReason = null;
+            _initializationDeadlineRealtime = 0.0;
+            _captureDeadlineRealtime = 0.0;
+            _timeline = null;
+        }
+
+        private static bool HasResidualOwnership()
+        {
+            return _ownsPlayback || _ownsUnityTiming || _handoff != null ||
+                   _captureGeneration != 0 || FrameCaptureDriver.IsRunning ||
+                   EditorVisualClock.HasTrackedHooks ||
+                   _patchedConductorUpdate != null || _patchedAsyncInputAdjustAngle != null ||
+                   _savedRdcAuto.HasValue || _savedSelectedFloorSeqs.Count > 0;
+        }
+
+        private static bool EnsurePreviousRunCleanedUp(out string error)
+        {
+            error = null;
+            if (!HasResidualOwnership())
+            {
+                _restored = true;
+                return true;
+            }
+
+            if (!RestoreAll(out error))
+            {
+                _running = false;
+                _status = SchedulerStatus.Failed;
+                _terminalStopReason = "cleanup-failed:" + (error ?? "unknown");
+                return false;
+            }
+
+            if (!HasResidualOwnership())
+                return true;
+
+            error = string.IsNullOrEmpty(error) ? "residual-ownership" : error;
+            _running = false;
+            _status = SchedulerStatus.Failed;
+            _terminalStopReason = "cleanup-failed:" + error;
+            return false;
+        }
+
         private static string FailStart(string reason)
         {
             _terminalStopReason = reason;
-            RestoreAll();
+            if (!RestoreAll(out string cleanupError))
+            {
+                _terminalStopReason = "cleanup-failed:" + cleanupError;
+            }
             _status = SchedulerStatus.Failed;
             _running = false;
-            Log.Warn(UiText.Format(UiText.LogSchedulerStartRejectedFormat, reason));
-            return reason;
+            Log.Warn(UiText.Format(UiText.LogSchedulerStartRejectedFormat, _terminalStopReason));
+            return _terminalStopReason;
         }
 
         /// <summary>请求异步停止；由下一 Tick 统一恢复。幂等。</summary>
@@ -346,7 +500,7 @@ namespace ADOFAI.Renderist.Export
                 return;
             }
 
-            if (_awaitFrameCount > PlaybackReadyTimeoutFrames)
+            if (Time.realtimeSinceStartupAsDouble > _initializationDeadlineRealtime)
             {
                 Log.Warn("MasterTimeline InitializationHold readiness timeout: state=" + ToState(state) + " handoff=" + (_handoff == null ? "null" : _handoff.MarkerStatus) + " " + BuildRuntimeSnapshot());
                 RequestStop("playback-ready-timeout", "playback-ready-timeout");
@@ -402,14 +556,9 @@ namespace ADOFAI.Renderist.Export
                      " forcedSongPosition=" + _canonicalStartTime.ToString("0.######", CultureInfo.InvariantCulture) +
                      " frameIndex=0 " + BuildRuntimeSnapshot());
 
-            // 就绪后才接管 Conductor 时间，避免冻结官方 Countdown_Update 的 beatNumber。
-            // 此时 forced value 与 native PlayerControl handoff 在同一 chart-time 坐标，
-            // 不会把已完成 countdown 的 Planet / gameplay 状态倒退到 floor0.entryTime。
             EditorVisualClock.SetForcedSongPosition(_canonicalStartTime);
             EditorVisualClock.SetActive(true);
 
-            // 就绪：释放 initialization hold，下一 Unity Frame 从 frame 0 开始。
-            // 不再读取 playback-ready 当前 songposition 作为 anchor。
             _activationUnityFrame = Time.frameCount + 1;
             _status = SchedulerStatus.Capturing;
             _clockActive = false;
@@ -426,6 +575,13 @@ namespace ADOFAI.Renderist.Export
             if (EditorGameReflection.IsFailureState(state))
             {
                 RequestStop("unexpected-fail", "controller-" + ToState(state));
+                return;
+            }
+
+            // capture transaction watchdog：EOF callback 未如约返回时失败收尾。
+            if (_pendingCapture && Time.realtimeSinceStartupAsDouble > _captureDeadlineRealtime)
+            {
+                RequestStop("capture-timeout", "capture-timeout");
                 return;
             }
 
@@ -449,8 +605,6 @@ namespace ADOFAI.Renderist.Export
 
             if (_status == SchedulerStatus.InitializationHold)
             {
-                // 初始化 Hold：不推进输出帧、不捕获；保持 canonical value 准备，但不激活 forced clock。
-                // 让 DSP / Audio 自然运行，但 chart-relative visual/game songposition 保持 hold。
                 EditorVisualClock.SetForcedSongPosition(_canonicalStartTime);
                 return;
             }
@@ -459,7 +613,6 @@ namespace ADOFAI.Renderist.Export
 
             int frame = Time.frameCount;
 
-            // 激活延迟一帧，避免在就绪检测所在的半帧内强制推进。
             if (!_clockActive)
             {
                 if (frame < _activationUnityFrame) return;
@@ -472,7 +625,6 @@ namespace ADOFAI.Renderist.Export
                 return;
             }
 
-            // 同帧去重：仅每个 Unity Frame 推进一次。
             if (frame != _lastPrepareUnityFrame)
             {
                 _lastPrepareUnityFrame = frame;
@@ -516,6 +668,7 @@ namespace ADOFAI.Renderist.Export
                           " due hits=" + hits.ToString(CultureInfo.InvariantCulture));
             }
         }
+
         private static void PrepareFrame()
         {
             // 关键不变量：上一帧必须已捕获并提交，才允许开始下一帧。
@@ -550,9 +703,14 @@ namespace ADOFAI.Renderist.Export
             }
 
             _captureRequestCount++;
+            if (!FrameCaptureDriver.RequestCapture(_captureGeneration, index))
+            {
+                RequestStop("capture-failed", "capture-request-rejected");
+                return;
+            }
             _pendingCapture = true;
             _pendingCaptureIndex = index;
-            FrameCaptureDriver.RequestCapture(index);
+            _captureDeadlineRealtime = Time.realtimeSinceStartupAsDouble + CaptureTimeoutSeconds;
             LogFrame0Stage(index, "BEFORE_EOF");
 
             string forcedText = _forcedSongPosition.ToString("0.######", CultureInfo.InvariantCulture);
@@ -572,9 +730,15 @@ namespace ADOFAI.Renderist.Export
         // Capture / Commit（WaitForEndOfFrame）
         // ================================================================
 
-        private static void OnCaptureResult(int frameIndex, bool success, string filePath, string error)
+        private static void OnCaptureResult(long generation, int frameIndex, bool success, string filePath, string error)
         {
             if (!_running) return;
+
+            if (generation != _captureGeneration)
+            {
+                Log.Debug("DeterministicFrameScheduler: stale capture generation " + generation);
+                return;
+            }
 
             if (_pendingCaptureIndex != frameIndex)
             {
@@ -584,6 +748,7 @@ namespace ADOFAI.Renderist.Export
 
             _pendingCapture = false;
             _pendingCaptureIndex = -1;
+            _captureDeadlineRealtime = 0.0;
 
             if (success)
             {
@@ -610,7 +775,6 @@ namespace ADOFAI.Renderist.Export
         {
             if (frameIndex != _outputFrameIndex)
             {
-                // 序号错位 = 不变量被破坏；不得提交，直接失败。
                 RequestStop("capture-failed", "frame-index-mismatch");
                 return;
             }
@@ -633,11 +797,14 @@ namespace ADOFAI.Renderist.Export
 
         private static void ProcessStop()
         {
-            if (_restored) return;
-            _restored = true;
+            if (_restored && !HasResidualOwnership()) return;
+            if (_cleanupInProgress) return;
 
-            string stopEvent = _pendingStopEvent ?? "cancelled";
-            string stopReason = _pendingStopReason ?? "cancelled";
+            bool priorCleanupFailure = _pendingStopEvent == null &&
+                !string.IsNullOrEmpty(_terminalStopReason) &&
+                _terminalStopReason.StartsWith("cleanup-failed", StringComparison.Ordinal);
+            string stopEvent = _pendingStopEvent ?? (priorCleanupFailure ? "cleanup-failed" : "cancelled");
+            string stopReason = _pendingStopReason ?? (priorCleanupFailure ? _terminalStopReason : "cancelled");
             _pendingStopEvent = null;
             _pendingStopReason = null;
             _terminalStopReason = stopReason;
@@ -647,53 +814,208 @@ namespace ADOFAI.Renderist.Export
 
             try
             {
-                RestoreAll();
+                if (!RestoreAll(out string cleanupError))
+                {
+                    _terminalStopReason = "cleanup-failed:" + cleanupError;
+                    _status = SchedulerStatus.Failed;
+                    Log.Info(UiText.Format(UiText.LogSchedulerStoppedFormat,
+                        _terminalStopReason, _status.ToString()));
+                    return;
+                }
             }
             catch (Exception ex)
             {
                 Log.Exception("DeterministicFrameScheduler: 恢复异常", ex);
+                _restored = false;
+                _terminalStopReason = "cleanup-failed:restore-exception";
+                _status = SchedulerStatus.Failed;
+                Log.Info(UiText.Format(UiText.LogSchedulerStoppedFormat,
+                    _terminalStopReason, _status.ToString()));
+                return;
             }
 
             _status = MapTerminal(stopEvent);
             Log.Info(UiText.Format(UiText.LogSchedulerStoppedFormat, stopReason ?? "?", _status.ToString()));
         }
 
-        private static void RestoreAll()
+        private static bool RestoreAll(out string error)
         {
-            // 顺序：先撤 Hook 与捕获后端，再恢复 RDC.auto 与 Editor 播放状态，最后恢复 Unity 时间。
-            FrameCaptureDriver.Stop();
-            EditorVisualClock.SetActive(false);
-            EditorVisualClock.UnregisterForcedClockHooks();
-            UnregisterAsyncInputAngleHook();
-            UnregisterConductorUpdateHook();
-            _handoff?.Dispose();
-            _handoff = null;
-            _timeline = null;
+            error = null;
+            if (_cleanupInProgress)
+            {
+                error = "reentrant";
+                return false;
+            }
 
-            RestoreRdcAuto();
-            RestorePlayback();
-            RestoreSelectedFloorSeqs();
+            _cleanupInProgress = true;
+            var failures = new List<string>();
+            try
+            {
+                // 先撤 Hook 与捕获后端，再恢复 RDC.auto 与 Editor 播放状态，最后恢复 Unity 时间。
+                bool captureStopped;
+                try { captureStopped = FrameCaptureDriver.Stop(); }
+                catch (Exception ex)
+                {
+                    captureStopped = false;
+                    failures.Add("capture-stop-exception");
+                    Log.Exception("DeterministicFrameScheduler: 捕获后端停止失败", ex);
+                }
+                if (!captureStopped || FrameCaptureDriver.IsRunning)
+                    failures.Add("capture-stop");
+                else
+                {
+                    _pendingCapture = false;
+                    _pendingCaptureIndex = -1;
+                    _captureGeneration = 0;
+                    _captureDeadlineRealtime = 0.0;
+                }
 
-            Time.captureFramerate = _savedCaptureFramerate;
-            Application.targetFrameRate = _savedTargetFrameRate;
-            QualitySettings.vSyncCount = _savedVSyncCount;
+                EditorVisualClock.SetActive(false);
+                try
+                {
+                    if (!EditorVisualClock.UnregisterForcedClockHooks())
+                        failures.Add("visual-clock-unpatch");
+                }
+                catch (Exception ex)
+                {
+                    failures.Add("visual-clock-unpatch-exception");
+                    Log.Exception("DeterministicFrameScheduler: forced clock 清理异常", ex);
+                }
 
-            Log.Debug("DeterministicFrameScheduler: restored captureFramerate=" + _savedCaptureFramerate +
-                      " targetFrameRate=" + _savedTargetFrameRate +
-                      " vSyncCount=" + _savedVSyncCount +
-                      " rdcAuto=" + FormatAuto(EditorGameReflection.ReadRdcAuto()));
+                try
+                {
+                    if (!UnregisterAsyncInputAngleHook())
+                        failures.Add("async-input-unpatch");
+                }
+                catch (Exception ex)
+                {
+                    failures.Add("async-input-unpatch-exception");
+                    Log.Exception("DeterministicFrameScheduler: AsyncInput hook 清理异常", ex);
+                }
+                try
+                {
+                    if (!UnregisterConductorUpdateHook())
+                        failures.Add("conductor-unpatch");
+                }
+                catch (Exception ex)
+                {
+                    failures.Add("conductor-unpatch-exception");
+                    Log.Exception("DeterministicFrameScheduler: conductor hook 清理异常", ex);
+                }
+
+                if (_handoff != null)
+                {
+                    try
+                    {
+                        if (_handoff.TryDispose())
+                            _handoff = null;
+                        else
+                            failures.Add("lifecycle-dispose");
+                    }
+                    catch (Exception ex)
+                    {
+                        failures.Add("lifecycle-dispose-exception");
+                        Log.Exception("DeterministicFrameScheduler: lifecycle handoff 清理异常", ex);
+                    }
+                }
+
+                _timeline = null;
+
+                try
+                {
+                    if (!RestoreRdcAuto())
+                        failures.Add("rdc-auto-restore");
+                }
+                catch (Exception ex)
+                {
+                    failures.Add("rdc-auto-restore-exception");
+                    Log.Exception("DeterministicFrameScheduler: RDC.auto 清理异常", ex);
+                }
+
+                bool selectedOk;
+                try { selectedOk = RestoreSelectedFloorSeqs(); }
+                catch (Exception ex)
+                {
+                    selectedOk = false;
+                    Log.Exception("DeterministicFrameScheduler: selected floor 恢复异常", ex);
+                }
+                bool playbackOk;
+                try { playbackOk = RestorePlayback(); }
+                catch (Exception ex)
+                {
+                    playbackOk = false;
+                    Log.Exception("DeterministicFrameScheduler: playback 恢复异常", ex);
+                }
+                if (playbackOk && selectedOk)
+                    _ownsPlayback = false;
+                else
+                {
+                    if (!playbackOk) failures.Add("playback-restore");
+                    if (!selectedOk) failures.Add("selected-floor-restore");
+                }
+
+                if (_ownsUnityTiming)
+                {
+                    bool timingOk = true;
+                    try { Time.captureFramerate = _savedCaptureFramerate; }
+                    catch (Exception ex) { timingOk = false; Log.Exception("DeterministicFrameScheduler: captureFramerate 恢复失败", ex); }
+                    try { Application.targetFrameRate = _savedTargetFrameRate; }
+                    catch (Exception ex) { timingOk = false; Log.Exception("DeterministicFrameScheduler: targetFrameRate 恢复失败", ex); }
+                    try { QualitySettings.vSyncCount = _savedVSyncCount; }
+                    catch (Exception ex) { timingOk = false; Log.Exception("DeterministicFrameScheduler: vSyncCount 恢复失败", ex); }
+                    if (timingOk)
+                        _ownsUnityTiming = false;
+                    else
+                        failures.Add("unity-timing-restore");
+                }
+
+                _clockActive = false;
+                _activationUnityFrame = -1;
+                _lastPrepareUnityFrame = -1;
+
+                if (failures.Count == 0)
+                {
+                    _restored = true;
+                    _savedRdcAuto = null;
+                    _savedSelectedFloorSeqs.Clear();
+                    Log.Debug("DeterministicFrameScheduler: restored captureFramerate=" + _savedCaptureFramerate +
+                              " targetFrameRate=" + _savedTargetFrameRate +
+                              " vSyncCount=" + _savedVSyncCount +
+                              " rdcAuto=" + FormatAuto(EditorGameReflection.ReadRdcAuto()));
+                    return true;
+                }
+
+                _restored = false;
+                error = string.Join(",", failures.ToArray());
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _restored = false;
+                failures.Add("restore-exception:" + ex.Message);
+                error = string.Join(",", failures.ToArray());
+                Log.Exception("DeterministicFrameScheduler: 恢复异常", ex);
+                return false;
+            }
+            finally
+            {
+                _cleanupInProgress = false;
+            }
         }
 
         private static SchedulerStatus MapTerminal(string stopEvent)
         {
-            if (string.Equals(stopEvent, "completed", StringComparison.Ordinal) ||
-                string.Equals(stopEvent, "user", StringComparison.Ordinal))
+            // 只有 target-frame-count 正常完成才是 Completed。
+            if (string.Equals(stopEvent, "completed", StringComparison.Ordinal))
             {
                 return SchedulerStatus.Completed;
             }
-            if (string.Equals(stopEvent, "cancelled", StringComparison.Ordinal) ||
+            // 用户主动停止与取消类事件全部是 Cancelled。
+            if (string.Equals(stopEvent, "user", StringComparison.Ordinal) ||
+                string.Equals(stopEvent, "cancelled", StringComparison.Ordinal) ||
                 string.Equals(stopEvent, "mod-disabled", StringComparison.Ordinal) ||
-                string.Equals(stopEvent, "left-editor", StringComparison.Ordinal))
+                string.Equals(stopEvent, "left-editor", StringComparison.Ordinal) ||
+                string.Equals(stopEvent, "native-playback-stopped", StringComparison.Ordinal))
             {
                 return SchedulerStatus.Cancelled;
             }
@@ -708,32 +1030,36 @@ namespace ADOFAI.Renderist.Export
             _savedRdcAuto = EditorGameReflection.ReadRdcAuto();
             _savedSelectedFloorSeqs.Clear();
             EditorGameReflection.ReadSelectedFloorSeqs(_savedSelectedFloorSeqs);
+            _ownsUnityTiming = true;
         }
 
-        private static void RestoreRdcAuto()
+        private static bool RestoreRdcAuto()
         {
-            if (!_savedRdcAuto.HasValue) return;
+            if (!_savedRdcAuto.HasValue) return true;
             if (!EditorGameReflection.TryWriteRdcAuto(_savedRdcAuto.Value))
             {
                 Log.Warn("DeterministicFrameScheduler: RDC.auto 恢复失败。");
+                return false;
             }
+            _savedRdcAuto = null;
+            return true;
         }
 
-        private static void RestorePlayback()
+        private static bool RestorePlayback()
         {
-            if (!_ownsPlayback) return;
+            if (!_ownsPlayback) return true;
 
             object editor = EditorGameReflection.Editor();
-            if (editor == null) return;
+            if (editor == null) return false;
 
             bool? playMode = EditorGameReflection.ReadEditorPlayMode();
-            if (playMode != true) return;
+            if (playMode != true) return playMode.HasValue;
 
             MethodInfo mSwitch = EditorGameReflection.EditorSwitchToEditModeMethod;
             if (mSwitch == null)
             {
                 Log.Warn("DeterministicFrameScheduler: SwitchToEditMode 方法缺失，无法回 Editor。");
-                return;
+                return false;
             }
 
             try
@@ -743,27 +1069,30 @@ namespace ADOFAI.Renderist.Export
             catch (Exception ex)
             {
                 Log.Exception("DeterministicFrameScheduler: SwitchToEditMode 调用失败", ex);
+                return false;
             }
+
+            bool? restoredPlayMode = EditorGameReflection.ReadEditorPlayMode();
+            return restoredPlayMode.HasValue && !restoredPlayMode.Value;
         }
 
-        private static void RestoreSelectedFloorSeqs()
+        private static bool RestoreSelectedFloorSeqs()
         {
-            // 只有真正尝试过官方播放（会改编辑器选择）时才需要回填选择。
-            if (!_ownsPlayback) return;
+            if (!_ownsPlayback) return true;
             try
             {
-                if (_savedSelectedFloorSeqs.Count == 0) return;
+                if (_savedSelectedFloorSeqs.Count == 0) return true;
 
                 object editor = EditorGameReflection.Editor();
                 Type editorType = EditorGameReflection.EditorType;
                 Type floorType = EditorGameReflection.FloorType;
-                if (editor == null || editorType == null || floorType == null) return;
+                if (editor == null || editorType == null || floorType == null) return false;
 
-                IList floors = EditorGameReflection.ReadFloorsList();
+                System.Collections.IList floors = EditorGameReflection.ReadFloorsList();
                 if (floors == null || floors.Count == 0)
                 {
                     Log.Warn("DeterministicFrameScheduler: 恢复选择时 floors 不可用，跳过。");
-                    return;
+                    return false;
                 }
 
                 var targets = new List<object>();
@@ -781,7 +1110,7 @@ namespace ADOFAI.Renderist.Export
                     if (found == null)
                     {
                         Log.Warn("DeterministicFrameScheduler: 恢复选择时找不到 seqID=" + want + "，跳过。");
-                        return;
+                        return false;
                     }
                     targets.Add(found);
                 }
@@ -789,9 +1118,9 @@ namespace ADOFAI.Renderist.Export
                 if (targets.Count == 1)
                 {
                     MethodInfo select = EditorGameReflection.EditorSelectFloorMethod;
-                    if (select == null) return;
+                    if (select == null) return false;
                     select.Invoke(editor, new[] { targets[0], (object)false });
-                    return;
+                    return true;
                 }
 
                 var ordered = new List<Tuple<int, object>>();
@@ -806,7 +1135,7 @@ namespace ADOFAI.Renderist.Export
                     if (ordered[i].Item1 != ordered[i - 1].Item1 + 1)
                     {
                         Log.Warn("DeterministicFrameScheduler: 非连续多选，跳过恢复。");
-                        return;
+                        return false;
                     }
                 }
 
@@ -814,13 +1143,15 @@ namespace ADOFAI.Renderist.Export
                 if (multi == null)
                 {
                     Log.Warn("DeterministicFrameScheduler: MultiSelectFloors 方法缺失，跳过恢复。");
-                    return;
+                    return false;
                 }
                 multi.Invoke(editor, new[] { ordered[0].Item2, ordered[ordered.Count - 1].Item2, (object)true });
+                return true;
             }
             catch (Exception ex)
             {
-                Log.Debug("DeterministicFrameScheduler: 恢复选择失败: " + ex.Message);
+                Log.Exception("DeterministicFrameScheduler: 恢复选择失败", ex);
+                return false;
             }
         }
 
@@ -828,7 +1159,7 @@ namespace ADOFAI.Renderist.Export
         // 启动前校验 / 官方 playback 生命周期
         // ================================================================
 
-        private static string ValidateStartConditions()
+        private static string ValidateStartConditions(bool allowExpectedTerminalControllerFail = false)
         {
             if (!EditorGameReflection.SchedulerApiAvailable)
             {
@@ -843,7 +1174,8 @@ namespace ADOFAI.Renderist.Export
                 return "not-in-editor";
             }
 
-            if (EditorGameReflection.IsFailureState(EditorGameReflection.ReadControllerState()))
+            if (!allowExpectedTerminalControllerFail &&
+                EditorGameReflection.IsFailureState(EditorGameReflection.ReadControllerState()))
             {
                 return "controller-fail-state";
             }
@@ -865,10 +1197,6 @@ namespace ADOFAI.Renderist.Export
             {
                 return "rdc-auto-unavailable";
             }
-            if (CaptureService.IsRecording)
-            {
-                return "capture-recording";
-            }
             return null;
         }
 
@@ -884,7 +1212,7 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
-                IList floors = EditorGameReflection.ReadFloorsList();
+                System.Collections.IList floors = EditorGameReflection.ReadFloorsList();
                 if (floors == null || floors.Count < 1)
                 {
                     error = "floors-empty";
@@ -904,7 +1232,6 @@ namespace ADOFAI.Renderist.Export
                 // 从这一步起我们拥有该编辑器选择 / 播放状态：失败也必须恢复。
                 _ownsPlayback = true;
 
-                // SelectFloor(floor0, cameraJump:false)
                 mSelect.Invoke(editor, new object[] { floor0, false });
                 return true;
             }
@@ -935,7 +1262,6 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
-                // 官方 editor.Play()
                 mPlay.Invoke(editor, null);
                 return true;
             }
@@ -966,37 +1292,112 @@ namespace ADOFAI.Renderist.Export
                 return "left-editor";
             }
             bool? playMode = EditorGameReflection.ReadEditorPlayMode();
-            if (_ownsPlayback && playMode != true)
+            if (_ownsPlayback && playMode.HasValue && !playMode.Value)
             {
+                object controller = EditorGameReflection.Controller();
+                object player = ReadInstanceMember(controller, "playerOne");
+                bool playerAlive = ReadBool(ReadInstanceMember(player, "alive"));
+                object state = EditorGameReflection.ReadControllerState();
+                if (playerAlive && !EditorGameReflection.IsFailureState(state))
+                    return "native-playback-stopped";
                 return "playback-stopped-unexpectedly";
             }
+            if (_ownsPlayback && !playMode.HasValue)
+                return "playback-stopped-unexpectedly";
             return null;
         }
 
         // ================================================================
-        // Harmony（Frame Begin only；Forced Clock 归 EditorVisualClock）
+        // Harmony（Frame Begin；Forced Clock 归 EditorVisualClock）
         // ================================================================
 
-        private static void RegisterConductorUpdateHook()
+        private static bool RegisterConductorUpdateHook()
         {
-            UnregisterConductorUpdateHook();
+            if (!UnregisterConductorUpdateHook())
+                return false;
 
             try
             {
                 Harmony harmony = ModEntry.Harmony;
                 MethodInfo update = EditorGameReflection.ConductorUpdateMethod;
-                if (harmony == null || update == null) return;
+                if (harmony == null || update == null) return false;
 
+                _patchedConductorUpdate = update;
+                _conductorPrefixPatched = true;
                 harmony.Patch(update,
-                    prefix: new HarmonyMethod(typeof(DeterministicFrameScheduler), nameof(ConductorUpdatePrefix)),
-                    postfix: new HarmonyMethod(typeof(DeterministicFrameScheduler), nameof(ConductorUpdatePostfix)));
-                _hooksRegistered = true;
+                    prefix: new HarmonyMethod(typeof(DeterministicFrameScheduler), nameof(ConductorUpdatePrefix)));
+
+                try
+                {
+                    _conductorPostfixPatched = true;
+                    harmony.Patch(update,
+                        postfix: new HarmonyMethod(typeof(DeterministicFrameScheduler), nameof(ConductorUpdatePostfix)));
+                }
+                catch (Exception ex)
+                {
+                    Log.Exception("DeterministicFrameScheduler: 注册 conductor.Update Postfix 失败，撤销已注册 Prefix", ex);
+                    UnregisterConductorUpdateHook();
+                    return false;
+                }
+
+                return true;
             }
             catch (Exception ex)
             {
-                Log.Exception("DeterministicFrameScheduler: 注册 conductor.Update Prefix 失败", ex);
+                Log.Exception("DeterministicFrameScheduler: 注册 conductor.Update Patch 失败", ex);
                 UnregisterConductorUpdateHook();
+                return false;
             }
+        }
+
+        private static bool UnregisterConductorUpdateHook()
+        {
+            Harmony harmony = ModEntry.Harmony;
+            if (_patchedConductorUpdate == null)
+                return true;
+            if (harmony == null)
+                return false;
+
+            bool success = true;
+            if (_conductorPrefixPatched)
+            {
+                try
+                {
+                    MethodInfo prefix = AccessTools.Method(typeof(DeterministicFrameScheduler), nameof(ConductorUpdatePrefix));
+                    if (prefix == null) success = false;
+                    else
+                    {
+                        harmony.Unpatch(_patchedConductorUpdate, prefix);
+                        _conductorPrefixPatched = false;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    success = false;
+                    Log.Exception("DeterministicFrameScheduler: 撤销 conductor.Update Prefix 失败", ex);
+                }
+            }
+            if (_conductorPostfixPatched)
+            {
+                try
+                {
+                    MethodInfo postfix = AccessTools.Method(typeof(DeterministicFrameScheduler), nameof(ConductorUpdatePostfix));
+                    if (postfix == null) success = false;
+                    else
+                    {
+                        harmony.Unpatch(_patchedConductorUpdate, postfix);
+                        _conductorPostfixPatched = false;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    success = false;
+                    Log.Exception("DeterministicFrameScheduler: 撤销 conductor.Update Postfix 失败", ex);
+                }
+            }
+            if (!_conductorPrefixPatched && !_conductorPostfixPatched)
+                _patchedConductorUpdate = null;
+            return success && _patchedConductorUpdate == null;
         }
 
         /// <summary>
@@ -1006,7 +1407,8 @@ namespace ADOFAI.Renderist.Export
         /// </summary>
         private static bool RegisterAsyncInputAngleHook()
         {
-            UnregisterAsyncInputAngleHook();
+            if (!UnregisterAsyncInputAngleHook())
+                return false;
 
             try
             {
@@ -1018,9 +1420,10 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
+                _patchedAsyncInputAdjustAngle = adjustAngle;
+                _asyncInputAdjustAnglePatched = true;
                 harmony.Patch(adjustAngle,
                     prefix: new HarmonyMethod(typeof(DeterministicFrameScheduler), nameof(AsyncInputAdjustAnglePrefix)));
-                _asyncInputAngleHookRegistered = true;
                 return true;
             }
             catch (Exception ex)
@@ -1031,23 +1434,33 @@ namespace ADOFAI.Renderist.Export
             }
         }
 
-        private static void UnregisterAsyncInputAngleHook()
+        private static bool UnregisterAsyncInputAngleHook()
         {
-            if (!_asyncInputAngleHookRegistered) return;
             Harmony harmony = ModEntry.Harmony;
-            if (harmony != null)
+            if (_patchedAsyncInputAdjustAngle == null)
+                return true;
+            if (harmony == null)
+                return false;
+            if (!_asyncInputAdjustAnglePatched)
             {
-                try
-                {
-                    MethodInfo adjustAngle = EditorGameReflection.AsyncInputAdjustAngleMethod;
-                    if (adjustAngle != null) harmony.Unpatch(adjustAngle, HarmonyPatchType.All, ModEntry.HarmonyId);
-                }
-                catch (Exception ex)
-                {
-                    Log.Exception("DeterministicFrameScheduler: 撤销 AsyncInput angle hook 失败", ex);
-                }
+                _patchedAsyncInputAdjustAngle = null;
+                return true;
             }
-            _asyncInputAngleHookRegistered = false;
+            try
+            {
+                MethodInfo prefix = AccessTools.Method(typeof(DeterministicFrameScheduler), nameof(AsyncInputAdjustAnglePrefix));
+                if (prefix == null)
+                    return false;
+                harmony.Unpatch(_patchedAsyncInputAdjustAngle, prefix);
+                _asyncInputAdjustAnglePatched = false;
+                _patchedAsyncInputAdjustAngle = null;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("DeterministicFrameScheduler: 撤销 AsyncInput angle hook 失败", ex);
+                return false;
+            }
         }
 
         private static bool AsyncInputAdjustAnglePrefix(object __0, ulong __1)
@@ -1058,25 +1471,6 @@ namespace ADOFAI.Renderist.Export
             object controller = EditorGameReflection.Controller();
             object currentPlayer = ReadInstanceMember(controller, "playerOne");
             return currentPlayer == null || !ReferenceEquals(__0, currentPlayer);
-        }
-
-        private static void UnregisterConductorUpdateHook()
-        {
-            if (!_hooksRegistered) return;
-            Harmony harmony = ModEntry.Harmony;
-            if (harmony != null)
-            {
-                try
-                {
-                    MethodInfo update = EditorGameReflection.ConductorUpdateMethod;
-                    if (update != null) harmony.Unpatch(update, HarmonyPatchType.All, ModEntry.HarmonyId);
-                }
-                catch (Exception ex)
-                {
-                    Log.Exception("DeterministicFrameScheduler: 撤销 conductor.Update Prefix 失败", ex);
-                }
-            }
-            _hooksRegistered = false;
         }
 
         // ================================================================
@@ -1105,12 +1499,14 @@ namespace ADOFAI.Renderist.Export
             try { return Convert.ToBoolean(value, CultureInfo.InvariantCulture); }
             catch { return false; }
         }
+
         private static void LogFrame0Stage(int frameIndex, string stage)
         {
             if (frameIndex != 0 || string.Equals(_lastFrame0Stage, stage, StringComparison.Ordinal)) return;
             _lastFrame0Stage = stage;
             Log.Info("MasterTimeline Stage=Frame0 " + stage + " frameIndex=0 " + BuildRuntimeSnapshot());
         }
+
         private static string ToState(object v)
         {
             if (v == null) return null;

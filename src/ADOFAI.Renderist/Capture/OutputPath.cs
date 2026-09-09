@@ -186,6 +186,16 @@ namespace ADOFAI.Renderist.Capture
             }
 
             string trimmed = configured.Trim();
+            if (!Path.IsPathRooted(trimmed))
+            {
+                return new DirectoryValidationResult
+                {
+                    Outcome = DirectoryValidationOutcome.Reject,
+                    NormalizedPath = trimmed,
+                    RejectReason = "Must be absolute",
+                };
+            }
+
             string full;
             try
             {
@@ -198,16 +208,6 @@ namespace ADOFAI.Renderist.Capture
                     Outcome = DirectoryValidationOutcome.Reject,
                     NormalizedPath = trimmed,
                     RejectReason = "Invalid path",
-                };
-            }
-
-            if (!Path.IsPathRooted(full))
-            {
-                return new DirectoryValidationResult
-                {
-                    Outcome = DirectoryValidationOutcome.Reject,
-                    NormalizedPath = full,
-                    RejectReason = "Must be absolute",
                 };
             }
 
@@ -327,20 +327,21 @@ namespace ADOFAI.Renderist.Capture
         private static bool TryAcceptConfigured(string configured, out string accepted)
         {
             accepted = null;
-            string full;
-            try
+            string trimmed = (configured ?? string.Empty).Trim();
+            if (!Path.IsPathRooted(trimmed))
             {
-                full = Path.GetFullPath(configured);
-            }
-            catch (Exception ex)
-            {
-                Log.Warn(UiText.Format(UiText.LogOutDirInvalidPathFormat, configured, ex.Message));
+                Log.Warn(UiText.Format(UiText.LogOutDirMustBeAbsoluteFormat, trimmed));
                 return false;
             }
 
-            if (!Path.IsPathRooted(full))
+            string full;
+            try
             {
-                Log.Warn(UiText.Format(UiText.LogOutDirMustBeAbsoluteFormat, full));
+                full = Path.GetFullPath(trimmed);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn(UiText.Format(UiText.LogOutDirInvalidPathFormat, trimmed, ex.Message));
                 return false;
             }
 

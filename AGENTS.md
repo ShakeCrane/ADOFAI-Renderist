@@ -67,7 +67,6 @@ ADOFAI-Renderist 是一个基于 **Unity Mod Manager（UMM）** 的 ADOFAI 模�
 - 自动化测试
 - Git 检查
 - 提交
-- 按任务需要维护 `CHANGELOG.md` / `DEVLOG.md`
 - 方案明确后优先由 DSH 执行具体实现和验证；DSH 无法可靠完成、验证持续失败或任务风险显著上升时，转交 GPT Work，不重复执行同一任务。
 
 ### PROJECT_UNDERSTANDING.md
@@ -102,7 +101,7 @@ ADOFAI-Renderist 是一个基于 **Unity Mod Manager（UMM）** 的 ADOFAI 模�
 
 优先级：
 
-- 规则冲突：当前用户要求 > `AGENTS.md` > `PROJECT_UNDERSTANDING.md`
+- 规则冲突：当前用户要求 > 网页版 GPT 项目指令 > `AGENTS.md` > `PROJECT_UNDERSTANDING.md`
 - 事实冲突：实际仓库、diff、构建、测试和运行结果 > `PROJECT_UNDERSTANDING.md`
 
 不得因为 `PROJECT_UNDERSTANDING.md` 中已有记录，就跳过必要的仓库检查或把未经验证的信息直接视为事实。
@@ -147,6 +146,16 @@ README 由用户维护。
 - 不创建 README
 - 不修改 README
 - 不格式化 README
+
+版本规则（严格四位：主版本.次版本.功能版本.修订版本）：
+
+- 文档、提示词等不影响产物：通常不改版本；
+- 小 Bug fix / 轻微逻辑调整 / 稳定收敛：可递增第四位（修订版本）；
+- 一个有独立回退价值的小闭环：Web GPT 应主动考虑增加第四位；
+- 未完成实验不机械递增；
+- 前三位变更必须询问用户；
+- 新模块 / 结构调整前三位先问；
+- 新核心功能 / 渲染流程 / Patch：前三位变更必须询问。
 
 版本号未经用户确认不得擅自修改。
 
@@ -261,6 +270,10 @@ ADOFAI 已更新时，内部 API 必须重新基于当前游戏 DLL 确认。
 - 不设计 replay API
 - 不绑定 TUFReplay / Creplay
 - 不重写 replay 系统
+
+Official Autoplay：仅辅助/参考验证，不拥有 deterministic time authority。
+
+RenderistAutoPlay：MasterTimeline 驱动的 due-floor helper，复用官方 `scrPlayer.Hit(true)`，不拥有时间，不是 replay。
 
 replay 兼容留到后续阶段。
 

@@ -61,7 +61,7 @@
 param(
     [ValidateSet('Debug','Release')]
     [string]$Configuration = 'Release',
-    [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')]
+    [ValidatePattern('^\d+\.\d+\.\d+\.\d+$')]
     [string]$Version,
     [string]$OutputDir,
     [switch]$Clean,
@@ -166,7 +166,7 @@ if (-not (Test-Path -LiteralPath $outputDirAbs -PathType Container)) {
     }
 }
 
-$zipName     = "ADOFAI.Renderist-v$resolvedVersion.zip"
+$zipName     = "ADOFAI.Renderist.zip"
 $zipPath     = Join-Path $outputDirAbs $zipName
 $shaSidecar  = "$zipPath.sha256"
 

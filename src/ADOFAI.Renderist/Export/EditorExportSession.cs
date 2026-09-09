@@ -7,27 +7,22 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 保留的旧编辑器导出会话数据模型。
+    /// 确定性编辑器导出会话数据模型（Phase 3.3.0）。
     ///
-    /// 保存本阶段真实存在的信息：
-    ///   * 会话 ID、开始/结束时间、输出目录
-    ///   * 当前状态与状态说明
-    ///   * TickCount（Unity OnUpdate 推进次数，不是导出帧数 / 渲染帧数）
-    ///   * OutputFps / TargetFrameCount（本次 Deterministic Frame Scheduler 参数）
-    ///   * CaptureRequestCount（Schedule 请求捕获的次数）
-    ///   * CapturedFrameCount（PNG 写盘成功后才递增的真实计数）
-    ///   * 结束原因、场景名
+    /// 保存本阶段真实存在的信息：会话 ID、开始/结束时间、输出目录、当前状态、
+    /// TickCount（Unity OnUpdate 推进次数，不是导出帧号）、OutputFps / TargetFrameCount、
+    /// CaptureRequestCount / CapturedFrameCount（PNG 写盘成功后递增的真实计数）、结束原因、场景名。
+    ///
+    /// 当前只是 fixed target-frame-count 的 validated baseline，不等于 canonical-completion
+    /// Offline PNG Sequence。
     /// </summary>
     internal sealed class EditorExportSession
     {
-        /// <summary>旧实现使用当前分辨率同步 PNG 捕获后端；不代表当前正式导出能力。</summary>
-        public const bool CaptureImplemented = true;
-
         public string SessionId;
         public string OutputDirectory;
         public EditorExportState State;
         public string StateDetail;
-        public string StopReason;       // "user" | "cancelled" | "failed" | null
+        public string StopReason;       // "completed" | "user-stop" | "native-playback-stopped" | "cancelled" | "failed" | null
         public string SceneName;
         public DateTime? StartedAtUtc;
         public DateTime? EndedAtUtc;
@@ -37,11 +32,9 @@ namespace ADOFAI.Renderist.Export
         public long CaptureRequestCount;
         public long CapturedFrameCount;
 
-        private const string PhaseLabel = "Phase 3.2.0 legacy editor export skeleton";
+        private const string PhaseLabel = "Phase 3.3.0 deterministic editor export";
         private const string ModeLabel = "editor-export-png-sequence";
         private const string MetadataFileName = "metadata.json";
-        private const string NoteText =
-            "Phase 3.2.0 legacy editor export skeleton: retained for audit only; not current Route B production export.";
 
         public EditorExportSession(string sessionId, string outputDirectory, string sceneName)
         {
@@ -81,7 +74,7 @@ namespace ADOFAI.Renderist.Export
 
         public string ToJson()
         {
-            var sb = new StringBuilder(640);
+            var sb = new StringBuilder(512);
             sb.Append("{\n");
             AppendString(sb, "version", ModEntry.ModVersion, true);
             AppendString(sb, "phase", PhaseLabel, true);
@@ -99,9 +92,8 @@ namespace ADOFAI.Renderist.Export
             AppendLong(sb, "targetFrameCount", TargetFrameCount, true);
             AppendLong(sb, "captureRequestCount", CaptureRequestCount, true);
             AppendLong(sb, "capturedFrameCount", CapturedFrameCount, true);
-            AppendBool(sb, "captureImplemented", CaptureImplemented, true);
-            AppendString(sb, "note", NoteText, false);
-            sb.Append("}\n");
+            sb.Length -= 2; // remove trailing ",\n"
+            sb.Append("\n}\n");
             return sb.ToString();
         }
 
@@ -129,12 +121,6 @@ namespace ADOFAI.Renderist.Export
         private static void AppendLong(StringBuilder sb, string name, long value, bool comma)
         {
             sb.Append("  \"").Append(name).Append("\": ").Append(value.ToString(CultureInfo.InvariantCulture));
-            sb.Append(comma ? ",\n" : "\n");
-        }
-
-        private static void AppendBool(StringBuilder sb, string name, bool value, bool comma)
-        {
-            sb.Append("  \"").Append(name).Append("\": ").Append(value ? "true" : "false");
             sb.Append(comma ? ",\n" : "\n");
         }
 
