@@ -219,14 +219,21 @@ namespace ADOFAI.Renderist.Export
                 // 因达到 progression bound 退出：一致谱面下不可达（bound = floor 总数且
                 // 每次 Hit 都严格向前）。若此时仍有 due floor，说明 progression 记账
                 // 异常，fail-closed，不得把 Hit 拖到下一 output frame。
+                // 尾部检查必须与主循环同一判定：entryTime 不可读 / NaN / Infinity
+                // 一律 fail-closed，不得因读不到 due 时间就静默按 success 返回。
                 {
                     object current = ReadMember(player, "currFloor");
                     object next = ReadMember(current, "nextfloor");
                     if (next != null)
                     {
                         double? nextEntry = ToDouble(ReadMember(next, "entryTime"));
-                        if (nextEntry.HasValue && !double.IsNaN(nextEntry.Value) && !double.IsInfinity(nextEntry.Value) &&
-                            chartTime + DueToleranceSeconds >= nextEntry.Value)
+                        if (!nextEntry.HasValue ||
+                            double.IsNaN(nextEntry.Value) || double.IsInfinity(nextEntry.Value))
+                        {
+                            error = "next-entry-time-unavailable";
+                            return false;
+                        }
+                        if (chartTime + DueToleranceSeconds >= nextEntry.Value)
                         {
                             error = "autoplay-progression-bound-exceeded";
                             return false;
