@@ -5,7 +5,7 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 编辑器确定性导出就绪检查（Phase 3.3.0）。
+    /// 编辑器确定性导出就绪检查（Phase 3.4.0）。
     /// 完全无副作用：不创建目录、不写文件、不执行 Harmony Patch、不改 Unity 时间属性。
     /// </summary>
     internal static class EditorExportPreflight
@@ -59,14 +59,50 @@ namespace ADOFAI.Renderist.Export
                     env, dirResult, targetFrameRate);
             }
 
+            var endTailInput = new EndTailInput(
+                settings.EditorEndTailValue, settings.EditorEndTailUnit);
+            double? completionBpm = EditorGameReflection.TryReadFinalEffectiveBpm(
+                out double finalBpm, out string bpmError)
+                ? finalBpm
+                : (double?)null;
+            double pitchValue = EditorGameReflection.ReadPitch(out bool pitchUnavailable);
+            double? pitch = pitchUnavailable ? (double?)null : pitchValue;
+            int safetyFrameLimit = DeterministicFrameScheduler.NormalizeSafetyFrameLimit(
+                settings.EditorExportSafetyFrameLimit);
+
+            if (!EndTailPolicy.TryResolve(
+                    endTailInput,
+                    targetFrameRate,
+                    completionBpm,
+                    pitch,
+                    safetyFrameLimit,
+                    out EndTailResolution endTailResolution,
+                    out string endTailError))
+            {
+                EditorExportReadinessReason tailReason =
+                    string.Equals(endTailError, "end-tail-exceeds-safety-limit", System.StringComparison.Ordinal)
+                        ? EditorExportReadinessReason.EndTailExceedsSafetyLimit
+                        : endTailError != null &&
+                          (endTailError.Contains("bpm-unavailable") ||
+                           endTailError.Contains("pitch-unavailable"))
+                            ? EditorExportReadinessReason.EndTailDependenciesUnavailable
+                            : EditorExportReadinessReason.InvalidEndTail;
+                return CreateReport(EditorExportReadiness.Blocked, tailReason,
+                    env, dirResult, targetFrameRate, endTailInput, null,
+                    completionBpm, pitch, safetyFrameLimit,
+                    endTailError ?? bpmError);
+            }
+
             if (dirResult.Outcome == DirectoryValidationOutcome.Reject)
             {
                 return CreateReport(EditorExportReadiness.Blocked, EditorExportReadinessReason.InvalidOutputDirectory,
-                    env, dirResult, targetFrameRate);
+                    env, dirResult, targetFrameRate, endTailInput, endTailResolution,
+                    completionBpm, pitch, safetyFrameLimit, null);
             }
 
             return CreateReport(EditorExportReadiness.Ready, EditorExportReadinessReason.None,
-                env, dirResult, targetFrameRate);
+                env, dirResult, targetFrameRate, endTailInput, endTailResolution,
+                completionBpm, pitch, safetyFrameLimit, null);
         }
 
         private static bool IsEditorSelectionRestorable()
@@ -93,7 +129,13 @@ namespace ADOFAI.Renderist.Export
             EditorExportReadinessReason reason,
             EditorEnvSnapshot env = default,
             DirectoryValidationResult dirResult = default,
-            int targetFrameRate = 0)
+            int targetFrameRate = 0,
+            EndTailInput? endTailInput = null,
+            EndTailResolution? endTailResolution = null,
+            double? completionBpm = null,
+            double? pitch = null,
+            int safetyFrameLimit = 0,
+            string endTailValidationError = null)
         {
             var report = new EditorExportReadinessReport
             {
@@ -102,6 +144,15 @@ namespace ADOFAI.Renderist.Export
                 EditorEnv = env,
                 OutputDirectoryValidation = dirResult,
                 TargetFrameRate = targetFrameRate,
+                EndTailInputValue = endTailInput?.Value,
+                EndTailInputUnit = endTailInput?.Unit,
+                ResolvedTailFrames = endTailResolution?.FrameCount,
+                ResolvedTailSeconds = endTailResolution?.Seconds,
+                ResolvedTailBeats = endTailResolution?.Beats,
+                CompletionBpm = completionBpm,
+                Pitch = pitch,
+                SafetyFrameLimit = safetyFrameLimit,
+                EndTailValidationError = endTailValidationError,
             };
 
             Log.Debug($"EditorExportPreflight: {readiness} / {reason}");

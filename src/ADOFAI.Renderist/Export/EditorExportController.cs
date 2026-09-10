@@ -8,14 +8,14 @@ using UnityEngine;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 编辑器确定性导出会话（Phase 3.3.0）。
+    /// 编辑器确定性导出会话（Phase 3.4.0）。
     ///
     /// 本类维护会话生命周期（Preparing / Running / 终态）并把真实导出工作
     /// 交给 <see cref="DeterministicFrameScheduler"/>：
     ///   * Start：校验就绪 + 创建独立会话目录 + 启动 scheduler
     ///   * Stop：用户主动停止 → scheduler StopNow("user", "user-stop") → 终态 Cancelled
     ///   * Cancel：环境失效 / Mod 禁用 → scheduler StopNow("cancelled") → 终态 Cancelled
-    ///   * Tick：推进 scheduler 并观察其是否进入 Completed / Cancelled / Failed
+    ///   * Tick：推进 scheduler 并观察 canonical completion / tail / safety 终态
     ///
     /// 所有收尾流程幂等；不会重复恢复 scheduler 状态。
     /// </summary>
@@ -170,14 +170,24 @@ namespace ADOFAI.Renderist.Export
                 int outputFps = settings.EditorTargetFrameRate > 0
                     ? settings.EditorTargetFrameRate
                     : DeterministicFrameScheduler.OutputFps;
-                int targetFrameCount = DeterministicFrameScheduler.DefaultTargetFrameCount;
+                int safetyFrameLimit = DeterministicFrameScheduler.NormalizeSafetyFrameLimit(
+                    settings.EditorExportSafetyFrameLimit);
+                var endTailInput = new EndTailInput(
+                    settings.EditorEndTailValue, settings.EditorEndTailUnit);
 
                 session = new EditorExportSession(sessionId, dir, report.EditorEnv.SceneName)
                 {
                     State = EditorExportState.Preparing,
                     StateDetail = "正在启动确定性帧调度器。",
                     OutputFps = outputFps,
-                    TargetFrameCount = targetFrameCount,
+                    SafetyFrameLimit = safetyFrameLimit,
+                    EndTailInputValue = endTailInput.Value,
+                    EndTailInputUnit = endTailInput.Unit.ToString(),
+                    ResolvedTailFrames = report.ResolvedTailFrames,
+                    ResolvedTailSeconds = report.ResolvedTailSeconds,
+                    ResolvedTailBeats = report.ResolvedTailBeats,
+                    CompletionBpm = report.CompletionBpm,
+                    Pitch = report.Pitch,
                 };
                 _session = session;
 
@@ -195,7 +205,7 @@ namespace ADOFAI.Renderist.Export
 
                 // 这里是 terminal re-arm 后的正常路径；只允许一次 official Play。
                 string reject = DeterministicFrameScheduler.TryStart(
-                    session.OutputDirectory, outputFps, targetFrameCount, false);
+                    session.OutputDirectory, outputFps, safetyFrameLimit, endTailInput, false);
                 if (reject != null)
                 {
                     LastStartRejectReason = reject;
@@ -204,6 +214,7 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
+                CopyFrozenEndTailFromScheduler(session);
                 session.State = EditorExportState.Running;
                 session.StateDetail = "确定性帧调度器运行中。";
                 TryWriteMetadataBestEffort(session);
@@ -412,7 +423,7 @@ namespace ADOFAI.Renderist.Export
                 case DeterministicFrameScheduler.SchedulerStatus.Completed:
                     s.State = EditorExportState.Completed;
                     s.StopReason = DeterministicFrameScheduler.StopReason ?? "completed";
-                    s.StateDetail = "导出已完成。";
+                    s.StateDetail = "已观察到 canonical completion，且视觉尾帧已排空。";
                     break;
                 case DeterministicFrameScheduler.SchedulerStatus.Cancelled:
                     s.State = EditorExportState.Cancelled;
@@ -431,9 +442,28 @@ namespace ADOFAI.Renderist.Export
             s.EndedAtUtc = DateTime.UtcNow;
             s.CaptureRequestCount = DeterministicFrameScheduler.CaptureRequestCount;
             s.CapturedFrameCount = DeterministicFrameScheduler.CapturedFrameCount;
+            s.SafetyFrameLimit = DeterministicFrameScheduler.SafetyFrameLimit;
+            CopyFrozenEndTailFromScheduler(s);
+            s.TailFramesCaptured = DeterministicFrameScheduler.TailFramesCaptured;
+            s.CanonicalCompletionCallbackSeen = DeterministicFrameScheduler.CanonicalCompletionCallbackSeen;
+            s.CanonicalCompletionStateSeen = DeterministicFrameScheduler.CanonicalCompletionStateSeen;
+            s.CompletionFrameIndex = DeterministicFrameScheduler.CanonicalCompletionFrameIndex;
+            s.CompletionSignal = DeterministicFrameScheduler.CompletionSignal;
+            s.TerminationKind = DeterministicFrameScheduler.TerminationKind;
             TryWriteMetadataBestEffort(s);
             Log.Info(UiText.Format(UiText.LogEditorExportFinishedFormat,
                 s.State.ToString(), s.StopReason));
+        }
+
+        private static void CopyFrozenEndTailFromScheduler(EditorExportSession session)
+        {
+            session.EndTailInputValue = DeterministicFrameScheduler.EndTailInputValue;
+            session.EndTailInputUnit = DeterministicFrameScheduler.EndTailInputUnit.ToString();
+            session.ResolvedTailFrames = DeterministicFrameScheduler.ResolvedTailFrameCount;
+            session.ResolvedTailSeconds = DeterministicFrameScheduler.ResolvedTailSeconds;
+            session.ResolvedTailBeats = DeterministicFrameScheduler.ResolvedTailBeats;
+            session.CompletionBpm = DeterministicFrameScheduler.CompletionBpm;
+            session.Pitch = DeterministicFrameScheduler.Pitch;
         }
 
         /// <summary>轻量环境校验：Mod 启用、未离开编辑器、定期校验当前会话固定目录。</summary>
@@ -473,6 +503,7 @@ namespace ADOFAI.Renderist.Export
             s.StateDetail = detail;
             s.EndedAtUtc = DateTime.UtcNow;
             s.StopReason = reason;
+            s.TerminationKind = "lifecycle-failure";
             TryWriteMetadataBestEffort(s);
         }
 
@@ -509,6 +540,7 @@ namespace ADOFAI.Renderist.Export
                 ? (DeterministicFrameScheduler.StopReason ?? "controller-fail")
                 : "controller-fail";
             s.StateDetail = "会话失败：" + context;
+            s.TerminationKind = "lifecycle-failure";
             TryWriteMetadataBestEffort(s);
             Log.Exception("EditorExportController: " + context, ex);
         }

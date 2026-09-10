@@ -6,7 +6,7 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 编辑器环境快照（Phase 3.3.0）。
+    /// 编辑器环境快照（Phase 3.4.0）。
     ///
     /// 只采集只读诊断信息，不修改任何 Unity 状态。
     /// 不引入 Assembly-CSharp.dll。

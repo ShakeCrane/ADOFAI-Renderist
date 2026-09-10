@@ -1,4 +1,5 @@
 using UnityModManagerNet;
+using ADOFAI.Renderist.Export;
 
 namespace ADOFAI.Renderist
 {
@@ -20,7 +21,7 @@ namespace ADOFAI.Renderist
         /// </summary>
         public string OutputDirectory = string.Empty;
 
-        // ---------------- Phase 3.3.0: deterministic editor export ----------------
+        // ---------------- Phase 3.4.0: deterministic editor export ----------------
 
         /// <summary>
         /// Switch for the deterministic editor export session (MasterTimeline).
@@ -32,6 +33,22 @@ namespace ADOFAI.Renderist
         /// Must be greater than 0 to pass readiness checks.
         /// </summary>
         public int EditorTargetFrameRate = 60;
+
+        /// <summary>
+        /// Single player-facing End Tail value. Its interpretation is selected by
+        /// EditorEndTailUnit and frozen when a session starts.
+        /// </summary>
+        public double EditorEndTailValue = EndTailPolicy.DefaultValue;
+
+        /// <summary>Unit for EditorEndTailValue: Frames, Seconds, or Beats.</summary>
+        public EndTailUnit EditorEndTailUnit = EndTailPolicy.DefaultUnit;
+
+        /// <summary>
+        /// Safety-only maximum number of output frames for a session that never
+        /// reaches native completion. Zero uses the built-in safe default.
+        /// This is not a normal completion condition.
+        /// </summary>
+        public int EditorExportSafetyFrameLimit = 36000;
 
         public override void Save(UnityModManager.ModEntry modEntry)
         {

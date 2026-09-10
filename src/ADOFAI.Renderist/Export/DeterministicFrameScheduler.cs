@@ -9,7 +9,7 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// MasterTimeline Deterministic Gameplay Handoff 的逐帧调度器；尚不是完整离线渲染产品。
+    /// MasterTimeline Deterministic Editor Export 的逐帧调度器。
     ///
     /// 数据流：
     ///   outputFrameIndex
@@ -39,14 +39,21 @@ namespace ADOFAI.Renderist.Export
         }
 
         private const int DefaultOutputFps = 60;
-        /// <summary>3.0 秒 @ 60 FPS（短序列验收基线）。</summary>
-        public const int DefaultTargetFrameCount = 180;
+        /// <summary>End Tail 默认值；玩家可改为 Frames / Seconds / Beats。</summary>
+        public const int DefaultTailFrameCount = 12;
+        /// <summary>
+        /// 默认 safety-only 上限：600 秒 @ 60 FPS。它只用于防止异常谱面无限运行，
+        /// 不参与正常完成判断。
+        /// </summary>
+        public const int DefaultSafetyFrameLimit = 36000;
+        private const int MaxSafetyFrameLimit = 1000000;
         private const string FramePrefix = "frame_";
         private const int ZeroPadWidth = 6;
         private const double AnchorInvalidThresholdSeconds = 3600.0;
         private const double GameplayAnchorConsistencyToleranceSeconds = 0.05;
         private const double PlaybackReadyTimeoutSeconds = 30.0;
         private const double CaptureTimeoutSeconds = 30.0;
+        private const double FrameProgressWatchdogSeconds = 30.0;
         private const double MinPitch = 0.0001;
 
         private static SchedulerStatus _status = SchedulerStatus.Idle;
@@ -56,7 +63,14 @@ namespace ADOFAI.Renderist.Export
         private static string _terminalStopReason;
 
         private static int _outputFps = DefaultOutputFps;
-        private static int _targetFrameCount = DefaultTargetFrameCount;
+        private static int _safetyFrameLimit = DefaultSafetyFrameLimit;
+        private static int _resolvedTailFrameCount = DefaultTailFrameCount;
+        private static int _tailFramesCaptured;
+        private static EndTailInput _endTailInput =
+            new EndTailInput(EndTailPolicy.DefaultValue, EndTailPolicy.DefaultUnit);
+        private static double _resolvedTailSeconds;
+        private static double? _resolvedTailBeats;
+        private static double? _completionBpm;
         private static int _outputFrameIndex;              // 已提交数量，同时也是“下一帧”编号
         private static int _captureRequestCount;
         private static int _capturedFrameCount;
@@ -80,9 +94,18 @@ namespace ADOFAI.Renderist.Export
         private static string _pendingStopEvent;
         private static string _pendingStopReason;
 
+        // Canonical completion is observed from the native OnLandOnPortal path,
+        // then corroborated by the committed controller state Won. A floor hit
+        // alone never sets these flags.
+        private static bool _canonicalCompletionCallbackSeen;
+        private static bool _canonicalCompletionStateSeen;
+        private static int _canonicalCompletionFrameIndex = -1;
+        private static string _canonicalCompletionSignal;
+
         // wall-clock watchdog deadlines（仅失败保护，不推进 timeline）
         private static double _initializationDeadlineRealtime;
         private static double _captureDeadlineRealtime;
+        private static double _progressDeadlineRealtime;
 
         // 保存需要恢复的状态
         private static int _savedCaptureFramerate;
@@ -97,9 +120,11 @@ namespace ADOFAI.Renderist.Export
         // run-owned hook tracking：实际成功注册的 original MethodInfo（精确撤销，不依赖单一 bool）
         private static MethodInfo _patchedConductorUpdate;
         private static MethodInfo _patchedAsyncInputAdjustAngle;
+        private static MethodInfo _patchedControllerOnLandOnPortal;
         private static bool _conductorPrefixPatched;
         private static bool _conductorPostfixPatched;
         private static bool _asyncInputAdjustAnglePatched;
+        private static bool _controllerOnLandOnPortalPatched;
 
         // FrameCaptureDriver generation 隔离
         private static long _captureGeneration;
@@ -112,7 +137,14 @@ namespace ADOFAI.Renderist.Export
         public static string StopReason => _terminalStopReason;
         public static int OutputFrameIndex => _outputFrameIndex;
         public static int OutputFps => _outputFps;
-        public static int TargetFrameCount => _targetFrameCount;
+        public static int SafetyFrameLimit => _safetyFrameLimit;
+        public static int ResolvedTailFrameCount => _resolvedTailFrameCount;
+        public static int TailFramesCaptured => _tailFramesCaptured;
+        public static double EndTailInputValue => _endTailInput.Value;
+        public static EndTailUnit EndTailInputUnit => _endTailInput.Unit;
+        public static double ResolvedTailSeconds => _resolvedTailSeconds;
+        public static double? ResolvedTailBeats => _resolvedTailBeats;
+        public static double? CompletionBpm => _completionBpm;
         public static int CaptureRequestCount => _captureRequestCount;
         public static int CapturedFrameCount => _capturedFrameCount;
         public static double OutputTime => _outputTime;
@@ -120,6 +152,11 @@ namespace ADOFAI.Renderist.Export
         public static double CanonicalStartTime => _canonicalStartTime;
         public static double Pitch => _pitch;
         public static bool PitchUnavailable => _pitchUnavailable;
+        public static bool CanonicalCompletionCallbackSeen => _canonicalCompletionCallbackSeen;
+        public static bool CanonicalCompletionStateSeen => _canonicalCompletionStateSeen;
+        public static int CanonicalCompletionFrameIndex => _canonicalCompletionFrameIndex;
+        public static string CompletionSignal => _canonicalCompletionSignal;
+        public static string TerminationKind => ClassifyTermination(_terminalStopReason, _status);
 
         private static bool Terminal => _status == SchedulerStatus.Completed ||
                                        _status == SchedulerStatus.Cancelled ||
@@ -133,8 +170,8 @@ namespace ADOFAI.Renderist.Export
         /// 尝试启动调度器。成功返回 null；失败返回机器可读拒绝原因。
         /// 启动成功后进入 Preparing → InitializationHold，由 Tick 继续推进。
         /// </summary>
-        public static string TryStart(string outputDirectory, int outputFps, int targetFrameCount,
-            bool allowExpectedTerminalControllerFail = false)
+        public static string TryStart(string outputDirectory, int outputFps, int safetyFrameLimit,
+            EndTailInput endTailInput, bool allowExpectedTerminalControllerFail = false)
         {
             if (_running || !Terminal && _status != SchedulerStatus.Idle)
             {
@@ -160,6 +197,10 @@ namespace ADOFAI.Renderist.Export
                 {
                     return "output-directory-empty";
                 }
+                if (!EndTailPolicy.TryValidateInput(endTailInput, out string endTailInputError))
+                {
+                    return "end-tail-invalid:" + endTailInputError;
+                }
 
                 _status = SchedulerStatus.Preparing;
                 _running = true;
@@ -169,7 +210,8 @@ namespace ADOFAI.Renderist.Export
                 ResetRunStateForStart();
 
                 _outputFps = outputFps > 0 ? outputFps : DefaultOutputFps;
-                _targetFrameCount = targetFrameCount > 0 ? targetFrameCount : DefaultTargetFrameCount;
+                _safetyFrameLimit = NormalizeSafetyFrameLimit(safetyFrameLimit);
+                _endTailInput = endTailInput;
                 _initializationDeadlineRealtime = Time.realtimeSinceStartupAsDouble + PlaybackReadyTimeoutSeconds;
 
                 SaveState();
@@ -207,6 +249,10 @@ namespace ADOFAI.Renderist.Export
                 if (!RegisterAsyncInputAngleHook())
                 {
                     return FailStart("async-input-angle-hook-failed");
+                }
+                if (!RegisterCanonicalCompletionHook())
+                {
+                    return FailStart("canonical-completion-hook-failed");
                 }
                 if (!EditorVisualClock.RegisterForcedClockHooks())
                 {
@@ -256,14 +302,45 @@ namespace ADOFAI.Renderist.Export
                     return FailStart("pitch-invalid");
                 }
 
+                double? finalEffectiveBpm = EditorGameReflection.TryReadFinalEffectiveBpm(
+                    out double finalBpm, out string finalBpmError)
+                    ? finalBpm
+                    : (double?)null;
+                if (!EndTailPolicy.TryResolve(
+                        _endTailInput,
+                        _outputFps,
+                        finalEffectiveBpm,
+                        _pitch,
+                        _safetyFrameLimit,
+                        out EndTailResolution endTailResolution,
+                        out string endTailResolveError))
+                {
+                    return FailStart("end-tail-resolution-failed:" +
+                        (endTailResolveError ?? finalBpmError ?? "unknown"));
+                }
+                ApplyEndTailResolution(endTailResolution, finalEffectiveBpm);
+
                 _timeline = null;
                 Log.Info(UiText.LogSchedulerEditorPlayCalled);
 
                 _status = SchedulerStatus.InitializationHold;
                 Log.Info(UiText.Format(UiText.LogSchedulerStartedFormat,
                     _outputFps.ToString(CultureInfo.InvariantCulture),
-                    _targetFrameCount.ToString(CultureInfo.InvariantCulture),
+                    _safetyFrameLimit.ToString(CultureInfo.InvariantCulture),
                     outputDirectory));
+                Log.Info("DeterministicFrameScheduler End Tail: input=" +
+                         _endTailInput.Value.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " " + _endTailInput.Unit +
+                         " resolvedTailFrames=" +
+                         _resolvedTailFrameCount.ToString(CultureInfo.InvariantCulture) +
+                         " resolvedTailSeconds=" +
+                         _resolvedTailSeconds.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " completionBpm=" +
+                         (_completionBpm.HasValue
+                             ? _completionBpm.Value.ToString("0.######", CultureInfo.InvariantCulture)
+                             : "unavailable") +
+                         " safetyFrameLimit=" +
+                         _safetyFrameLimit.ToString(CultureInfo.InvariantCulture));
                 return null;
             }
             catch (Exception ex)
@@ -362,6 +439,12 @@ namespace ADOFAI.Renderist.Export
             _pitchUnavailable = false;
             _captureRequestCount = 0;
             _capturedFrameCount = 0;
+            _tailFramesCaptured = 0;
+            _endTailInput = new EndTailInput(EndTailPolicy.DefaultValue, EndTailPolicy.DefaultUnit);
+            _resolvedTailFrameCount = DefaultTailFrameCount;
+            _resolvedTailSeconds = 0.0;
+            _resolvedTailBeats = null;
+            _completionBpm = null;
             _awaitFrameCount = 0;
             _activationUnityFrame = -1;
             _lastPrepareUnityFrame = -1;
@@ -373,8 +456,13 @@ namespace ADOFAI.Renderist.Export
             _hitsThisFrame = 0;
             _pendingStopEvent = null;
             _pendingStopReason = null;
+            _canonicalCompletionCallbackSeen = false;
+            _canonicalCompletionStateSeen = false;
+            _canonicalCompletionFrameIndex = -1;
+            _canonicalCompletionSignal = null;
             _initializationDeadlineRealtime = 0.0;
             _captureDeadlineRealtime = 0.0;
+            _progressDeadlineRealtime = 0.0;
             _timeline = null;
         }
 
@@ -384,6 +472,7 @@ namespace ADOFAI.Renderist.Export
                    _captureGeneration != 0 || FrameCaptureDriver.IsRunning ||
                    EditorVisualClock.HasTrackedHooks ||
                    _patchedConductorUpdate != null || _patchedAsyncInputAdjustAngle != null ||
+                   _patchedControllerOnLandOnPortal != null ||
                    _savedRdcAuto.HasValue || _savedSelectedFloorSeqs.Count > 0;
         }
 
@@ -563,6 +652,7 @@ namespace ADOFAI.Renderist.Export
             _status = SchedulerStatus.Capturing;
             _clockActive = false;
             _lastPrepareUnityFrame = -1;
+            _progressDeadlineRealtime = Time.realtimeSinceStartupAsDouble + FrameProgressWatchdogSeconds;
 
             Log.Info(UiText.Format(UiText.LogSchedulerInitHoldReleasedFormat,
                 _canonicalStartTime.ToString("0.######", CultureInfo.InvariantCulture),
@@ -584,6 +674,14 @@ namespace ADOFAI.Renderist.Export
                 RequestStop("capture-timeout", "capture-timeout");
                 return;
             }
+
+            if (Time.realtimeSinceStartupAsDouble > _progressDeadlineRealtime)
+            {
+                RequestStop("watchdog-timeout", "frame-progress-watchdog-timeout");
+                return;
+            }
+
+            ObserveCanonicalCompletion("tick");
 
             string early = CheckEarlyTermination();
             if (early != null)
@@ -619,6 +717,7 @@ namespace ADOFAI.Renderist.Export
                 _clockActive = true;
                 _lastPrepareUnityFrame = frame;
                 LogFrame0Stage(_outputFrameIndex, "BEFORE_CONDUCTOR");
+                ObserveCanonicalCompletion("before-conductor");
                 PrepareFrame();
                 _prefixSongPosition = ToValue(EditorGameReflection.ReadConductorSongPosition());
                 LogFrameConductor("Prefix");
@@ -629,6 +728,7 @@ namespace ADOFAI.Renderist.Export
             {
                 _lastPrepareUnityFrame = frame;
                 LogFrame0Stage(_outputFrameIndex, "BEFORE_CONDUCTOR");
+                ObserveCanonicalCompletion("before-conductor");
                 PrepareFrame();
                 _prefixSongPosition = ToValue(EditorGameReflection.ReadConductorSongPosition());
                 LogFrameConductor("Prefix");
@@ -651,6 +751,7 @@ namespace ADOFAI.Renderist.Export
 
             _hitsThisFrame = hits;
             LogFrame0Stage(_outputFrameIndex, "AFTER_AUTOPLAY");
+            ObserveCanonicalCompletion("after-autoplay");
             if (_outputFrameIndex < 4 || hits > 0)
             {
                 Log.Info("MasterTimeline Conductor Postfix: frameIndex=" +
@@ -678,9 +779,13 @@ namespace ADOFAI.Renderist.Export
                 return;
             }
 
-            if (_outputFrameIndex >= _targetFrameCount)
+            if (_outputFrameIndex >= _safetyFrameLimit)
             {
-                RequestStop("completed", "target-frame-count-reached");
+                if (_canonicalCompletionStateSeen &&
+                    _tailFramesCaptured >= _resolvedTailFrameCount)
+                    RequestStop("completed", "canonical-completion-tail-drained");
+                else
+                    RequestStop("safety-limit", "safety-frame-limit");
                 return;
             }
 
@@ -711,6 +816,7 @@ namespace ADOFAI.Renderist.Export
             _pendingCapture = true;
             _pendingCaptureIndex = index;
             _captureDeadlineRealtime = Time.realtimeSinceStartupAsDouble + CaptureTimeoutSeconds;
+            _progressDeadlineRealtime = Time.realtimeSinceStartupAsDouble + FrameProgressWatchdogSeconds;
             LogFrame0Stage(index, "BEFORE_EOF");
 
             string forcedText = _forcedSongPosition.ToString("0.######", CultureInfo.InvariantCulture);
@@ -734,6 +840,11 @@ namespace ADOFAI.Renderist.Export
         {
             if (!_running) return;
 
+            // A timeout/cancel requested by Tick owns the transaction. A late
+            // callback must not commit a frame after the scheduler has decided
+            // that the session failed or was cancelled.
+            if (_pendingStopReason != null) return;
+
             if (generation != _captureGeneration)
             {
                 Log.Debug("DeterministicFrameScheduler: stale capture generation " + generation);
@@ -749,6 +860,7 @@ namespace ADOFAI.Renderist.Export
             _pendingCapture = false;
             _pendingCaptureIndex = -1;
             _captureDeadlineRealtime = 0.0;
+            ObserveCanonicalCompletion("after-capture");
 
             if (success)
             {
@@ -783,12 +895,109 @@ namespace ADOFAI.Renderist.Export
             _capturedFrameCount++;
             _outputFrameIndex++;
 
+            _progressDeadlineRealtime = Time.realtimeSinceStartupAsDouble + FrameProgressWatchdogSeconds;
+
+            if (_canonicalCompletionStateSeen && frameIndex > _canonicalCompletionFrameIndex)
+                _tailFramesCaptured++;
+
             Log.Debug("DeterministicFrameScheduler: commit frame " + frameIndex + " -> " + filePath);
 
-            if (_outputFrameIndex >= _targetFrameCount)
+            if (_canonicalCompletionStateSeen &&
+                _tailFramesCaptured >= _resolvedTailFrameCount)
             {
-                RequestStop("completed", "target-frame-count-reached");
+                RequestStop("completed", "canonical-completion-tail-drained");
+                return;
             }
+
+            if (_outputFrameIndex >= _safetyFrameLimit)
+            {
+                RequestStop("safety-limit", _canonicalCompletionStateSeen
+                    ? "safety-frame-limit-before-tail-drained"
+                    : "safety-frame-limit-before-canonical-completion");
+            }
+        }
+
+        /// <summary>
+        /// 观察当前 ADOFAI 的原生完成路径。OnLandOnPortal 是完成请求，
+        /// controller.state == Won 是状态机提交；二者都满足后才开始 tail。
+        /// </summary>
+        private static void ObserveCanonicalCompletion(string observationPoint)
+        {
+            if (!_canonicalCompletionCallbackSeen || _canonicalCompletionStateSeen)
+                return;
+
+            if (!EditorGameReflection.IsWonState(EditorGameReflection.ReadControllerState()))
+                return;
+
+            if (!TryResolveEndTailAtCompletion(out string tailResolveError))
+            {
+                RequestStop("completion-tail-resolution-failed",
+                    tailResolveError ?? "completion-tail-resolution-failed");
+                return;
+            }
+
+            _canonicalCompletionStateSeen = true;
+            _canonicalCompletionFrameIndex = _outputFrameIndex;
+            _canonicalCompletionSignal = "scrController.OnLandOnPortal+state=Won";
+            Log.Info("DeterministicFrameScheduler: canonical completion observed at " +
+                     observationPoint + ", outputFrame=" +
+                     _canonicalCompletionFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                     ", tailFrames=" + _resolvedTailFrameCount.ToString(CultureInfo.InvariantCulture));
+        }
+
+        private static bool TryResolveEndTailAtCompletion(out string error)
+        {
+            error = null;
+            double? completionBpm = EditorGameReflection.TryReadCompletionEffectiveBpm(
+                out double observedBpm, out string bpmError)
+                ? observedBpm
+                : _completionBpm;
+
+            if (!EndTailPolicy.TryResolve(
+                    _endTailInput,
+                    _outputFps,
+                    completionBpm,
+                    _pitch,
+                    _safetyFrameLimit,
+                    out EndTailResolution resolution,
+                    out string resolveError))
+            {
+                error = resolveError ?? bpmError ?? "completion-tail-resolution-failed";
+                return false;
+            }
+
+            ApplyEndTailResolution(resolution, completionBpm);
+            return true;
+        }
+
+        private static void ApplyEndTailResolution(
+            EndTailResolution resolution, double? completionBpm)
+        {
+            _resolvedTailFrameCount = resolution.FrameCount;
+            _resolvedTailSeconds = resolution.Seconds;
+            _resolvedTailBeats = resolution.Beats;
+            _completionBpm = completionBpm;
+        }
+
+        private static void OnCanonicalCompletionRequested(object instance)
+        {
+            if (!_running || _pendingStopReason != null ||
+                _status != SchedulerStatus.Capturing)
+                return;
+
+            object controller = EditorGameReflection.Controller();
+            if (controller == null || !ReferenceEquals(controller, instance))
+                return;
+
+            if (!_canonicalCompletionCallbackSeen)
+            {
+                _canonicalCompletionCallbackSeen = true;
+                Log.Info("DeterministicFrameScheduler: native OnLandOnPortal observed at outputFrame=" +
+                         _outputFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                         ", state=" + ToState(EditorGameReflection.ReadControllerState()));
+            }
+
+            ObserveCanonicalCompletion("OnLandOnPortal-postfix");
         }
 
         // ================================================================
@@ -891,6 +1100,16 @@ namespace ADOFAI.Renderist.Export
                 {
                     failures.Add("async-input-unpatch-exception");
                     Log.Exception("DeterministicFrameScheduler: AsyncInput hook 清理异常", ex);
+                }
+                try
+                {
+                    if (!UnregisterCanonicalCompletionHook())
+                        failures.Add("canonical-completion-unpatch");
+                }
+                catch (Exception ex)
+                {
+                    failures.Add("canonical-completion-unpatch-exception");
+                    Log.Exception("DeterministicFrameScheduler: canonical completion hook 清理异常", ex);
                 }
                 try
                 {
@@ -1005,8 +1224,10 @@ namespace ADOFAI.Renderist.Export
 
         private static SchedulerStatus MapTerminal(string stopEvent)
         {
-            // 只有 target-frame-count 正常完成才是 Completed。
-            if (string.Equals(stopEvent, "completed", StringComparison.Ordinal))
+            // Completed 只能来自 canonical completion + 已捕获全部 tail。
+            if (string.Equals(stopEvent, "completed", StringComparison.Ordinal) &&
+                _canonicalCompletionStateSeen &&
+                _tailFramesCaptured >= _resolvedTailFrameCount)
             {
                 return SchedulerStatus.Completed;
             }
@@ -1020,6 +1241,28 @@ namespace ADOFAI.Renderist.Export
                 return SchedulerStatus.Cancelled;
             }
             return SchedulerStatus.Failed;
+        }
+
+        private static string ClassifyTermination(string stopReason, SchedulerStatus status)
+        {
+            if (status == SchedulerStatus.Completed)
+                return "canonical-completion";
+
+            string reason = stopReason ?? string.Empty;
+            if (reason == "user-stop" || reason == "cancelled" ||
+                reason == "mod-disabled" || reason == "left-editor" ||
+                reason == "native-playback-stopped")
+                return "user-cancel";
+            if (reason.IndexOf("safety-frame-limit", StringComparison.Ordinal) >= 0 ||
+                reason.IndexOf("safety-limit", StringComparison.Ordinal) >= 0)
+                return "safety-limit";
+            if (reason.IndexOf("timeout", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                reason.IndexOf("watchdog", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "watchdog";
+            if (reason.IndexOf("capture", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                reason.IndexOf("png", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "capture-failure";
+            return "lifecycle-failure";
         }
 
         private static void SaveState()
@@ -1311,6 +1554,74 @@ namespace ADOFAI.Renderist.Export
         // Harmony（Frame Begin；Forced Clock 归 EditorVisualClock）
         // ================================================================
 
+        /// <summary>
+        /// 观察当前 ADOFAI 版本的原生 completion entry point。该 Patch 只记录
+        /// native OnLandOnPortal 已经执行，不改变其参数、返回值或执行顺序。
+        /// </summary>
+        private static bool RegisterCanonicalCompletionHook()
+        {
+            if (!UnregisterCanonicalCompletionHook())
+                return false;
+
+            try
+            {
+                Harmony harmony = ModEntry.Harmony;
+                MethodInfo onLandOnPortal = EditorGameReflection.ControllerOnLandOnPortalMethod;
+                if (harmony == null || onLandOnPortal == null)
+                {
+                    Log.Warn("MasterTimeline canonical completion hook unavailable: OnLandOnPortal signature not found");
+                    return false;
+                }
+
+                _patchedControllerOnLandOnPortal = onLandOnPortal;
+                _controllerOnLandOnPortalPatched = true;
+                harmony.Patch(onLandOnPortal,
+                    postfix: new HarmonyMethod(typeof(DeterministicFrameScheduler), nameof(OnLandOnPortalPostfix)));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("DeterministicFrameScheduler: 注册 canonical completion hook 失败", ex);
+                UnregisterCanonicalCompletionHook();
+                return false;
+            }
+        }
+
+        private static bool UnregisterCanonicalCompletionHook()
+        {
+            Harmony harmony = ModEntry.Harmony;
+            if (_patchedControllerOnLandOnPortal == null)
+                return true;
+            if (harmony == null)
+                return false;
+            if (!_controllerOnLandOnPortalPatched)
+            {
+                _patchedControllerOnLandOnPortal = null;
+                return true;
+            }
+
+            try
+            {
+                MethodInfo postfix = AccessTools.Method(typeof(DeterministicFrameScheduler), nameof(OnLandOnPortalPostfix));
+                if (postfix == null)
+                    return false;
+                harmony.Unpatch(_patchedControllerOnLandOnPortal, postfix);
+                _controllerOnLandOnPortalPatched = false;
+                _patchedControllerOnLandOnPortal = null;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("DeterministicFrameScheduler: 撤销 canonical completion hook 失败", ex);
+                return false;
+            }
+        }
+
+        private static void OnLandOnPortalPostfix(object __instance)
+        {
+            OnCanonicalCompletionRequested(__instance);
+        }
+
         private static bool RegisterConductorUpdateHook()
         {
             if (!UnregisterConductorUpdateHook())
@@ -1476,6 +1787,12 @@ namespace ADOFAI.Renderist.Export
         // ================================================================
         // helpers
         // ================================================================
+
+        internal static int NormalizeSafetyFrameLimit(int value)
+        {
+            if (value <= 0) return DefaultSafetyFrameLimit;
+            return Math.Min(value, MaxSafetyFrameLimit);
+        }
 
         private static object ReadInstanceMember(object instance, string name)
         {

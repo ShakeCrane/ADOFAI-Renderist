@@ -8,7 +8,7 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 确定性编辑器导出的同步 PNG 捕获后端（Phase 3.3.0）。
+    /// 确定性编辑器导出的同步 PNG 捕获后端（Phase 3.4.0）。
     ///
     /// 只支持当前游戏实际渲染分辨率（Screen.width × Screen.height）。
     /// 捕获点：WaitForEndOfFrame。完成语义：ReadPixels → EncodeToPNG → File.WriteAllBytes 成功，才算一帧已捕获。

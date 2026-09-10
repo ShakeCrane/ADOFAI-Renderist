@@ -3,7 +3,7 @@ using System.Globalization;
 namespace ADOFAI.Renderist
 {
     /// <summary>
-    /// 集中存放面向用户的 GUI / 日志中文文案（Phase 3.3.0）。
+    /// 集中存放面向用户的 GUI / 日志中文文案（Phase 3.4.0）。
     ///
     /// 约定：
     ///   * 仅集中面向用户的 GUI 字符串与 <c>Log.Info / Warn / Error / Exception</c> 文案。
@@ -57,6 +57,17 @@ namespace ADOFAI.Renderist
         public const string GuiMasterTimelineHandoffSectionTitle = "MasterTimeline Deterministic Gameplay Handoff";
         public const string GuiMasterTimelineHandoffStatusPrefix = "Handoff 状态：";
         public const string GuiMasterTimelineHandoffFramesPrefix = "已提交帧：";
+        public const string GuiMasterTimelineHandoffTailPrefix = "视觉尾帧：";
+        public const string GuiMasterTimelineHandoffSafetyPrefix = "安全上限：";
+        public const string GuiEndTailLabel = "结束延长：";
+        public const string GuiEndTailUnitFrames = "帧";
+        public const string GuiEndTailUnitSeconds = "秒";
+        public const string GuiEndTailUnitBeats = "拍";
+        public const string GuiEndTailUnitMenuSuffix = " ▼";
+        public const string GuiEndTailPreviewUnavailable = "无法换算；拍按结束时有效 BPM 解释。";
+        public const string GuiEndTailInvalid = "结束延长输入无效。";
+        public const string GuiEndTailDependenciesUnavailable = "无法读取结束 BPM 或 pitch，不能安全换算拍。";
+        public const string GuiEndTailExceedsSafety = "结束延长超过安全帧上限。";
         public const string GuiMasterTimelineHandoffBtnStart = "启动 MasterTimeline Deterministic Gameplay Handoff";
         public const string GuiMasterTimelineHandoffBtnStop = "停止 MasterTimeline Deterministic Gameplay Handoff";
 
@@ -85,9 +96,9 @@ namespace ADOFAI.Renderist
 
         // ---------------- Log: DeterministicFrameScheduler ----------------
 
-        // {0}=outputFps, {1}=targetFrameCount, {2}=outputDirectory
+        // {0}=outputFps, {1}=safetyFrameLimit, {2}=outputDirectory
         public const string LogSchedulerStartedFormat =
-            "确定性帧调度器已启动：outputFps={0}, targetFrameCount={1}, 输出目录={2}";
+            "确定性帧调度器已启动：outputFps={0}, safetyFrameLimit={1}, 输出目录={2}";
         // {0}=reason
         public const string LogSchedulerStartRejectedFormat =
             "确定性帧调度器启动被拒绝：{0}";

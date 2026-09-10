@@ -3,7 +3,7 @@ using ADOFAI.Renderist.Capture;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 编辑器确定性导出的就绪状态（Phase 3.3.0）。
+    /// 编辑器确定性导出的就绪状态（Phase 3.4.0）。
     /// 状态由 <see cref="EditorExportPreflight.Run"/> 从 Unity 环境、
     /// Settings、编辑器选择状态与输出目录验证结果派生。
     /// </summary>
@@ -51,10 +51,19 @@ namespace ADOFAI.Renderist.Export
 
         /// <summary>输出目录非法。</summary>
         InvalidOutputDirectory,
+
+        /// <summary>End Tail 数值或单位非法。</summary>
+        InvalidEndTail,
+
+        /// <summary>Beats 换算缺少结束 BPM 或 pitch。</summary>
+        EndTailDependenciesUnavailable,
+
+        /// <summary>End Tail 自身已不可能容纳于 safety frame limit。</summary>
+        EndTailExceedsSafetyLimit,
     }
 
     /// <summary>
-    /// 编辑器导出就绪报告（只读快照，Phase 3.3.0）。
+    /// 编辑器导出就绪报告（只读快照，Phase 3.4.0）。
     /// 与 Settings 解耦：报告生成后即使 Settings 变化，仍代表生成时刻状态。
     /// </summary>
     internal sealed class EditorExportReadinessReport
@@ -73,5 +82,15 @@ namespace ADOFAI.Renderist.Export
 
         /// <summary>当前目标帧率。</summary>
         public int TargetFrameRate { get; set; }
+
+        public double? EndTailInputValue { get; set; }
+        public EndTailUnit? EndTailInputUnit { get; set; }
+        public int? ResolvedTailFrames { get; set; }
+        public double? ResolvedTailSeconds { get; set; }
+        public double? ResolvedTailBeats { get; set; }
+        public double? CompletionBpm { get; set; }
+        public double? Pitch { get; set; }
+        public int SafetyFrameLimit { get; set; }
+        public string EndTailValidationError { get; set; }
     }
 }

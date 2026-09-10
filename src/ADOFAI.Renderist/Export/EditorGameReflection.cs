@@ -28,7 +28,9 @@ namespace ADOFAI.Renderist.Export
         private static Type _tController;
         private static Type _tEditor;
         private static Type _tPlayer;
+        private static Type _tPlanet;
         private static Type _tFloor;
+        private static Type _tPortal;
         private static Type _tRdc;
         private static Type _tAsyncInputUtils;
 
@@ -39,10 +41,13 @@ namespace ADOFAI.Renderist.Export
         private static PropertyInfo _pRdcAuto;
         private static FieldInfo _fCurrentSeq;
         private static FieldInfo _fCrotchetAtStart;
+        private static FieldInfo _fConductorBpm;
+        private static FieldInfo _fControllerListBpm;
 
         private static MethodInfo _mConductorUpdate;
         private static MethodInfo _mAsyncInputAdjustAngle;
         private static MethodInfo _mControllerChangeToStartState;
+        private static MethodInfo _mControllerOnLandOnPortal;
         private static MethodInfo _mEditorPlay;
         private static MethodInfo _mEditorSelectFloor;
         private static MethodInfo _mEditorSwitchToEditMode;
@@ -83,7 +88,9 @@ namespace ADOFAI.Renderist.Export
             try { _tController = _tController ?? _gameAssembly.GetType("scrController"); } catch { }
             try { _tEditor = _tEditor ?? _gameAssembly.GetType("scnEditor"); } catch { }
             try { _tPlayer = _tPlayer ?? _gameAssembly.GetType("scrPlayer"); } catch { }
+            try { _tPlanet = _tPlanet ?? _gameAssembly.GetType("scrPlanet"); } catch { }
             try { _tFloor = _tFloor ?? _gameAssembly.GetType("scrFloor"); } catch { }
+            try { _tPortal = _tPortal ?? _gameAssembly.GetType("Portal"); } catch { }
             try { _tRdc = _tRdc ?? _gameAssembly.GetType("RDC"); } catch { }
             try { _tAsyncInputUtils = _tAsyncInputUtils ?? _gameAssembly.GetType("AsyncInputUtils"); } catch { }
 
@@ -94,6 +101,8 @@ namespace ADOFAI.Renderist.Export
                 _pAdjustedCountdownTicks = GetProperty(_tConductor, "adjustedCountdownTicks");
                 _fCrotchetAtStart = _tConductor.GetField("crotchetAtStart",
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                _fConductorBpm = _tConductor.GetField("bpm",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
                 _mConductorUpdate = _tConductor.GetMethod("Update",
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
             }
@@ -103,9 +112,17 @@ namespace ADOFAI.Renderist.Export
                 _pState = GetProperty(_tController, "state");
                 _fCurrentSeq = _tController.GetField("currentSeqID",
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                _fControllerListBpm = _tController.GetField("listBPM",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
                 _mControllerChangeToStartState = _tController.GetMethod("ChangeToStartState",
                     BindingFlags.Public | BindingFlags.Instance,
                     null, Type.EmptyTypes, null);
+                if (_tPlanet != null && _tPortal != null)
+                {
+                    _mControllerOnLandOnPortal = _tController.GetMethod("OnLandOnPortal",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                        null, new[] { _tPlanet, _tPortal, typeof(string) }, null);
+                }
             }
 
             if (_tEditor != null)
@@ -146,7 +163,8 @@ namespace ADOFAI.Renderist.Export
                        _tEditor != null && _tPlayer != null && _tFloor != null && _tRdc != null &&
                        _pState != null && _pRdcAuto != null && _pRdcAuto.CanWrite &&
                        _mConductorUpdate != null && _mEditorPlay != null &&
-                       _mEditorSelectFloor != null && _mEditorSwitchToEditMode != null;
+                       _mEditorSelectFloor != null && _mEditorSwitchToEditMode != null &&
+                       _mControllerOnLandOnPortal != null;
             }
         }
 
@@ -218,6 +236,19 @@ namespace ADOFAI.Renderist.Export
             {
                 EnsureTypes();
                 return _mControllerChangeToStartState;
+            }
+        }
+
+        /// <summary>
+        /// 当前 ADOFAI 版本的原生关卡完成入口。Renderist 只观察该入口的
+        /// Postfix，并同时等待 controller.state 提交为 Won；不调用此方法。
+        /// </summary>
+        public static MethodInfo ControllerOnLandOnPortalMethod
+        {
+            get
+            {
+                EnsureTypes();
+                return _mControllerOnLandOnPortal;
             }
         }
 
@@ -519,6 +550,101 @@ namespace ADOFAI.Renderist.Export
             }
         }
 
+        /// <summary>
+        /// 读取编辑器当前谱面的最终 effective BPM。当前 ADOFAI DLL 的
+        /// CalculateFloorEntryTimes / Start_Rewind 都使用
+        /// scrConductor.bpm × scrFloor.speed 表示该 floor 的 effective BPM。
+        /// </summary>
+        public static bool TryReadFinalEffectiveBpm(out double bpm, out string rejectReason)
+        {
+            bpm = 0.0;
+            rejectReason = null;
+            try
+            {
+                EnsureTypes();
+                object conductor = Conductor();
+                if (conductor == null || _fConductorBpm == null)
+                {
+                    rejectReason = "conductor-bpm-api-unavailable";
+                    return false;
+                }
+
+                double? baseBpm = ToDouble(_fConductorBpm.GetValue(conductor));
+                if (!IsPositiveFinite(baseBpm))
+                {
+                    rejectReason = "conductor-bpm-invalid";
+                    return false;
+                }
+
+                IList floors = ReadFloorsList();
+                if (floors == null || floors.Count == 0)
+                {
+                    rejectReason = "floors-empty";
+                    return false;
+                }
+
+                for (int i = floors.Count - 1; i >= 0; i--)
+                {
+                    object floor = floors[i];
+                    if (floor == null) continue;
+                    double? speed = ToDouble(ReadInstanceMember(floor, floor.GetType(), "speed"));
+                    if (!IsPositiveFinite(speed)) continue;
+
+                    double effective = baseBpm.Value * speed.Value;
+                    if (!IsPositiveFinite(effective))
+                    {
+                        rejectReason = "final-effective-bpm-invalid";
+                        return false;
+                    }
+
+                    bpm = effective;
+                    return true;
+                }
+
+                rejectReason = "final-floor-speed-unavailable";
+                return false;
+            }
+            catch
+            {
+                rejectReason = "final-effective-bpm-read-failed";
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// completion 时优先读取 ADOFAI Start_Rewind 已生成的 listBPM 最后一项。
+        /// 其 Item2 是 base BPM × floor speed；不可用时回退到同一已验证公式。
+        /// </summary>
+        public static bool TryReadCompletionEffectiveBpm(out double bpm, out string rejectReason)
+        {
+            bpm = 0.0;
+            rejectReason = null;
+            try
+            {
+                EnsureTypes();
+                object controller = Controller();
+                if (controller != null && _fControllerListBpm != null &&
+                    _fControllerListBpm.GetValue(controller) is IList bpms)
+                {
+                    for (int i = bpms.Count - 1; i >= 0; i--)
+                    {
+                        object pair = bpms[i];
+                        if (pair == null) continue;
+                        double? effective = ToDouble(ReadInstanceMember(pair, pair.GetType(), "Item2"));
+                        if (!IsPositiveFinite(effective)) continue;
+                        bpm = effective.Value;
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+                // Fall through to the chart-derived value below.
+            }
+
+            return TryReadFinalEffectiveBpm(out bpm, out rejectReason);
+        }
+
         /// <summary>读取当前播放音高；unavailable=true 表示无法读取并回退到 1。</summary>
         public static double ReadPitch(out bool unavailable)
         {
@@ -566,6 +692,11 @@ namespace ADOFAI.Renderist.Export
                    string.Equals(s, "Fail2", StringComparison.Ordinal);
         }
 
+        public static bool IsWonState(object state)
+        {
+            return string.Equals(ToState(state), "Won", StringComparison.Ordinal);
+        }
+
         // ================================================================
         // 通用反射读取 / 类型转换
         // ================================================================
@@ -577,6 +708,12 @@ namespace ADOFAI.Renderist.Export
                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance) ??
                    type.GetProperty(name,
                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+        }
+
+        private static bool IsPositiveFinite(double? value)
+        {
+            return value.HasValue && !double.IsNaN(value.Value) &&
+                   !double.IsInfinity(value.Value) && value.Value > 0.0001;
         }
 
         private static object StaticValue(Type type, string member)

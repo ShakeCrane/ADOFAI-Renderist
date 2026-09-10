@@ -1,7 +1,7 @@
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 编辑器确定性导出会话状态（Phase 3.3.0）。
+    /// 编辑器确定性导出会话状态（Phase 3.4.0）。
     /// 终止状态（Completed / Cancelled / Failed）保留供 GUI 查看，下一次 Start 可重新进入 Preparing。
     /// </summary>
     internal enum EditorExportState
@@ -15,7 +15,7 @@ namespace ADOFAI.Renderist.Export
         /// <summary>运行中：DeterministicFrameScheduler 正在推进并捕获。</summary>
         Running,
 
-        /// <summary>已完成：达到 target-frame-count 并成功收尾。</summary>
+        /// <summary>已完成：观察到 canonical completion 且已排空 deterministic tail。</summary>
         Completed,
 
         /// <summary>已取消：用户停止、Mod 禁用或会话被外部取消。</summary>
