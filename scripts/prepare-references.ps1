@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Generates build/local.props pointing at the local ADOFAI install and
-    verifies that the current compile-time reference DLL baseline is available.
+    verifies the supported ADOFAI / Unity / UMM reference baseline.
 
 .DESCRIPTION
     Strategy:
@@ -10,29 +10,12 @@
       3. Else try common Steam install paths.
       4. Else prompt the developer.
 
-    Validates the local Mono/Managed baseline and required compile-time DLLs.
-    Writes build/local.props from build/local.props.example with local paths
-    substituted.
+    The project supports only the latest validated ADOFAI public Steam build.
+    This script validates the known Assembly-CSharp file version and, when a
+    Steam appmanifest is available, the exact public-branch Steam buildid.
 
-    This script never copies any game DLLs and never modifies anything
-    outside this repository except build/local.props.
-
-.PARAMETER AdofaiDir
-    Path to the ADOFAI install root (the folder containing
-    "A Dance of Fire and Ice.exe").
-
-.PARAMETER UmmDir
-    Path to the UnityModManager directory containing UnityModManager.dll and
-    0Harmony.dll. Defaults to Managed\UnityModManager under the ADOFAI install.
-
-.PARAMETER NonInteractive
-    Skip the interactive prompt. Fails if a path cannot be auto-detected.
-
-.EXAMPLE
-    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-references.ps1
-
-.EXAMPLE
-    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-references.ps1 -AdofaiDir "D:\Games\ADOFAI" -UmmDir "D:\Games\ADOFAI\A Dance of Fire and Ice_Data\Managed\UnityModManager"
+    The script never copies game DLLs and never modifies anything outside this
+    repository except build/local.props.
 #>
 
 [CmdletBinding()]
@@ -44,7 +27,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$baselineAdofaiVersion = '3.3.1'
+# Current public Steam branch baseline verified on 2026-09-10.
+$baselineSteamAppId = '977950'
+$baselineSteamBuildId = '24397494'
+$baselineAssemblyCSharpFileVersion = '0.4.3.0'
 $baselineUnityVersion = '6000.3.10f1'
 $baselineUmmVersion = '0.33.0'
 $baselineHarmonyVersion = '2.3.6.0'
@@ -128,8 +114,7 @@ function Test-BaselineVersion([string]$name, [string]$path, [string]$expectedVer
 function Test-AdofaiRoot([string]$path) {
     if ([string]::IsNullOrWhiteSpace($path)) { return $false }
     if (-not (Test-Path -LiteralPath $path -PathType Container)) { return $false }
-    $exe = Join-Path $path 'A Dance of Fire and Ice.exe'
-    return Test-Path -LiteralPath $exe -PathType Leaf
+    return Test-Path -LiteralPath (Join-Path $path 'A Dance of Fire and Ice.exe') -PathType Leaf
 }
 
 function Read-ExistingLocalProps([string]$propsPath) {
@@ -143,13 +128,13 @@ function Read-ExistingLocalProps([string]$propsPath) {
         }
     } catch {
         Write-Warn "Failed to parse existing $propsPath : $($_.Exception.Message)"
+        return $null
     }
-    return $null
 }
 
 function Find-AdofaiCandidates {
     $candidates = New-Object System.Collections.Generic.List[string]
-    $defaultRelative = 'steamapps\common\A Dance of Fire and Ice'
+    $relative = 'steamapps\common\A Dance of Fire and Ice'
 
     $steamRoots = @(
         "$env:ProgramFiles\Steam",
@@ -161,48 +146,106 @@ function Find-AdofaiCandidates {
         $steamRoots += "$drive`:\Program Files\Steam"
         $steamRoots += "$drive`:\Program Files (x86)\Steam"
     }
+
     foreach ($root in $steamRoots | Where-Object { $_ }) {
-        $candidates.Add((Join-Path $root $defaultRelative))
+        $candidates.Add((Join-Path $root $relative))
     }
 
     foreach ($root in $steamRoots | Where-Object { $_ -and (Test-Path -LiteralPath $_) }) {
         $vdf = Join-Path $root 'steamapps\libraryfolders.vdf'
-        if (Test-Path -LiteralPath $vdf -PathType Leaf) {
-            try {
-                $content = Get-Content -LiteralPath $vdf -Raw
-                $matches = [regex]::Matches($content, '"path"\s+"([^"]+)"')
-                foreach ($m in $matches) {
-                    $lib = $m.Groups[1].Value -replace '\\\\','\'
-                    $candidates.Add((Join-Path $lib $defaultRelative))
-                }
-            } catch {
-                Write-Warn "Failed to parse $vdf : $($_.Exception.Message)"
+        if (-not (Test-Path -LiteralPath $vdf -PathType Leaf)) { continue }
+        try {
+            $content = Get-Content -LiteralPath $vdf -Raw
+            foreach ($match in [regex]::Matches($content, '"path"\s+"([^"]+)"')) {
+                $library = $match.Groups[1].Value -replace '\\\\','\'
+                $candidates.Add((Join-Path $library $relative))
             }
+        } catch {
+            Write-Warn "Failed to parse $vdf : $($_.Exception.Message)"
         }
     }
 
     return ($candidates | Select-Object -Unique)
 }
 
+function Find-SteamAppManifest([string]$installDir) {
+    try {
+        $commonDir = Split-Path -Parent $installDir
+        if ((Split-Path -Leaf $commonDir) -ine 'common') { return $null }
+        $steamappsDir = Split-Path -Parent $commonDir
+        $manifest = Join-Path $steamappsDir ("appmanifest_{0}.acf" -f $baselineSteamAppId)
+        if (Test-Path -LiteralPath $manifest -PathType Leaf) { return $manifest }
+    } catch {
+    }
+    return $null
+}
+
+function Read-SteamBuildId([string]$manifestPath) {
+    if ([string]::IsNullOrWhiteSpace($manifestPath)) { return $null }
+    try {
+        $content = Get-Content -LiteralPath $manifestPath -Raw
+        $match = [regex]::Match($content, '"buildid"\s+"([0-9]+)"')
+        if ($match.Success) { return $match.Groups[1].Value }
+    } catch {
+        Write-Warn "Failed to parse Steam appmanifest: $($_.Exception.Message)"
+    }
+    return $null
+}
+
+function Test-SupportedAdofaiBaseline([string]$installDir, [string]$managedDir) {
+    Write-Section 'Validating supported ADOFAI release'
+
+    $assemblyCSharp = Join-Path $managedDir 'Assembly-CSharp.dll'
+    if (-not (Test-Path -LiteralPath $assemblyCSharp -PathType Leaf)) {
+        Write-Fail 'Assembly-CSharp.dll missing; current reflection baseline cannot be verified.'
+        return $false
+    }
+
+    $metadata = Get-FileMetadata $assemblyCSharp
+    Write-FileMetadata 'Assembly-CSharp.dll' $assemblyCSharp
+    if (-not $metadata -or $metadata.FileVersion -ne $baselineAssemblyCSharpFileVersion) {
+        Write-Fail "Unsupported ADOFAI Assembly-CSharp baseline: expected FileVersion $baselineAssemblyCSharpFileVersion, detected $(Format-VersionValue $metadata.FileVersion)."
+        return $false
+    }
+    Write-Ok "Assembly-CSharp.dll matches supported baseline $baselineAssemblyCSharpFileVersion"
+
+    $manifest = Find-SteamAppManifest $installDir
+    if ($manifest) {
+        $buildId = Read-SteamBuildId $manifest
+        if ([string]::IsNullOrWhiteSpace($buildId)) {
+            Write-Fail "Steam appmanifest found but buildid could not be read: $manifest"
+            return $false
+        }
+        if ($buildId -ne $baselineSteamBuildId) {
+            Write-Fail "Unsupported ADOFAI Steam buildid: expected public build $baselineSteamBuildId, detected $buildId."
+            return $false
+        }
+        Write-Ok "ADOFAI Steam buildid matches supported public baseline $baselineSteamBuildId"
+    } else {
+        Write-Warn 'Steam appmanifest not found; exact Steam build identity cannot be verified. Assembly-CSharp baseline matched, but runtime validation remains required.'
+    }
+
+    return $true
+}
+
 Write-Section 'Reference baseline'
-Write-Info "ADOFAI baseline: v$baselineAdofaiVersion"
+Write-Info "ADOFAI public Steam buildid: $baselineSteamBuildId"
+Write-Info "Assembly-CSharp FileVersion: $baselineAssemblyCSharpFileVersion"
 Write-Info "Unity baseline: $baselineUnityVersion"
 Write-Info "Unity Mod Manager baseline: $baselineUmmVersion"
 Write-Info "Harmony baseline: $baselineHarmonyVersion"
 
 Write-Section 'Resolving ADOFAI install directory'
-
 $resolved = $null
 $existingProps = Read-ExistingLocalProps $localProps
 
 if ($AdofaiDir) {
-    if (Test-AdofaiRoot $AdofaiDir) {
-        $resolved = (Resolve-Path -LiteralPath $AdofaiDir).Path
-        Write-Ok "Using -AdofaiDir: $resolved"
-    } else {
+    if (-not (Test-AdofaiRoot $AdofaiDir)) {
         Write-Fail "-AdofaiDir was supplied but does not look like an ADOFAI install root: $AdofaiDir"
         exit 1
     }
+    $resolved = (Resolve-Path -LiteralPath $AdofaiDir).Path
+    Write-Ok "Using -AdofaiDir: $resolved"
 }
 
 if (-not $resolved -and $existingProps -and (Test-AdofaiRoot $existingProps.AdofaiInstallDir)) {
@@ -213,9 +256,9 @@ if (-not $resolved -and $existingProps -and (Test-AdofaiRoot $existingProps.Adof
 }
 
 if (-not $resolved) {
-    foreach ($cand in Find-AdofaiCandidates) {
-        if (Test-AdofaiRoot $cand) {
-            $resolved = (Resolve-Path -LiteralPath $cand).Path
+    foreach ($candidate in Find-AdofaiCandidates) {
+        if (Test-AdofaiRoot $candidate) {
+            $resolved = (Resolve-Path -LiteralPath $candidate).Path
             Write-Ok "Auto-detected: $resolved"
             break
         }
@@ -229,13 +272,12 @@ if (-not $resolved) {
     }
     Write-Warn 'Could not auto-detect ADOFAI install.'
     $answer = Read-Host 'Enter the full path to your ADOFAI install root (the folder containing "A Dance of Fire and Ice.exe")'
-    if (Test-AdofaiRoot $answer) {
-        $resolved = (Resolve-Path -LiteralPath $answer).Path
-        Write-Ok "Using: $resolved"
-    } else {
+    if (-not (Test-AdofaiRoot $answer)) {
         Write-Fail "Path does not look like an ADOFAI install root: $answer"
         exit 1
     }
+    $resolved = (Resolve-Path -LiteralPath $answer).Path
+    Write-Ok "Using: $resolved"
 }
 
 $managedDir = Join-Path $resolved 'A Dance of Fire and Ice_Data\Managed'
@@ -243,15 +285,13 @@ $defaultUmmDir = Join-Path $managedDir 'UnityModManager'
 $resolvedUmmDir = $defaultUmmDir
 
 Write-Section 'Resolving Unity Mod Manager directory'
-
 if ($UmmDir) {
-    if (Test-Path -LiteralPath $UmmDir -PathType Container) {
-        $resolvedUmmDir = (Resolve-Path -LiteralPath $UmmDir).Path
-        Write-Ok "Using -UmmDir: $resolvedUmmDir"
-    } else {
+    if (-not (Test-Path -LiteralPath $UmmDir -PathType Container)) {
         Write-Fail "-UmmDir was supplied but does not exist: $UmmDir"
         exit 1
     }
+    $resolvedUmmDir = (Resolve-Path -LiteralPath $UmmDir).Path
+    Write-Ok "Using -UmmDir: $resolvedUmmDir"
 } elseif ($existingProps -and $existingProps.AdofaiUmmDir -and (Test-Path -LiteralPath $existingProps.AdofaiUmmDir -PathType Container)) {
     $resolvedUmmDir = (Resolve-Path -LiteralPath $existingProps.AdofaiUmmDir).Path
     Write-Ok "Reusing existing AdofaiUmmDir: $resolvedUmmDir"
@@ -263,7 +303,6 @@ $monoDir = Join-Path $resolved 'MonoBleedingEdge'
 $gameAssembly = Join-Path $resolved 'GameAssembly.dll'
 
 Write-Section 'Validating local ADOFAI baseline'
-
 $missing = 0
 
 if (Test-Path -LiteralPath $resolved -PathType Container) {
@@ -275,6 +314,7 @@ if (Test-Path -LiteralPath $resolved -PathType Container) {
 
 if (Test-Path -LiteralPath $managedDir -PathType Container) {
     Write-Ok "Managed directory: $managedDir"
+    if (-not (Test-SupportedAdofaiBaseline $resolved $managedDir)) { $missing++ }
 } else {
     Write-Fail "Managed directory missing: $managedDir"
     $missing++
@@ -295,37 +335,25 @@ if (Test-Path -LiteralPath $monoDir -PathType Container) {
 }
 
 if (Test-Path -LiteralPath $gameAssembly -PathType Leaf) {
-    Write-Warn "GameAssembly.dll present — IL2CPP risk; current baseline expects Mono/Managed. Runtime/API validation is required."
+    Write-Warn 'GameAssembly.dll present — IL2CPP risk; current baseline expects Mono/Managed. Runtime/API validation is required.'
 } else {
     Write-Ok 'GameAssembly.dll not present (Mono/Managed baseline)'
 }
 
 Write-Section 'Validating compile-time DLLs'
-
 if (-not (Test-BaselineVersion 'UnityModManager.dll' (Join-Path $resolvedUmmDir 'UnityModManager.dll') $baselineUmmVersion)) { $missing++ }
 if (-not (Test-BaselineVersion '0Harmony.dll' (Join-Path $resolvedUmmDir '0Harmony.dll') $baselineHarmonyVersion)) { $missing++ }
 if (-not (Test-RequiredFile 'UnityEngine.CoreModule.dll' (Join-Path $managedDir 'UnityEngine.CoreModule.dll'))) { $missing++ }
 if (-not (Test-RequiredFile 'UnityEngine.IMGUIModule.dll' (Join-Path $managedDir 'UnityEngine.IMGUIModule.dll'))) { $missing++ }
-# Texture2D.EncodeToPNG (FrameCaptureDriver) is the real production readback path. Required.
 if (-not (Test-RequiredFile 'UnityEngine.ImageConversionModule.dll' (Join-Path $managedDir 'UnityEngine.ImageConversionModule.dll'))) { $missing++ }
 
-Write-Section 'Optional / future DLL checks'
-
+Write-Section 'Optional / informational DLL checks'
 $unityUmbrella = Join-Path $managedDir 'UnityEngine.dll'
 if (Test-Path -LiteralPath $unityUmbrella -PathType Leaf) {
     Write-Ok 'UnityEngine.dll (legacy umbrella, present; csproj references it only when present)'
     Write-FileMetadata 'UnityEngine.dll' $unityUmbrella
 } else {
     Write-Warn 'UnityEngine.dll not present. Unity 6000 may not ship this legacy umbrella DLL; the project does not require it.'
-}
-
-Write-Section 'Assembly-CSharp checks (informational only)'
-$assemblyCSharp = Join-Path $managedDir 'Assembly-CSharp.dll'
-if (Test-Path -LiteralPath $assemblyCSharp -PathType Leaf) {
-    Write-Ok 'Assembly-CSharp.dll (runtime analysis / reflection source; intentionally NOT a compile-time reference and not committed)'
-    Write-FileMetadata 'Assembly-CSharp.dll' $assemblyCSharp
-} else {
-    Write-Warn 'Assembly-CSharp.dll not present; the project continues because it is not a compile-time reference.'
 }
 
 $firstpass = Join-Path $managedDir 'Assembly-CSharp-firstpass.dll'
@@ -342,7 +370,6 @@ if ($missing -gt 0) {
 }
 
 Write-Section 'Writing build/local.props'
-
 if (-not (Test-Path -LiteralPath $exampleProps -PathType Leaf)) {
     Write-Fail "Template not found: $exampleProps"
     exit 1

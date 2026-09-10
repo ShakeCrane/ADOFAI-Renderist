@@ -72,9 +72,10 @@ namespace ADOFAI.Renderist.Export
                 }
 
                 _changedHandler = OnStateChanged;
-                _changedSubscribed = true;
                 _changedEvent.AddEventHandler(_stateMachine, _changedHandler);
-                // Mark ownership before Patch: a partially applied/throwing Patch must
+                _changedSubscribed = true;
+
+                // Mark Harmony ownership before Patch: a partially applied/throwing Patch must
                 // remain retryable during cleanup.
                 _musicScheduledPatched = true;
                 _harmony.Patch(_musicScheduled,

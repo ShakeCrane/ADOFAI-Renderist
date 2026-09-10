@@ -6,7 +6,7 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 编辑器环境诊断快照（Phase 2.3）。
+    /// 编辑器环境快照（Phase 3.3.0）。
     ///
     /// 只采集只读诊断信息，不修改任何 Unity 状态。
     /// 不引入 Assembly-CSharp.dll。
@@ -16,6 +16,7 @@ namespace ADOFAI.Renderist.Export
     ///   * CameraCount、TimeScale、CaptureFramerate、ScreenWidth、ScreenHeight、IsFocused
     ///     使用可空类型，null 表示读取失败。
     ///   * EnvironmentReadFailed 表示核心环境读取失败，Preflight 据此返回 UnknownEnvironment。
+    ///   * Detection 是当前正式 Preflight 的编辑器场景 gate；未识别场景不会进入导出。
     /// </summary>
     internal struct EditorEnvSnapshot
     {
@@ -67,7 +68,6 @@ namespace ADOFAI.Renderist.Export
                 EnvironmentReadFailed = false,
             };
 
-            // 场景名是核心环境信息；读取失败标记 EnvironmentReadFailed。
             try
             {
                 snapshot.SceneName = SceneManager.GetActiveScene().name;
@@ -79,9 +79,8 @@ namespace ADOFAI.Renderist.Export
                 snapshot.EnvironmentReadFailed = true;
             }
 
-            // Phase 2.2.1 / 2.3: 基于实机验证（ADOFAI buildid 23935606，
-            // Unity 6000.3.10f1），scnEditor 是 ADOFAI 编辑器场景名。
-            // 仅诊断展示；空字符串视为未识别，不作为 Preflight Ready 条件。
+            // 当前已验证正式版：ADOFAI Steam buildid 23935606 / Unity 6000.3.10f1。
+            // scnEditor 是当前版本的编辑器场景名；Preflight 只允许该已验证场景。
             if (snapshot.SceneName != null &&
                 Array.IndexOf(EditorSceneNames, snapshot.SceneName) >= 0)
             {
@@ -111,10 +110,8 @@ namespace ADOFAI.Renderist.Export
         }
 
         /// <summary>
-        /// 实机验证得到的编辑器场景名白名单（基于 Phase 2.2 实机验证，
-        /// ADOFAI buildid 23935606，Unity 6000.3.10f1）。
-        /// 仅用于 Detection 诊断展示，不作为 Preflight 通过 / 失败条件。
-        /// ADOFAI 更新后场景名可能变化，届时需重新实机验证。
+        /// 当前正式版实机验证得到的编辑器场景名白名单。
+        /// ADOFAI 更新后必须重新基于当前游戏版本验证；未识别场景由 Preflight 阻断。
         /// </summary>
         private static readonly string[] EditorSceneNames =
         {
@@ -124,11 +121,8 @@ namespace ADOFAI.Renderist.Export
 
     /// <summary>
     /// 编辑器检测结果。
-    /// - Unknown：未识别或非编辑器环境
-    /// - ProbablyEditor：场景名匹配白名单，疑似编辑器
-    ///
-    /// 仅为「疑似」，不写「确认」——场景名可能因 ADOFAI 版本更新而变化。
-    /// Detection 不影响 Preflight Pass / Warn / Fail，不阻断任何截图路径。
+    /// - Unknown：未识别或非当前已验证编辑器环境
+    /// - ProbablyEditor：场景名匹配当前已验证白名单
     /// </summary>
     internal enum EditorEnvDetection
     {

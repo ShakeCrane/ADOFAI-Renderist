@@ -5,7 +5,7 @@ namespace ADOFAI.Renderist.Export
     /// <summary>
     /// 编辑器确定性导出的就绪状态（Phase 3.3.0）。
     /// 状态由 <see cref="EditorExportPreflight.Run"/> 从 Unity 环境、
-    /// Settings 与输出目录验证结果派生。
+    /// Settings、编辑器选择状态与输出目录验证结果派生。
     /// </summary>
     internal enum EditorExportReadiness
     {
@@ -18,7 +18,7 @@ namespace ADOFAI.Renderist.Export
         /// <summary>场景信息不可用或识别结果无法判断，不能安全结论。</summary>
         UnknownEnvironment,
 
-        /// <summary>存在阻断条件（目录非法、帧率非法）。</summary>
+        /// <summary>存在阻断条件。</summary>
         Blocked,
 
         /// <summary>已就绪。</summary>
@@ -42,6 +42,9 @@ namespace ADOFAI.Renderist.Export
 
         /// <summary>环境信息不可用或无法判断。</summary>
         EnvironmentUnavailable,
+
+        /// <summary>当前编辑器 floor 选择无法由现有安全恢复路径精确恢复。</summary>
+        UnsupportedEditorSelection,
 
         /// <summary>目标帧率不合法。</summary>
         InvalidTargetFrameRate,

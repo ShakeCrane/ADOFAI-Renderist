@@ -3,7 +3,7 @@
     Builds and packages an ADOFAI.Renderist release zip suitable for UMM install.
 
 .DESCRIPTION
-    Phase 2.0 screenshot sequence MVP.
+    Deterministic editor-export packaging pipeline.
 
     The zip contains exactly three TOP-LEVEL files (no subdirectories):
       * Info.json
@@ -15,46 +15,10 @@
       * Does not deploy to the ADOFAI install. Use scripts/copy-to-mods.ps1 for that.
       * Does not copy PDB / XML / config / runtime cache files into the zip.
       * Refuses to write outside the repository.
-      * Refuses to use dangerous output directories
-        (src/, mod/, scripts/, build/, references/, .git/, .vscode/,
-         or any ADOFAI install directory).
-      * Reads the target version from mod/Info.json; an explicit -Version
-        argument must match Info.json or the script fails.
-      * Cross-checks Info.json Version against csproj <Version>.
-      * Default: also runs scripts/verify-release-package.ps1 on the produced zip.
-        Use -SkipVerify to disable.
-      * Default: also runs `dotnet build -c Release` on the project before
-        packaging. Use -SkipBuild to disable.
-
-.PARAMETER Configuration
-    Build configuration to package. Default: Release.
-
-.PARAMETER Version
-    Optional explicit version. If supplied, must equal mod/Info.json Version.
-
-.PARAMETER OutputDir
-    Optional output directory. Default: <repo>/dist. Must remain inside the
-    repository and must not be one of the protected paths listed above.
-
-.PARAMETER Clean
-    If set, removes any pre-existing zip (and matching .sha256 sidecar) for
-    the target version inside OutputDir before packaging.
-
-.PARAMETER Force
-    Overwrite an existing zip of the same name. Without -Force or -Clean,
-    a pre-existing zip is a hard failure.
-
-.PARAMETER SkipBuild
-    Skip the `dotnet build -c Release` step. The built DLL must already exist.
-
-.PARAMETER SkipVerify
-    Skip the post-packaging verify-release-package.ps1 invocation.
-
-.PARAMETER WhatIf
-    Print actions without performing them.
-
-.EXAMPLE
-    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1
+      * Refuses to use dangerous output directories.
+      * Reads the target version from mod/Info.json; an explicit -Version must match.
+      * Cross-checks Info.json Version against csproj <Version> and ModEntry.ModVersion.
+      * By default builds Release and runs verify-release-package.ps1.
 #>
 
 [CmdletBinding()]
@@ -78,22 +42,19 @@ function Fail($msg) {
     exit 1
 }
 
-# ---------- repo-relative paths ------------------------------------------------
-
 $repoRoot     = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $infoJsonPath = Join-Path $repoRoot 'mod\Info.json'
 $csprojPath   = Join-Path $repoRoot 'src\ADOFAI.Renderist\ADOFAI.Renderist.csproj'
+$modEntryPath = Join-Path $repoRoot 'src\ADOFAI.Renderist\ModEntry.cs'
 $licensePath  = Join-Path $repoRoot 'LICENSE'
 $builtDllPath = Join-Path $repoRoot ("src\ADOFAI.Renderist\bin\{0}\ADOFAI.Renderist.dll" -f $Configuration)
 $verifyScript = Join-Path $PSScriptRoot 'verify-release-package.ps1'
 
-foreach ($p in @($infoJsonPath, $csprojPath, $licensePath)) {
+foreach ($p in @($infoJsonPath, $csprojPath, $modEntryPath, $licensePath)) {
     if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
         Fail "Required source file not found: $p"
     }
 }
-
-# ---------- 1. read & cross-check versions -----------------------------------
 
 try {
     $infoJson = Get-Content -LiteralPath $infoJsonPath -Raw | ConvertFrom-Json
@@ -114,12 +75,23 @@ if ($infoVersion -ne $csprojVersion) {
     Fail "Version mismatch: Info.json=$infoVersion, csproj=$csprojVersion. Run scripts/set-version.ps1 first."
 }
 
+$modEntryText = Get-Content -LiteralPath $modEntryPath -Raw
+$modVersionMatch = [regex]::Match(
+    $modEntryText,
+    'internal\s+const\s+string\s+ModVersion\s*=\s*"([^"]+)"'
+)
+if (-not $modVersionMatch.Success) {
+    Fail "Could not read ModEntry.ModVersion from $modEntryPath"
+}
+$modEntryVersion = $modVersionMatch.Groups[1].Value
+if ($infoVersion -ne $modEntryVersion) {
+    Fail "Version mismatch: Info.json=$infoVersion, ModEntry.ModVersion=$modEntryVersion. Run scripts/set-version.ps1 first."
+}
+
 if ($PSBoundParameters.ContainsKey('Version') -and $Version -ne $infoVersion) {
     Fail "Explicit -Version '$Version' does not match mod/Info.json Version '$infoVersion'."
 }
 $resolvedVersion = $infoVersion
-
-# ---------- 2. resolve & validate output directory ---------------------------
 
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
     $OutputDir = Join-Path $repoRoot 'dist'
@@ -152,7 +124,6 @@ foreach ($sub in $forbiddenSubdirs) {
     }
 }
 
-# Refuse to write into an ADOFAI install directory (best-effort heuristic).
 $gameExeNearby = Join-Path $outputDirAbs 'A Dance of Fire and Ice.exe'
 if (Test-Path -LiteralPath $gameExeNearby -PathType Leaf) {
     Fail "OutputDir appears to be an ADOFAI install directory. Refusing: $outputDirAbs"
@@ -169,8 +140,6 @@ if (-not (Test-Path -LiteralPath $outputDirAbs -PathType Container)) {
 $zipName     = "ADOFAI.Renderist.zip"
 $zipPath     = Join-Path $outputDirAbs $zipName
 $shaSidecar  = "$zipPath.sha256"
-
-# ---------- 3. optional clean -------------------------------------------------
 
 if ($Clean) {
     foreach ($p in @($zipPath, $shaSidecar)) {
@@ -189,8 +158,6 @@ if ((Test-Path -LiteralPath $zipPath -PathType Leaf) -and -not $Force -and -not 
     Fail "Output zip already exists: $zipPath. Use -Force or -Clean to overwrite."
 }
 
-# ---------- 4. optional build -------------------------------------------------
-
 if (-not $SkipBuild) {
     Write-Host "==> dotnet build -c $Configuration $csprojPath" -ForegroundColor Cyan
     if ($WhatIf) {
@@ -208,8 +175,6 @@ if (-not $SkipBuild) {
 if (-not (Test-Path -LiteralPath $builtDllPath -PathType Leaf)) {
     Fail "Built DLL not found: $builtDllPath. Run prepare-references.ps1 and/or remove -SkipBuild."
 }
-
-# ---------- 5. stage & zip ----------------------------------------------------
 
 $stagingRoot = Join-Path $outputDirAbs (".staging-{0}" -f ([Guid]::NewGuid().ToString('N')))
 if ($WhatIf) {
@@ -251,13 +216,11 @@ try {
     Write-Host "==> Creating $zipPath" -ForegroundColor Cyan
     if (-not $WhatIf) {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
-        # CreateFromDirectory writes entries relative to the directory root,
-        # so the zip ends up with no top-level folder.
         [System.IO.Compression.ZipFile]::CreateFromDirectory(
             $stagingRoot,
             $zipPath,
             [System.IO.Compression.CompressionLevel]::Optimal,
-            $false   # includeBaseDirectory = false
+            $false
         )
     }
 
@@ -272,8 +235,6 @@ try {
         Remove-Item -LiteralPath $stagingRoot -Recurse -Force
     }
 }
-
-# ---------- 6. post-verify ----------------------------------------------------
 
 if (-not $SkipVerify) {
     if (-not (Test-Path -LiteralPath $verifyScript -PathType Leaf)) {

@@ -157,12 +157,19 @@ namespace ADOFAI.Renderist.Export
                         return false;
                     }
 
-                    if (result is bool && !(bool)result) return true;
-
-                    if (ReferenceEquals(current, ReadMember(player, "currFloor")))
+                    // due-floor transaction 的成功条件是实际推进到刚才观察到的 nextfloor。
+                    // 不把 Hit(bool) 返回 false 单独解释为“无需推进”。
+                    object afterCurrent = ReadMember(player, "currFloor");
+                    int afterFloor = ToInt(ReadMember(afterCurrent, "seqID"));
+                    if (afterCurrent == null || afterFloor != nextFloor)
                     {
-                        error = "hit-did-not-advance";
+                        error = "hit-did-not-advance-to-next-floor";
                         return false;
+                    }
+
+                    if (result is bool accepted && !accepted)
+                    {
+                        Log.Debug("RenderistAutoPlay: Hit returned false but currFloor advanced to expected next floor; accepting observed progression.");
                     }
                 }
 
