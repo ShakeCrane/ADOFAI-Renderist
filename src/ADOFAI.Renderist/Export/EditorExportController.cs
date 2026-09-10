@@ -214,6 +214,12 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
+#if DEBUG
+                // TEMPORARY fault injection F1（验证后随 FaultInjection.cs 一并删除）。
+                if (FaultInjection.Consume(ref FaultInjection.F1_StartSessionAfterSchedulerStart, "F1"))
+                    throw new InvalidOperationException("fault-injection:F1-start-session-after-scheduler-start");
+#endif
+
                 CopyFrozenEndTailFromScheduler(session);
                 session.State = EditorExportState.Running;
                 session.StateDetail = "确定性帧调度器运行中。";
@@ -227,6 +233,17 @@ namespace ADOFAI.Renderist.Export
             {
                 LastStartRejectReason = "Start 异常";
                 Log.Exception("EditorExportController.StartSession 异常", ex);
+                // TryStart 成功后的异常不得留下 scheduler ownership：session 终态只是
+                // 结果记录，不代表 scheduler 干净。先收敛 ownership 再标记 session 失败；
+                // cleanup 自身的失败只记录，不掩盖原始启动异常，residual 留待下次 retry。
+                try
+                {
+                    DeterministicFrameScheduler.EnsureCleanedUp("failed", "controller-fail");
+                }
+                catch (Exception cleanupEx)
+                {
+                    Log.Exception("EditorExportController.StartSession 异常后 scheduler cleanup 失败", cleanupEx);
+                }
                 if (session != null)
                     MarkSessionFailed(session, "会话启动异常。", "controller-fail");
                 return false;
@@ -311,7 +328,10 @@ namespace ADOFAI.Renderist.Export
             }
         }
 
-        /// <summary>用户主动停止。仅 Running 可停止。</summary>
+        /// <summary>
+        /// 用户主动停止。仅 Running 可停止；terminal session 不改写记录，
+        /// 但 scheduler 可能仍持有 residual ownership，需经统一入口收敛。
+        /// </summary>
         public static void Stop()
         {
             if (_terminalRearmPending)
@@ -322,7 +342,21 @@ namespace ADOFAI.Renderist.Export
 
             EditorExportSession s = _session;
             if (s == null) return;
-            if (s.State != EditorExportState.Running) return;
+            if (s.State != EditorExportState.Running)
+            {
+                // 与 Cancel 的 terminal 分支同一 invariant：正常 Completed/Cancelled/Failed
+                // 且已干净时此处为 no-op；存在 residual（StartSession 异常路径 / 此前
+                // cleanup 失败）时补做收敛，retry 能力由 EnsureCleanedUp 保证。
+                try
+                {
+                    DeterministicFrameScheduler.EnsureCleanedUp("cancelled", "user-stop");
+                }
+                catch (Exception cleanupEx)
+                {
+                    Log.Exception("EditorExportController.Stop terminal cleanup 失败", cleanupEx);
+                }
+                return;
+            }
 
             try
             {
@@ -338,7 +372,14 @@ namespace ADOFAI.Renderist.Export
             }
         }
 
-        /// <summary>外部取消：环境失效 / Mod 禁用。对终止状态幂等。</summary>
+        /// <summary>
+        /// 外部取消：环境失效 / Mod 禁用。对终止状态幂等。
+        /// terminal session 不再改写状态记录，但 scheduler 可能仍持有 residual
+        /// ownership（StartSession 异常路径 / 此前 cleanup 失败），必须尝试收敛——
+        /// 这是 Mod disable 链路（OnToggle(false) → Cancel → UnpatchAll）中非 Harmony
+        /// ownership（camera / Unity timing / RDC / selection / capture host）唯一的
+        /// 恢复机会，不得因 terminal 而跳过。
+        /// </summary>
         public static void Cancel(string reason)
         {
             if (_terminalRearmPending)
@@ -353,6 +394,15 @@ namespace ADOFAI.Renderist.Export
                 s.State == EditorExportState.Cancelled ||
                 s.State == EditorExportState.Failed)
             {
+                string terminalCleanReason = string.IsNullOrEmpty(reason) ? "cancelled" : reason;
+                try
+                {
+                    DeterministicFrameScheduler.EnsureCleanedUp("cancelled", terminalCleanReason);
+                }
+                catch (Exception cleanupEx)
+                {
+                    Log.Exception("EditorExportController.Cancel terminal cleanup 失败", cleanupEx);
+                }
                 return;
             }
 

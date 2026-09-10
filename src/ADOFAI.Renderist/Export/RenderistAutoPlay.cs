@@ -16,7 +16,6 @@ namespace ADOFAI.Renderist.Export
     internal static class RenderistAutoPlay
     {
         private const string StatePlayerControl = "PlayerControl";
-        private const int MaxHitsPerFrame = 16;
         private const double DueToleranceSeconds = 0.0001;
 
         private static bool _resolved;
@@ -68,7 +67,18 @@ namespace ADOFAI.Renderist.Export
                     return true;
                 }
 
-                while (hitCount < MaxHitsPerFrame)
+                // Progression safety bound：单次 CatchUp（一个输出帧）的合法命中数不会
+                // 超过当前谱面 floor 总数（每次 Hit 都要求 seqID 严格向前）。上界来自
+                // 实际谱面而非固定魔数；floor collection 不可读时 fail-closed，不猜测。
+                IList floors = EditorGameReflection.ReadFloorsList();
+                if (floors == null || floors.Count < 1)
+                {
+                    error = "autoplay-floors-unavailable";
+                    return false;
+                }
+                int progressionBound = floors.Count;
+
+                while (hitCount < progressionBound)
                 {
                     object current = ReadMember(player, "currFloor");
                     object next = ReadMember(current, "nextfloor");
@@ -85,6 +95,11 @@ namespace ADOFAI.Renderist.Export
 
                     int beforeFloor = ToInt(ReadMember(current, "seqID"));
                     int nextFloor = ToInt(ReadMember(next, "seqID"));
+                    if (beforeFloor < 0 || nextFloor < 0)
+                    {
+                        error = "autoplay-floor-seq-unavailable";
+                        return false;
+                    }
                     object planet = ReadMember(ReadMember(player, "planetarySystem"), "chosenPlanet");
                     if (planet != null)
                     {
@@ -112,7 +127,20 @@ namespace ADOFAI.Renderist.Export
                         }
 
                         PrepareHitState(player, controller);
+#if DEBUG
+                        // TEMPORARY fault injection F4（验证后随 FaultInjection.cs 一并删除）：
+                        // 跳过官方 Hit 调用但仍走原事务路径，模拟 progression 不前进。
+                        if (FaultInjection.Consume(ref FaultInjection.F4_SkipOneHit, "F4"))
+                        {
+                            result = null;
+                        }
+                        else
+                        {
+                            result = _mPlayerHit.Invoke(player, new object[] { true });
+                        }
+#else
                         result = _mPlayerHit.Invoke(player, new object[] { true });
+#endif
                         hitCount++;
 
                         Log.Info("MasterTimeline Hit: frameIndex=" + frameIndex.ToString(CultureInfo.InvariantCulture) +
@@ -157,14 +185,29 @@ namespace ADOFAI.Renderist.Export
                         return false;
                     }
 
-                    // due-floor transaction 的成功条件是实际推进到刚才观察到的 nextfloor。
+                    // due-floor transaction 的成功条件是 canonical floor progression
+                    // 严格单调向前：after == before（无推进）与 after < before（倒退）
+                    // 都立即 fail-closed；多格前进允许（当前官方路径未观察到，仅记录）。
                     // 不把 Hit(bool) 返回 false 单独解释为“无需推进”。
                     object afterCurrent = ReadMember(player, "currFloor");
                     int afterFloor = ToInt(ReadMember(afterCurrent, "seqID"));
-                    if (afterCurrent == null || afterFloor != nextFloor)
+                    if (afterCurrent == null || afterFloor < 0)
                     {
-                        error = "hit-did-not-advance-to-next-floor";
+                        error = "autoplay-floor-seq-unavailable-after-hit";
                         return false;
+                    }
+                    if (afterFloor <= beforeFloor)
+                    {
+                        error = "hit-progression-not-forward";
+                        return false;
+                    }
+                    if (afterFloor != nextFloor)
+                    {
+                        Log.Debug("RenderistAutoPlay: Hit advanced floor progression from " +
+                                  beforeFloor.ToString(CultureInfo.InvariantCulture) + " to " +
+                                  afterFloor.ToString(CultureInfo.InvariantCulture) +
+                                  " (expected next " +
+                                  nextFloor.ToString(CultureInfo.InvariantCulture) + "); accepting forward progression.");
                     }
 
                     if (result is bool accepted && !accepted)
@@ -173,7 +216,9 @@ namespace ADOFAI.Renderist.Export
                     }
                 }
 
-                // 因达到 MaxHitsPerFrame 退出：若仍存在 due floor，则不能把 Hit 拖到下一 output frame。
+                // 因达到 progression bound 退出：一致谱面下不可达（bound = floor 总数且
+                // 每次 Hit 都严格向前）。若此时仍有 due floor，说明 progression 记账
+                // 异常，fail-closed，不得把 Hit 拖到下一 output frame。
                 {
                     object current = ReadMember(player, "currFloor");
                     object next = ReadMember(current, "nextfloor");
@@ -183,13 +228,14 @@ namespace ADOFAI.Renderist.Export
                         if (nextEntry.HasValue && !double.IsNaN(nextEntry.Value) && !double.IsInfinity(nextEntry.Value) &&
                             chartTime + DueToleranceSeconds >= nextEntry.Value)
                         {
-                            error = "max-hits-per-frame-exceeded";
+                            error = "autoplay-progression-bound-exceeded";
                             return false;
                         }
                     }
                 }
 
-                Log.Debug("RenderistAutoPlay: maxHitsPerFrame reached=" + MaxHitsPerFrame.ToString(CultureInfo.InvariantCulture));
+                Log.Debug("RenderistAutoPlay: progression bound reached=" +
+                          progressionBound.ToString(CultureInfo.InvariantCulture));
                 return true;
             }
             catch (Exception ex)

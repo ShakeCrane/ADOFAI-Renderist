@@ -582,6 +582,23 @@ namespace ADOFAI.Renderist.Export
             ProcessStop();
         }
 
+        /// <summary>
+        /// 统一 ownership-aware 收敛入口。幂等、可重复调用，且不依赖 controller
+        /// session 是否 terminal（invariant：session terminal != scheduler owns nothing）：
+        ///   * _running                → 走现有 StopNow 收敛路线（不复制第二套 cleanup）；
+        ///   * 非 running 但仍有 residual → 与启动前 gate 同一 retry 语义，重试 RestoreAll；
+        ///   * 无任何 ownership          → no-op。
+        /// 返回 false 表示仍有 residual ownership（恢复未完成，可再次调用补做剩余项）。
+        /// </summary>
+        public static bool EnsureCleanedUp(string stopEvent, string stopReason)
+        {
+            if (_running)
+            {
+                StopNow(stopEvent, stopReason);
+            }
+            return EnsurePreviousRunCleanedUp(out _);
+        }
+
         // ================================================================
         // Tick（由 EditorExportController.Tick 调用，每 OnUpdate 一次）
         // ================================================================
@@ -1567,6 +1584,13 @@ namespace ADOFAI.Renderist.Export
         private static bool RestoreRdcAuto()
         {
             if (!_savedRdcAuto.HasValue) return true;
+#if DEBUG
+            // TEMPORARY fault injection F2（验证后随 FaultInjection.cs 一并删除）。
+            if (FaultInjection.Consume(ref FaultInjection.F2_RdcAutoRestoreFailOnce, "F2"))
+            {
+                return false;
+            }
+#endif
             if (!EditorGameReflection.TryWriteRdcAuto(_savedRdcAuto.Value))
             {
                 Log.Warn("DeterministicFrameScheduler: RDC.auto 恢复失败。");

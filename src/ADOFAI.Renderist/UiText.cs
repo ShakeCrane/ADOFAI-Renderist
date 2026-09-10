@@ -33,6 +33,7 @@ namespace ADOFAI.Renderist
         // ---------------- GUI: 编辑器导出就绪 ----------------
 
         public const string GuiPreflightSectionTitle = "编辑器导出";
+        public const string GuiEditorExportEnableToggle = " 启用编辑器导出（实验性）";
         public const string GuiPreflightStatusPrefix = "检查状态：";
         public const string GuiReadinessReady = "就绪";
         public const string GuiReadinessDisabled = "未启用";

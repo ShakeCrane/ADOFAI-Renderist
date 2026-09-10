@@ -87,19 +87,33 @@ namespace ADOFAI.Renderist.Export
                 return false;
             }
 
+            GameObject host = null;
+            CaptureHostBehaviour behaviour = null;
             try
             {
                 generation = ++_generationCounter;
                 _activeGeneration = generation;
 
-                GameObject host = new GameObject("ADOFAI.Renderist.FrameCaptureDriver");
+                host = new GameObject("ADOFAI.Renderist.FrameCaptureDriver");
                 host.hideFlags = HideFlags.HideAndDontSave;
                 UnityEngine.Object.DontDestroyOnLoad(host);
 
-                CaptureHostBehaviour behaviour = host.AddComponent<CaptureHostBehaviour>();
+                behaviour = host.AddComponent<CaptureHostBehaviour>();
+#if DEBUG
+                // TEMPORARY fault injection F3a（验证后随 FaultInjection.cs 一并删除）。
+                if (FaultInjection.Consume(ref FaultInjection.F3a_CaptureStartAfterAddComponent, "F3a"))
+                    throw new InvalidOperationException("fault-injection:F3a-capture-start-after-addcomponent");
+#endif
                 behaviour.Configure(outputDirectory, string.IsNullOrEmpty(prefix) ? "frame_" : prefix,
                     zeroPadWidth < 1 ? 1 : zeroPadWidth, onResult, generation);
+#if DEBUG
+                // TEMPORARY fault injection F3b（验证后随 FaultInjection.cs 一并删除）。
+                if (FaultInjection.Consume(ref FaultInjection.F3b_CaptureStartAfterConfigure, "F3b"))
+                    throw new InvalidOperationException("fault-injection:F3b-capture-start-after-configure");
+#endif
 
+                // 静态 ownership 只在全部启动步骤成功后交接；此前 host/behaviour
+                // 属于局部 ownership，中途异常由 catch 就地清理。
                 _host = host;
                 _behaviour = behaviour;
                 return true;
@@ -107,7 +121,25 @@ namespace ADOFAI.Renderist.Export
             catch (Exception ex)
             {
                 Log.Exception("FrameCaptureDriver: 启动失败", ex);
-                Stop();
+                // 局部清理：静态 _host/_behaviour 从未接管，不能调用 Stop()。
+                // behaviour.Shutdown() 的次生异常不得阻止 host Destroy。
+                if (behaviour != null)
+                {
+                    try { behaviour.Shutdown(); }
+                    catch (Exception shutdownEx)
+                    {
+                        Log.Exception("FrameCaptureDriver: 启动失败后 Shutdown 局部 behaviour 失败", shutdownEx);
+                    }
+                }
+                if (host != null)
+                {
+                    try { UnityEngine.Object.Destroy(host); }
+                    catch (Exception destroyEx)
+                    {
+                        Log.Exception("FrameCaptureDriver: 启动失败后 Destroy 局部 host 失败", destroyEx);
+                    }
+                }
+                _activeGeneration = 0;
                 error = ex.Message;
                 return false;
             }

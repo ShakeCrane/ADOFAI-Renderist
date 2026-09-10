@@ -79,7 +79,7 @@ namespace ADOFAI.Renderist.Export
                 snapshot.EnvironmentReadFailed = true;
             }
 
-            // 当前已验证正式版：ADOFAI Steam buildid 23935606 / Unity 6000.3.10f1。
+            // 当前已验证正式版：ADOFAI Steam buildid 24397494 / Unity 6000.3.10f1。
             // scnEditor 是当前版本的编辑器场景名；Preflight 只允许该已验证场景。
             if (snapshot.SceneName != null &&
                 Array.IndexOf(EditorSceneNames, snapshot.SceneName) >= 0)
