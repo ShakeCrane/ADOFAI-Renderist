@@ -442,6 +442,9 @@ namespace ADOFAI.Renderist.Export
             s.EndedAtUtc = DateTime.UtcNow;
             s.CaptureRequestCount = DeterministicFrameScheduler.CaptureRequestCount;
             s.CapturedFrameCount = DeterministicFrameScheduler.CapturedFrameCount;
+            s.CaptureSource = DeterministicFrameScheduler.CaptureSource;
+            s.CaptureWidth = DeterministicFrameScheduler.CaptureWidth;
+            s.CaptureHeight = DeterministicFrameScheduler.CaptureHeight;
             s.SafetyFrameLimit = DeterministicFrameScheduler.SafetyFrameLimit;
             CopyFrozenEndTailFromScheduler(s);
             s.TailFramesCaptured = DeterministicFrameScheduler.TailFramesCaptured;

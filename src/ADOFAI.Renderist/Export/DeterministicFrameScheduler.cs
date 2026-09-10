@@ -82,6 +82,12 @@ namespace ADOFAI.Renderist.Export
         private static double _pitch = 1.0;
         private static bool _pitchUnavailable;
 
+        // Render Source：本 session 实际采用的 capture source 与冻结尺寸。
+        // 只作为 metadata 记录，cleanup 后保留供 session finalize 读取。
+        private static string _captureSource;
+        private static int _captureWidth;
+        private static int _captureHeight;
+
         private static int _awaitFrameCount;
         private static int _activationUnityFrame = -1;
         private static int _lastPrepareUnityFrame = -1;
@@ -126,6 +132,24 @@ namespace ADOFAI.Renderist.Export
         private static bool _asyncInputAdjustAnglePatched;
         private static bool _controllerOnLandOnPortalPatched;
 
+        // native editor playback teardown observer（scnEditor.SwitchToEditMode Postfix）
+        private static MethodInfo _patchedEditorSwitchToEditMode;
+        private static bool _editorSwitchToEditModePatched;
+
+        /// <summary>
+        /// Input Guard run-owned hook：记录实际成功 Patch 的 target MethodInfo 与 Prefix 名称，
+        /// 以便精确 Unpatch 并在残留学时被 HasResidualOwnership 识别。
+        /// 所有 guard 必须 all-or-nothing：任一安装失败即全部撤销并拒绝启动。
+        /// </summary>
+        private sealed class InputGuardHook
+        {
+            public MethodInfo Target;
+            public string PrefixName;
+            public bool Patched;
+        }
+
+        private static readonly List<InputGuardHook> _inputGuardHooks = new List<InputGuardHook>();
+
         // FrameCaptureDriver generation 隔离
         private static long _captureGeneration;
 
@@ -152,6 +176,9 @@ namespace ADOFAI.Renderist.Export
         public static double CanonicalStartTime => _canonicalStartTime;
         public static double Pitch => _pitch;
         public static bool PitchUnavailable => _pitchUnavailable;
+        public static string CaptureSource => _captureSource;
+        public static int CaptureWidth => _captureWidth;
+        public static int CaptureHeight => _captureHeight;
         public static bool CanonicalCompletionCallbackSeen => _canonicalCompletionCallbackSeen;
         public static bool CanonicalCompletionStateSeen => _canonicalCompletionStateSeen;
         public static int CanonicalCompletionFrameIndex => _canonicalCompletionFrameIndex;
@@ -258,6 +285,13 @@ namespace ADOFAI.Renderist.Export
                 {
                     return FailStart("forced-clock-hooks-failed");
                 }
+                // Input Guard 必须在官方 editor.Play() 之前安装：scnEditor.Play 会调用
+                // playerManager.UnlockAllPlayerInput()，之后到 session cleanup 为止玩家的
+                // hit / 暂停 / 缩放都必须被抑制。
+                if (!RegisterInputGuardHooks())
+                {
+                    return FailStart("input-guard-hooks-failed");
+                }
                 EditorVisualClock.SetForcedSongPosition(_canonicalStartTime);
                 EditorVisualClock.SetActive(false);
                 Log.Info(UiText.LogSchedulerForcedClockInstalled);
@@ -290,6 +324,16 @@ namespace ADOFAI.Renderist.Export
                     return FailStart("start-playback-failed:" + playError);
                 }
                 _handoff.MarkPlayReturned();
+
+                // native playback teardown observer：必须在 editor.Play() 返回后安装。
+                // 静态 IL 已确认 scnEditor.Play 不会调用 SwitchToEditMode（调用者只有
+                // scnEditor.Start 与 scnEditor.Update 的 Esc 分支），因此 Play 返回后
+                // 安装不会被自身初始化误触发，同时足以覆盖 InitializationHold 与
+                // Capturing 期间用户按 Esc。
+                if (!RegisterNativePlaybackStopObserver())
+                {
+                    return FailStart("native-playback-stop-observer-failed");
+                }
 
                 // pitch 必须可用且有效，否则不得构造 MasterTimeline。
                 _pitch = EditorGameReflection.ReadPitch(out _pitchUnavailable);
@@ -437,6 +481,9 @@ namespace ADOFAI.Renderist.Export
             _floor0EntryTime = 0.0;
             _pitch = 1.0;
             _pitchUnavailable = false;
+            _captureSource = null;
+            _captureWidth = 0;
+            _captureHeight = 0;
             _captureRequestCount = 0;
             _capturedFrameCount = 0;
             _tailFramesCaptured = 0;
@@ -470,9 +517,12 @@ namespace ADOFAI.Renderist.Export
         {
             return _ownsPlayback || _ownsUnityTiming || _handoff != null ||
                    _captureGeneration != 0 || FrameCaptureDriver.IsRunning ||
+                   FrameCaptureDriver.HasActiveCameraSource ||
+                   _inputGuardHooks.Count > 0 ||
                    EditorVisualClock.HasTrackedHooks ||
                    _patchedConductorUpdate != null || _patchedAsyncInputAdjustAngle != null ||
                    _patchedControllerOnLandOnPortal != null ||
+                   _patchedEditorSwitchToEditMode != null ||
                    _savedRdcAuto.HasValue || _savedSelectedFloorSeqs.Count > 0;
         }
 
@@ -647,6 +697,22 @@ namespace ADOFAI.Renderist.Export
 
             EditorVisualClock.SetForcedSongPosition(_canonicalStartTime);
             EditorVisualClock.SetActive(true);
+
+            // Render Source 激活点：playback ready 且 canonical visual clock ready 之后、
+            // 进入 Capturing / 请求 frame 0 之前。Start 阶段不得提前接管摄像机。
+            // 失败即 Fail，绝不回退到 Screen framebuffer。
+            if (!FrameCaptureDriver.TryActivateCameraSource(
+                    _captureGeneration, out string cameraSourceError))
+            {
+                Log.Warn("DeterministicFrameScheduler: capture source activation failed: " +
+                         (cameraSourceError ?? "unknown"));
+                RequestStop("capture-source-failed",
+                    "capture-source-unavailable:" + (cameraSourceError ?? "unknown"));
+                return;
+            }
+            _captureSource = FrameCaptureDriver.CameraSourceLabel;
+            _captureWidth = FrameCaptureDriver.CaptureWidth;
+            _captureHeight = FrameCaptureDriver.CaptureHeight;
 
             _activationUnityFrame = Time.frameCount + 1;
             _status = SchedulerStatus.Capturing;
@@ -1001,6 +1067,204 @@ namespace ADOFAI.Renderist.Export
         }
 
         // ================================================================
+        // Input Guard（session 期间抑制玩家输入 / 暂停 / 编辑器缩放）
+        // ================================================================
+        //
+        // 只 Patch 精确的查询 / 入口方法，不 Patch scrPlayer.Hit、scrConductor.Update 或
+        // scnEditor.Update：
+        //   * RenderistAutoPlay 通过官方 scrPlayer.Hit(true) 命中，Hit 不经过本组方法。
+        //   * Esc cancellation 由 scnEditor.Update 中一个更早的 KeyCode.Escape 分支直接
+        //     SwitchToEditMode(false) 并 ret 完成，不经过 TogglePauseGame。
+        // 因此本组 guard 既不会影响确定性自动命中，也不会阻断 Esc。
+
+        private static bool RegisterInputGuardHooks()
+        {
+            if (!UnregisterInputGuardHooks())
+                return false;
+
+            if (!EditorGameReflection.InputGuardApiAvailable)
+            {
+                Log.Warn("MasterTimeline input guard unavailable: " +
+                         (EditorGameReflection.DescribeMissingInputGuardApi() ?? "unknown"));
+                return false;
+            }
+
+            var descriptors = new[]
+            {
+                new InputGuardHook
+                {
+                    Target = EditorGameReflection.PlayerManagerAnyValidInputWasTriggeredMethod,
+                    PrefixName = nameof(AnyValidInputWasTriggeredPrefix),
+                },
+                new InputGuardHook
+                {
+                    Target = EditorGameReflection.PlayerValidInputWasTriggeredMethod,
+                    PrefixName = nameof(ValidInputWasTriggeredPrefix),
+                },
+                new InputGuardHook
+                {
+                    Target = EditorGameReflection.PlayerValidInputWasReleasedMethod,
+                    PrefixName = nameof(ValidInputWasReleasedPrefix),
+                },
+                new InputGuardHook
+                {
+                    Target = EditorGameReflection.PlayerCountValidKeysPressedMethod,
+                    PrefixName = nameof(CountValidKeysPressedPrefix),
+                },
+                new InputGuardHook
+                {
+                    Target = EditorGameReflection.EditorZoomCameraMethod,
+                    PrefixName = nameof(ZoomCameraPrefix),
+                },
+                new InputGuardHook
+                {
+                    Target = EditorGameReflection.ControllerTogglePauseGameMethod,
+                    PrefixName = nameof(TogglePauseGamePrefix),
+                },
+            };
+
+            Harmony harmony = ModEntry.Harmony;
+            if (harmony == null)
+            {
+                Log.Warn("MasterTimeline input guard unavailable: harmony-null");
+                return false;
+            }
+
+            _inputGuardHooks.AddRange(descriptors);
+            var descriptions = new List<string>();
+
+            foreach (InputGuardHook hook in _inputGuardHooks)
+            {
+                if (hook.Target == null)
+                {
+                    Log.Warn("MasterTimeline input guard target missing: " + hook.PrefixName);
+                    UnregisterInputGuardHooks();
+                    return false;
+                }
+
+                MethodInfo prefix = AccessTools.Method(typeof(DeterministicFrameScheduler), hook.PrefixName);
+                if (prefix == null)
+                {
+                    Log.Warn("MasterTimeline input guard prefix missing: " + hook.PrefixName);
+                    UnregisterInputGuardHooks();
+                    return false;
+                }
+
+                try
+                {
+                    hook.Patched = true;
+                    harmony.Patch(hook.Target, prefix: new HarmonyMethod(prefix));
+                }
+                catch (Exception ex)
+                {
+                    Log.Exception("DeterministicFrameScheduler: 注册 input guard 失败 " + hook.PrefixName, ex);
+                    UnregisterInputGuardHooks();
+                    return false;
+                }
+
+                descriptions.Add(hook.Target.DeclaringType?.Name + "." + hook.Target.Name);
+            }
+
+            Log.Info("MasterTimeline input guard installed: " + string.Join(", ", descriptions.ToArray()));
+            return true;
+        }
+
+        private static bool UnregisterInputGuardHooks()
+        {
+            if (_inputGuardHooks.Count == 0) return true;
+
+            Harmony harmony = ModEntry.Harmony;
+            if (harmony == null) return false;
+
+            bool success = true;
+            for (int i = _inputGuardHooks.Count - 1; i >= 0; i--)
+            {
+                InputGuardHook hook = _inputGuardHooks[i];
+                if (!hook.Patched || hook.Target == null)
+                {
+                    _inputGuardHooks.RemoveAt(i);
+                    continue;
+                }
+
+                try
+                {
+                    MethodInfo prefix = AccessTools.Method(typeof(DeterministicFrameScheduler), hook.PrefixName);
+                    if (prefix == null)
+                    {
+                        success = false;
+                        continue;
+                    }
+                    harmony.Unpatch(hook.Target, prefix);
+                    hook.Patched = false;
+                    _inputGuardHooks.RemoveAt(i);
+                }
+                catch (Exception ex)
+                {
+                    success = false;
+                    Log.Exception("DeterministicFrameScheduler: 撤销 input guard 失败 " + hook.PrefixName, ex);
+                }
+            }
+
+            return success && _inputGuardHooks.Count == 0;
+        }
+
+        /// <summary>
+        /// Guard 只在本次 Renderist session 从官方 editor.Play() 起、到 cleanup 前生效。
+        /// 与 RenderistAutoPlay 使用同一状态范围；它不调用本组任何方法。
+        /// </summary>
+        private static bool IsInputGuardActive()
+        {
+            return _running && _pendingStopReason == null && _inputGuardHooks.Count > 0 &&
+                   (_status == SchedulerStatus.InitializationHold ||
+                    _status == SchedulerStatus.Capturing);
+        }
+
+        private static bool AnyValidInputWasTriggeredPrefix(ref bool __result)
+        {
+            if (!IsInputGuardActive()) return true;
+            __result = false;
+            return false;
+        }
+
+        private static bool ValidInputWasTriggeredPrefix(ref bool __result)
+        {
+            if (!IsInputGuardActive()) return true;
+            __result = false;
+            return false;
+        }
+
+        private static bool ValidInputWasReleasedPrefix(ref bool __result)
+        {
+            if (!IsInputGuardActive()) return true;
+            __result = false;
+            return false;
+        }
+
+        private static bool CountValidKeysPressedPrefix(ref int __result)
+        {
+            if (!IsInputGuardActive()) return true;
+            __result = 0;
+            return false;
+        }
+
+        /// <summary>滚轮缩放：只跳过原方法，void 无返回值。</summary>
+        private static bool ZoomCameraPrefix()
+        {
+            return !IsInputGuardActive();
+        }
+
+        /// <summary>
+        /// 暂停入口：跳过原方法并返回当前 paused 状态，语义等同于“没有发生切换”。
+        /// 官方 TogglePauseGame 在所有返回点都返回 controller.paused。
+        /// </summary>
+        private static bool TogglePauseGamePrefix(ref bool __result)
+        {
+            if (!IsInputGuardActive()) return true;
+            __result = EditorGameReflection.ReadControllerPaused() ?? false;
+            return false;
+        }
+
+        // ================================================================
         // 恢复
         // ================================================================
 
@@ -1089,6 +1353,30 @@ namespace ADOFAI.Renderist.Export
                 {
                     failures.Add("visual-clock-unpatch-exception");
                     Log.Exception("DeterministicFrameScheduler: forced clock 清理异常", ex);
+                }
+
+                // Input Guard 尽早撤销，让玩家输入在 playback 恢复前重新生效。
+                try
+                {
+                    if (!UnregisterInputGuardHooks())
+                        failures.Add("input-guard-unpatch");
+                }
+                catch (Exception ex)
+                {
+                    failures.Add("input-guard-unpatch-exception");
+                    Log.Exception("DeterministicFrameScheduler: input guard 清理异常", ex);
+                }
+
+                // native playback teardown observer 与其它 hook 一起精确撤销。
+                try
+                {
+                    if (!UnregisterNativePlaybackStopObserver())
+                        failures.Add("native-playback-stop-observer-unpatch");
+                }
+                catch (Exception ex)
+                {
+                    failures.Add("native-playback-stop-observer-unpatch-exception");
+                    Log.Exception("DeterministicFrameScheduler: native playback stop observer 清理异常", ex);
                 }
 
                 try
@@ -1622,6 +1910,119 @@ namespace ADOFAI.Renderist.Export
             OnCanonicalCompletionRequested(__instance);
         }
 
+        // ================================================================
+        // native editor playback teardown observer
+        // ================================================================
+        //
+        // 当前 DLL 的 Esc 路径是：
+        //   scnEditor.Update
+        //     → if (Input.GetKeyDown(Escape) && playMode) { SwitchToEditMode(false); return; }
+        // 而 scnEditor.playMode 是**只读派生属性**，语义为
+        //   pausedInPlayMode ? true : !controller.paused
+        // 也就是说它并不表示「是否在播放」。旧实现只用它轮询判断 native playback 是否
+        // 停止；一旦暂停侧效应不再发生（例如 scrController.TogglePauseGame 被 Input Guard
+        // 抑制，而 scnGame.ResetScene 正是通过它把编辑器切回 paused），playMode 就恒为
+        // true，轮询再也命中不了，只能等 30 秒 frame-progress watchdog。
+        //
+        // 因此改为观察 exact native lifecycle 入口 scnEditor.SwitchToEditMode(bool)。
+        // 该 Postfix 只做观察与 RequestStop，不执行 cleanup、不改参数、不阻断 native 方法。
+
+        private static bool RegisterNativePlaybackStopObserver()
+        {
+            if (!UnregisterNativePlaybackStopObserver())
+                return false;
+
+            try
+            {
+                Harmony harmony = ModEntry.Harmony;
+                MethodInfo switchToEditMode = EditorGameReflection.EditorSwitchToEditModeMethod;
+                if (harmony == null || switchToEditMode == null)
+                {
+                    Log.Warn("MasterTimeline native playback stop observer unavailable: " +
+                             "SwitchToEditMode(bool) signature not found");
+                    return false;
+                }
+
+                _patchedEditorSwitchToEditMode = switchToEditMode;
+                _editorSwitchToEditModePatched = true;
+                harmony.Patch(switchToEditMode,
+                    postfix: new HarmonyMethod(typeof(DeterministicFrameScheduler),
+                        nameof(OnEditorSwitchToEditModePostfix)));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("DeterministicFrameScheduler: 注册 native playback stop observer 失败", ex);
+                UnregisterNativePlaybackStopObserver();
+                return false;
+            }
+        }
+
+        private static bool UnregisterNativePlaybackStopObserver()
+        {
+            Harmony harmony = ModEntry.Harmony;
+            if (_patchedEditorSwitchToEditMode == null)
+                return true;
+            if (harmony == null)
+                return false;
+            if (!_editorSwitchToEditModePatched)
+            {
+                _patchedEditorSwitchToEditMode = null;
+                return true;
+            }
+
+            try
+            {
+                MethodInfo postfix = AccessTools.Method(typeof(DeterministicFrameScheduler),
+                    nameof(OnEditorSwitchToEditModePostfix));
+                if (postfix == null)
+                    return false;
+                harmony.Unpatch(_patchedEditorSwitchToEditMode, postfix);
+                _editorSwitchToEditModePatched = false;
+                _patchedEditorSwitchToEditMode = null;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("DeterministicFrameScheduler: 撤销 native playback stop observer 失败", ex);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// scnEditor.SwitchToEditMode(bool) 的 Postfix。只作为 native lifecycle observer：
+        /// 记录一次现场日志并请求统一停止；真正 cleanup 由下一次 Tick 的 ProcessStop 执行。
+        ///
+        /// scope gate 必须能排除 Renderist 自己的 cleanup 调用（RestorePlayback →
+        /// SwitchToEditMode(false)）：ProcessStop 在 RestoreAll 之前已置 _running = false，
+        /// 且 RestoreAll 全程 _cleanupInProgress = true；两者任一都足以在此立即 return。
+        /// 这里不使用任何「忽略下一次调用」式的脆弱全局 flag。
+        /// </summary>
+        private static void OnEditorSwitchToEditModePostfix()
+        {
+            if (!_running || !_ownsPlayback || _cleanupInProgress ||
+                _pendingStopReason != null)
+                return;
+
+            // 只在本次 session 已经进入 native playback 生命周期之后才视为停止信号。
+            if (_status != SchedulerStatus.InitializationHold &&
+                _status != SchedulerStatus.Capturing)
+                return;
+
+            Log.Info("MasterTimeline native editor SwitchToEditMode observed: status=" +
+                     _status.ToString() +
+                     " playMode=" + FormatFlag(EditorGameReflection.ReadEditorPlayMode()) +
+                     " inStrictlyEditingMode=" +
+                     FormatFlag(EditorGameReflection.ReadEditorInStrictlyEditingMode()) +
+                     " controllerState=" + ToState(EditorGameReflection.ReadControllerState()) +
+                     " conductorActive=" +
+                     FormatFlag(EditorGameReflection.ReadConductorActiveInHierarchy()) +
+                     " paused=" + FormatFlag(EditorGameReflection.ReadControllerPaused()) +
+                     " outputFrameIndex=" + _outputFrameIndex.ToString(CultureInfo.InvariantCulture));
+
+            RequestStop("native-playback-stopped", "native-playback-stopped");
+        }
+
         private static bool RegisterConductorUpdateHook()
         {
             if (!UnregisterConductorUpdateHook())
@@ -1893,6 +2294,13 @@ namespace ADOFAI.Renderist.Export
         }
 
         private static string FormatAuto(bool? v)
+        {
+            if (!v.HasValue) return "unavailable";
+            return v.Value ? "true" : "false";
+        }
+
+        /// <summary>nullable bool 的统一日志格式（unavailable / true / false）。</summary>
+        private static string FormatFlag(bool? v)
         {
             if (!v.HasValue) return "unavailable";
             return v.Value ? "true" : "false";

@@ -12,7 +12,7 @@ namespace ADOFAI.Renderist
 {
     /// <summary>
     /// Unity Mod Manager entry point for ADOFAI Renderist.
-    /// Phase 3.4.0 deterministic editor export (MasterTimeline canonical completion + tail).
+    /// Phase 3.5.0 Render Source Isolation.
     /// Renderist remains passive towards replay / autoplay.
     /// </summary>
     public static class ModEntry
@@ -23,7 +23,7 @@ namespace ADOFAI.Renderist
         /// 当前 mod 版本。与 Info.json / csproj / 启动日志保持同步，
         /// 由 scripts/set-version.ps1 自动同步。
         /// </summary>
-        internal const string ModVersion = "0.3.4.0";
+        internal const string ModVersion = "0.3.5.0";
 
         internal static UnityModManager.ModEntry Mod;
         internal static UnityModManager.ModEntry.ModLogger Logger;
@@ -66,7 +66,7 @@ namespace ADOFAI.Renderist
 
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.3.4.0 (Phase 3.4.0 canonical completion + tail policy).");
+                Log.Info("Loaded ADOFAI Renderist 0.3.5.0 (Phase 3.5.0 Render Source Isolation).");
                 return true;
             }
             catch (Exception ex)

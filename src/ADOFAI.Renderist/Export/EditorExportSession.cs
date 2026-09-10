@@ -7,7 +7,7 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 确定性编辑器导出会话数据模型（Phase 3.4.0）。
+    /// 确定性编辑器导出会话数据模型（Phase 3.5.0）。
     ///
     /// 保存本阶段真实存在的信息：会话 ID、开始/结束时间、输出目录、当前状态、
     /// TickCount（Unity OnUpdate 推进次数，不是导出帧号）、OutputFps、tail / safety policy、
@@ -42,8 +42,11 @@ namespace ADOFAI.Renderist.Export
         public long TailFramesCaptured;
         public long CaptureRequestCount;
         public long CapturedFrameCount;
+        public string CaptureSource;
+        public long CaptureWidth;
+        public long CaptureHeight;
 
-        private const string PhaseLabel = "Phase 3.4.0 deterministic editor export";
+        private const string PhaseLabel = "Phase 3.5.0 Render Source Isolation";
         private const string ModeLabel = "editor-export-png-sequence";
         private const string MetadataFileName = "metadata.json";
 
@@ -69,6 +72,9 @@ namespace ADOFAI.Renderist.Export
             TailFramesCaptured = 0;
             CaptureRequestCount = 0;
             CapturedFrameCount = 0;
+            CaptureSource = null;
+            CaptureWidth = 0;
+            CaptureHeight = 0;
             StopReason = null;
             TerminationKind = null;
             CompletionSignal = null;
@@ -127,6 +133,9 @@ namespace ADOFAI.Renderist.Export
             AppendDoubleNullable(sb, "completionBpm", CompletionBpm, true);
             AppendDoubleNullable(sb, "pitch", Pitch, true);
             AppendLong(sb, "tailFramesCaptured", TailFramesCaptured, true);
+            AppendStringNullable(sb, "captureSource", CaptureSource, true);
+            AppendLong(sb, "captureWidth", CaptureWidth, true);
+            AppendLong(sb, "captureHeight", CaptureHeight, true);
             AppendLong(sb, "captureRequestCount", CaptureRequestCount, true);
             AppendLong(sb, "capturedFrameCount", CapturedFrameCount, true);
             sb.Length -= 2; // remove trailing ",\n"

@@ -33,6 +33,14 @@ namespace ADOFAI.Renderist.Export
         private static Type _tPortal;
         private static Type _tRdc;
         private static Type _tAsyncInputUtils;
+        private static Type _tScrCamera;
+        private static Type _tPlayerManager;
+
+        // Render Source（scrCamera 原生摄像机链）成员元数据。
+        // 只缓存成员描述，绝不缓存场景对象引用。
+        private static MemberInfo _mCameraBgStatic;
+        private static MemberInfo _mCameraBg;
+        private static MemberInfo _mCameraMain;
 
         private static PropertyInfo _pSongPosI;
         private static PropertyInfo _pSongPosMinusV;
@@ -52,6 +60,14 @@ namespace ADOFAI.Renderist.Export
         private static MethodInfo _mEditorSelectFloor;
         private static MethodInfo _mEditorSwitchToEditMode;
         private static MethodInfo _mEditorMultiSelectFloors;
+
+        // Input Guard：Renderist session 活跃期间抑制玩家输入的精确目标方法。
+        private static MethodInfo _mPlayerManagerAnyValidInput;
+        private static MethodInfo _mPlayerValidInputTriggered;
+        private static MethodInfo _mPlayerValidInputReleased;
+        private static MethodInfo _mPlayerCountValidKeysPressed;
+        private static MethodInfo _mEditorZoomCamera;
+        private static MethodInfo _mControllerTogglePauseGame;
 
         // ================================================================
         // API 可用性（启动前校验用）
@@ -93,6 +109,7 @@ namespace ADOFAI.Renderist.Export
             try { _tPortal = _tPortal ?? _gameAssembly.GetType("Portal"); } catch { }
             try { _tRdc = _tRdc ?? _gameAssembly.GetType("RDC"); } catch { }
             try { _tAsyncInputUtils = _tAsyncInputUtils ?? _gameAssembly.GetType("AsyncInputUtils"); } catch { }
+            try { _tPlayerManager = _tPlayerManager ?? _gameAssembly.GetType("scrPlayerManager"); } catch { }
 
             if (_tConductor != null)
             {
@@ -117,6 +134,12 @@ namespace ADOFAI.Renderist.Export
                 _mControllerChangeToStartState = _tController.GetMethod("ChangeToStartState",
                     BindingFlags.Public | BindingFlags.Instance,
                     null, Type.EmptyTypes, null);
+                // Input Guard：Space 暂停入口。Esc cancellation 走的是 scnEditor.Update 中
+                // 一个独立且更早的 KeyCode.Escape 分支（直接 SwitchToEditMode(false) 并 ret），
+                // 不经过本方法；见 PROJECT_UNDERSTANDING.md 第 11 节。
+                _mControllerTogglePauseGame = _tController.GetMethod("TogglePauseGame",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                    null, Type.EmptyTypes, null);
                 if (_tPlanet != null && _tPortal != null)
                 {
                     _mControllerOnLandOnPortal = _tController.GetMethod("OnLandOnPortal",
@@ -134,6 +157,30 @@ namespace ADOFAI.Renderist.Export
                 _mEditorSwitchToEditMode = _tEditor.GetMethod("SwitchToEditMode",
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
                     null, new[] { typeof(bool) }, null);
+                // Input Guard：官方滚轮缩放入口（真实签名 ZoomCamera(float, bool, bool)）。
+                _mEditorZoomCamera = _tEditor.GetMethod("ZoomCamera",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                    null, new[] { typeof(float), typeof(bool), typeof(bool) }, null);
+            }
+
+            if (_tPlayerManager != null)
+            {
+                _mPlayerManagerAnyValidInput = _tPlayerManager.GetMethod("AnyValidInputWasTriggered",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                    null, Type.EmptyTypes, null);
+            }
+
+            if (_tPlayer != null)
+            {
+                _mPlayerValidInputTriggered = _tPlayer.GetMethod("ValidInputWasTriggered",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                    null, Type.EmptyTypes, null);
+                _mPlayerValidInputReleased = _tPlayer.GetMethod("ValidInputWasReleased",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                    null, Type.EmptyTypes, null);
+                _mPlayerCountValidKeysPressed = _tPlayer.GetMethod("CountValidKeysPressed",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                    null, Type.EmptyTypes, null);
             }
 
             if (_tRdc != null)
@@ -286,6 +333,85 @@ namespace ADOFAI.Renderist.Export
         }
 
         // ================================================================
+        // Input Guard：session 期间的玩家输入 / 编辑器缩放 / 暂停入口
+        // ================================================================
+
+        /// <summary>
+        /// Input Guard 所需的 6 个精确目标方法是否全部解析成功。
+        /// 缺一即视为不可用：session 必须拒绝启动，而不是带着可被玩家干扰的
+        /// gameplay 继续导出。
+        /// </summary>
+        public static bool InputGuardApiAvailable
+        {
+            get
+            {
+                EnsureTypes();
+                return _mPlayerManagerAnyValidInput != null &&
+                       _mPlayerValidInputTriggered != null &&
+                       _mPlayerValidInputReleased != null &&
+                       _mPlayerCountValidKeysPressed != null &&
+                       _mEditorZoomCamera != null &&
+                       _mControllerTogglePauseGame != null;
+            }
+        }
+
+        /// <summary>不可用时列出缺失的目标，供启动拒绝原因诊断。</summary>
+        public static string DescribeMissingInputGuardApi()
+        {
+            EnsureTypes();
+            var missing = new List<string>();
+            if (_mPlayerManagerAnyValidInput == null) missing.Add("scrPlayerManager.AnyValidInputWasTriggered");
+            if (_mPlayerValidInputTriggered == null) missing.Add("scrPlayer.ValidInputWasTriggered");
+            if (_mPlayerValidInputReleased == null) missing.Add("scrPlayer.ValidInputWasReleased");
+            if (_mPlayerCountValidKeysPressed == null) missing.Add("scrPlayer.CountValidKeysPressed");
+            if (_mEditorZoomCamera == null) missing.Add("scnEditor.ZoomCamera(float,bool,bool)");
+            if (_mControllerTogglePauseGame == null) missing.Add("scrController.TogglePauseGame");
+            return missing.Count == 0 ? null : string.Join(",", missing.ToArray());
+        }
+
+        public static MethodInfo PlayerManagerAnyValidInputWasTriggeredMethod
+        {
+            get { EnsureTypes(); return _mPlayerManagerAnyValidInput; }
+        }
+
+        public static MethodInfo PlayerValidInputWasTriggeredMethod
+        {
+            get { EnsureTypes(); return _mPlayerValidInputTriggered; }
+        }
+
+        public static MethodInfo PlayerValidInputWasReleasedMethod
+        {
+            get { EnsureTypes(); return _mPlayerValidInputReleased; }
+        }
+
+        public static MethodInfo PlayerCountValidKeysPressedMethod
+        {
+            get { EnsureTypes(); return _mPlayerCountValidKeysPressed; }
+        }
+
+        public static MethodInfo EditorZoomCameraMethod
+        {
+            get { EnsureTypes(); return _mEditorZoomCamera; }
+        }
+
+        public static MethodInfo ControllerTogglePauseGameMethod
+        {
+            get { EnsureTypes(); return _mControllerTogglePauseGame; }
+        }
+
+        /// <summary>当前 scrController.paused 原始值（供被抑制的 TogglePauseGame 返回兼容结果）。</summary>
+        public static bool? ReadControllerPaused()
+        {
+            try
+            {
+                object controller = Controller();
+                if (controller == null || _tController == null) return null;
+                return ToBool(ReadInstanceMember(controller, _tController, "paused"));
+            }
+            catch { return null; }
+        }
+
+        // ================================================================
         // 实例访问
         // ================================================================
 
@@ -301,6 +427,147 @@ namespace ADOFAI.Renderist.Export
         public static Type FloorType
         {
             get { EnsureTypes(); return _tFloor; }
+        }
+
+        // ================================================================
+        // Render Source：当前 DLL 的 scrCamera 原生摄像机链
+        // ================================================================
+
+        /// <summary>
+        /// 解析当前 ADOFAI DLL 的 scrCamera 类型与三个谱面摄像机成员。
+        /// 只缓存成员元数据；解析失败时保持 null，下次调用会重试。
+        /// </summary>
+        private static void EnsureCameraChainTypes()
+        {
+            if (_tScrCamera != null) return;
+
+            EnsureTypes();
+            if (_gameAssembly == null) return;
+
+            try { _tScrCamera = _gameAssembly.GetType("scrCamera"); } catch { _tScrCamera = null; }
+            if (_tScrCamera == null) return;
+
+            _mCameraBgStatic = FindInstanceMember(_tScrCamera, "Bgcamstatic");
+            _mCameraBg = FindInstanceMember(_tScrCamera, "BGcam");
+            _mCameraMain = FindInstanceMember(_tScrCamera, "camobj");
+        }
+
+        /// <summary>
+        /// 读取当前 session 的 ADOFAI 原生谱面摄像机链。
+        ///
+        /// 已在当前本机 DLL（Assembly-CSharp FileVersion 0.4.3.0）静态确认：
+        ///   scrCamera : ADOBase（非 sealed）
+        ///   static scrCamera instance { get; set; }
+        ///   public UnityEngine.Camera Bgcamstatic / BGcam / camobj
+        ///
+        /// 每次调用都重新读取 scrCamera.instance 及其成员，因此每个新的 capture
+        /// ownership 都取得当前 session 的对象，不跨 session 缓存场景引用。
+        /// 本方法只读取；不修改 Camera 的任何状态。
+        /// 任一环节失败返回 false 与 machine-readable error。
+        /// </summary>
+        public static bool TryReadChartCameraChain(
+            out UnityEngine.Camera bgStaticCamera,
+            out UnityEngine.Camera bgCamera,
+            out UnityEngine.Camera mainCamera,
+            out string error)
+        {
+            bgStaticCamera = null;
+            bgCamera = null;
+            mainCamera = null;
+            error = null;
+
+            EnsureCameraChainTypes();
+
+            if (_tScrCamera == null)
+            {
+                error = "scr-camera-type-unavailable";
+                return false;
+            }
+
+            object instance = StaticValue(_tScrCamera, "instance");
+            if (instance == null)
+            {
+                error = "scr-camera-instance-unavailable";
+                return false;
+            }
+
+            UnityEngine.Camera chainBgStatic;
+            UnityEngine.Camera chainBg;
+            UnityEngine.Camera chainMain;
+
+            if (!TryReadCameraMember(instance, _mCameraBgStatic, "Bgcamstatic",
+                    out chainBgStatic, out error)) return false;
+            if (!TryReadCameraMember(instance, _mCameraBg, "BGcam",
+                    out chainBg, out error)) return false;
+            if (!TryReadCameraMember(instance, _mCameraMain, "camobj",
+                    out chainMain, out error)) return false;
+
+            bgStaticCamera = chainBgStatic;
+            bgCamera = chainBg;
+            mainCamera = chainMain;
+            return true;
+        }
+
+        private static bool TryReadCameraMember(object instance, MemberInfo member, string memberName,
+            out UnityEngine.Camera camera, out string error)
+        {
+            camera = null;
+            error = null;
+
+            if (member == null)
+            {
+                error = "scr-camera-member-missing:" + memberName;
+                return false;
+            }
+
+            object raw = ReadMemberValue(instance, member);
+            if (raw == null)
+            {
+                error = "scr-camera-member-unavailable:" + memberName;
+                return false;
+            }
+
+            if (!(raw is UnityEngine.Camera typed))
+            {
+                error = "scr-camera-member-not-a-camera:" + memberName;
+                return false;
+            }
+
+            // Unity 的 == 重载在这里区分“仍然是 Camera 但对象已销毁”。
+            if (typed == null)
+            {
+                error = "scr-camera-member-destroyed:" + memberName;
+                return false;
+            }
+
+            camera = typed;
+            return true;
+        }
+
+        private static MemberInfo FindInstanceMember(Type type, string name)
+        {
+            if (type == null) return null;
+            try
+            {
+                PropertyInfo property = type.GetProperty(name,
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (property != null && property.GetGetMethod(true) != null) return property;
+                return type.GetField(name,
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            }
+            catch { return null; }
+        }
+
+        private static object ReadMemberValue(object instance, MemberInfo member)
+        {
+            if (instance == null || member == null) return null;
+            try
+            {
+                if (member is PropertyInfo property) return property.GetValue(instance, null);
+                if (member is FieldInfo field) return field.GetValue(instance);
+                return null;
+            }
+            catch { return null; }
         }
 
         // ================================================================
@@ -404,11 +671,50 @@ namespace ADOFAI.Renderist.Export
                 : ReadPropertyValue(controller, _pState);
         }
 
+        /// <summary>
+        /// 读取 scnEditor.playMode。
+        ///
+        /// 重要：当前 DLL 的 playMode 是**只读派生属性**，不是「是否处于播放模式」的
+        /// flag。其 IL 语义等价于 `pausedInPlayMode ? true : !controller.paused`。
+        /// 因此它只反映暂停状态；是否存在编辑器 playback 必须靠 exact
+        /// SwitchToEditMode observer（见项目理解文档第 11/12 节），不能只靠本属性。
+        /// </summary>
         public static bool? ReadEditorPlayMode()
         {
             object editor = Editor();
             if (editor == null || _tEditor == null) return null;
             try { return ToBool(ReadInstanceMember(editor, _tEditor, "playMode")); }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// 只读诊断：scnEditor.inStrictlyEditingMode（当前 DLL 中是 private bool 字段）。
+        ///
+        /// 当前 DLL 中它只被写入、从不被游戏自身读取：`scnEditor.SwitchToEditMode(bool)`
+        /// 总是写入 true，`scnGame.Play` 也会写入。编辑器场景只走 SwitchToEditMode，
+        /// 因此编辑器内该值恒为 true（播放与编辑皆然），不能用作
+        /// 「playback 已停止」的判据。
+        /// </summary>
+        public static bool? ReadEditorInStrictlyEditingMode()
+        {
+            object editor = Editor();
+            if (editor == null || _tEditor == null) return null;
+            try { return ToBool(ReadInstanceMember(editor, _tEditor, "inStrictlyEditingMode")); }
+            catch { return null; }
+        }
+
+        /// <summary>只读诊断：scrConductor 所在 GameObject 是否 activeInHierarchy。</summary>
+        public static bool? ReadConductorActiveInHierarchy()
+        {
+            try
+            {
+                object conductor = Conductor();
+                if (conductor is UnityEngine.Component component && component != null)
+                {
+                    return component.gameObject != null && component.gameObject.activeInHierarchy;
+                }
+                return null;
+            }
             catch { return null; }
         }
 
