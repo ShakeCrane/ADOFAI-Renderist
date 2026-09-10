@@ -32,7 +32,7 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 | --- | --- |
 | 产品版本 | `0.3.5.0` |
 | 阶段 | `Phase 3.5.0 Render Source Isolation` |
-| Git 基线 | `main`；`0.3.5.0` checkpoint（见第 11 节） |
+| Git 基线 | `main`；`0.3.5.0` checkpoint 已提交为 `79706b3b67c7c8c03da2cde9a0177f49a9dc7ca2` |
 | ADOFAI | Steam public buildid `24397494`；`Assembly-CSharp.dll` FileVersion `0.4.3.0` |
 | Unity | `6000.3.10f1` / Mono |
 | UMM | `0.33.0` |
@@ -293,6 +293,7 @@ Safety / watchdog 绝不能把未完成谱面伪装成 Completed。
 
 ## 11. 发布与部署
 
+- `0.3.5.0` checkpoint：`79706b3b67c7c8c03da2cde9a0177f49a9dc7ca2`（`main`）。
 - 发布包固定为 `Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` 保持 Git 忽略。
 - 自动验证链：`dotnet build src/ADOFAI.Renderist/ADOFAI.Renderist.csproj -c Release -t:Rebuild` → `scripts/package-release.ps1 -Configuration Release -Force` → `scripts/verify-release-package.ps1`。
 - 部署使用 `scripts/copy-to-mods.ps1`（Release），只更新 `Mods\ADOFAI.Renderist\` 下本 Mod 自身文件，不触碰其他 Mod；可选 `-CleanRuntimeCache` 清除 UMM 运行时缓存。
