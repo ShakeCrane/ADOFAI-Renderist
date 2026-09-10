@@ -46,6 +46,13 @@ packages/
 project.lock.json
 project.assets.json
 
+# ------------------------------------------------------------
+# Agent
+# ------------------------------------------------------------
+.agents/
+.claude/
+.codex/
+.zcode/
 
 # ------------------------------------------------------------
 # Local build configuration
@@ -171,5 +178,3 @@ Desktop.ini
 # Local build bootstrap (SDK / NuGet feed / caches)
 # ------------------------------------------------------------
 /.build-tools/
-
-
