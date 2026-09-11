@@ -51,6 +51,11 @@ project.assets.json
 .zcode/
 
 # ------------------------------------------------------------
+# Local investigation notes
+# ------------------------------------------------------------
+/docs/ADOFAI_CLASS_ATLAS.md
+
+# ------------------------------------------------------------
 # Local build configuration
 # ------------------------------------------------------------
 /build/local.props
@@ -106,14 +111,14 @@ project.assets.json
 # UMM generated packages / release artifacts
 # ------------------------------------------------------------
 /dist/
-/artifacts/
-/publish/
-/published/
-/out/
-/output/
-/packages/
-/release/
-/releases/
+artifacts/
+publish/
+published/
+out/
+output/
+packages/
+release/
+releases/
 
 *.zip
 *.7z
