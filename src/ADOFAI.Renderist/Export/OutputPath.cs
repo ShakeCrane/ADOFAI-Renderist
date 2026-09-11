@@ -4,7 +4,7 @@ using System.IO;
 using UnityEngine;
 using ADOFAI.Renderist.Logging;
 
-namespace ADOFAI.Renderist.Capture
+namespace ADOFAI.Renderist.Export
 {
     /// <summary>
     /// Resolves and validates deterministic editor-export output directories.

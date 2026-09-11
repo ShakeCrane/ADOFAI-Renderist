@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using ADOFAI.Renderist.Capture;
 using ADOFAI.Renderist.Logging;
 
 namespace ADOFAI.Renderist.Export

@@ -1,7 +1,6 @@
 using System;
 using System.Globalization;
 using System.IO;
-using ADOFAI.Renderist.Capture;
 using ADOFAI.Renderist.Logging;
 using UnityEngine;
 

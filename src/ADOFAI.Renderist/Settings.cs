@@ -17,7 +17,7 @@ namespace ADOFAI.Renderist
         /// <summary>
         /// Optional absolute output directory. Empty = use the default under
         /// Application.persistentDataPath. Validated and may be rejected; see
-        /// Capture.OutputPath for the reject-list rules.
+        /// Export.OutputPath for the reject-list rules.
         /// </summary>
         public string OutputDirectory = string.Empty;
 

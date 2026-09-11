@@ -1,5 +1,3 @@
-using ADOFAI.Renderist.Capture;
-
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>

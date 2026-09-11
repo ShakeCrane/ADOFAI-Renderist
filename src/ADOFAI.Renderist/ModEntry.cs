@@ -4,7 +4,6 @@ using System.IO;
 using HarmonyLib;
 using UnityEngine;
 using UnityModManagerNet;
-using ADOFAI.Renderist.Capture;
 using ADOFAI.Renderist.Export;
 using ADOFAI.Renderist.Logging;
 
