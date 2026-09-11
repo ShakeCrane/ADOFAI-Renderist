@@ -28,12 +28,8 @@ x86/
 .idea/
 *.sln.iml
 
-# VS Code local settings
-.vscode/*
-!.vscode/extensions.json
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
+# VS Code local settings (editor convenience only; no canonical build logic)
+.vscode/
 
 
 # ------------------------------------------------------------
@@ -67,24 +63,11 @@ project.assets.json
 
 # ------------------------------------------------------------
 # Local proprietary / binary references
-# Do not commit ADOFAI, Unity, UMM, or third-party mod DLLs
+# Do not commit ADOFAI, Unity, UMM, or third-party mod DLLs.
+# The tracked references/ placeholder tree has been removed; this
+# rule still blocks anything a developer keeps there locally.
 # ------------------------------------------------------------
-/references/ADOFAI/*
-!/references/ADOFAI/.gitkeep
-
-/references/Unity/*
-!/references/Unity/.gitkeep
-
-/references/UMM/*
-!/references/UMM/.gitkeep
-
-/references/**/*.xml
-
-/references/Mods/*
-!/references/Mods/.gitkeep
-
-/references/Decompiled/*
-!/references/Decompiled/.gitkeep
+/references/
 
 
 # ------------------------------------------------------------

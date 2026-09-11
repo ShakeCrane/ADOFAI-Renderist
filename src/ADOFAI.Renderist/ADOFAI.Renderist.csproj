@@ -97,7 +97,7 @@
   -->
   <Target Name="VerifyLocalProps" BeforeTargets="BeforeBuild">
     <Error Condition="'$(AdofaiManagedDir)' == '' or '$(AdofaiUmmDir)' == ''"
-           Text="Local reference paths are not configured. Run scripts/prepare-references.ps1 (or copy build/local.props.example to build/local.props and edit it). See references/LOCAL_SETUP.md." />
+           Text="Local reference paths are not configured. Run scripts/prepare-references.ps1 (or copy build/local.props.example to build/local.props and edit it). See build/LOCAL_SETUP.md." />
   </Target>
 
 </Project>

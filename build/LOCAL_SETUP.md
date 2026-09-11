@@ -21,7 +21,7 @@ Do not infer the supported game build from a human-facing version label alone. T
 
 ## Local paths
 
-Tracked placeholders under `references/` are for local inspection only. `build/local.props` is generated locally and gitignored.
+Compile-time references are read directly from the developer's own ADOFAI / UMM installation. The repository does not track a `references/` tree; `build/local.props` is generated locally by the script below and is gitignored.
 
 Typical Steam install:
 
@@ -89,12 +89,13 @@ dist/ADOFAI.Renderist.zip
 - Never commit `build/local.props`.
 - Never commit ADOFAI, Unity, UMM, Harmony or third-party Mod DLLs.
 - Never commit decompiled game source.
-- `references/` stays placeholder-only in Git.
 - `dist/`, `bin/`, `obj/` and local runtime caches stay untracked.
 - Re-run `prepare-references.ps1` after an ADOFAI / Unity / UMM update; unsupported ADOFAI baselines must not be treated as compatible without a new project validation cycle.
 
-To clear local reference configuration while preserving `.gitkeep` placeholders:
+To remove the local-only build configuration (`build/local.props`):
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\clean-references.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\clean-local-config.ps1
 ```
+
+Use `-WhatIf` to preview without deleting. `scripts/prepare-references.ps1` regenerates the file on the next run.

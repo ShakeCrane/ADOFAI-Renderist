@@ -14,7 +14,7 @@
     or, on a non-default Steam library:
       <SteamLibrary>\steamapps\common\A Dance of Fire and Ice
 
-    See references/LOCAL_SETUP.md for the full setup workflow.
+    See build/LOCAL_SETUP.md for the full setup workflow.
   -->
 
   <PropertyGroup>

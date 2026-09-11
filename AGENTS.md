@@ -187,12 +187,7 @@ TargetFramework net48
 - 第三方 Mod DLL
 - 游戏反编译源码
 
-本地引用使用：
-
-```text
-references/
-build/local.props
-```
+本地编译引用来自开发者实际的 ADOFAI / UMM 安装；`scripts/prepare-references.ps1` 负责验证当前支持的 ADOFAI / Unity / UMM 基线，并生成 **ignored** 的 `build/local.props`（由 `Directory.Build.props` 导入，供 `.csproj` 解析 `AdofaiManagedDir` / `AdofaiUmmDir`）。仓库不跟踪 `references/`。
 
 除非任务明确需要，否则不要引入 `Assembly-CSharp.dll`。
 

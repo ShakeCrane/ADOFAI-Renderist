@@ -7,7 +7,7 @@
 
     Imports the developer-local reference path configuration (build/local.props),
     which must define $(AdofaiInstallDir), $(AdofaiManagedDir), $(AdofaiUmmDir).
-    See build/local.props.example and references/LOCAL_SETUP.md.
+    See build/local.props.example and build/LOCAL_SETUP.md.
   -->
 
   <Import Project="$(MSBuildThisFileDirectory)build\local.props"
