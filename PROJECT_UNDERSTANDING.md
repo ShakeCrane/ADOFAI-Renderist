@@ -22,7 +22,7 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 - 不提交游戏、Unity、UMM、Harmony、第三方 Mod DLL 或反编译源码
 - README 由用户维护，默认不修改
 - 发布包固定为 `Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`
-- 四位版本号；`0.3.4.0 → 0.3.5.0` 已获用户明确批准并已同步
+- 四位版本号；`0.3.4.0 → 0.3.5.0` 与 `0.3.5.0 → 0.3.5.1` 均已获用户明确批准并已同步
 
 ---
 
@@ -30,9 +30,9 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 产品版本 | `0.3.5.0` |
+| 产品版本 | `0.3.5.1` |
 | 阶段 | `Phase 3.5.0 Render Source Isolation` |
-| Git 基线 | `main`；`0.3.5.0` checkpoint 已提交为 `79706b3b67c7c8c03da2cde9a0177f49a9dc7ca2` |
+| Git 基线 | `main`；`0.3.5.1` 收敛提交见本文件 §11 |
 | ADOFAI | Steam public buildid `24397494`；`Assembly-CSharp.dll` FileVersion `0.4.3.0` |
 | Unity | `6000.3.10f1` / Mono |
 | UMM | `0.33.0` |
@@ -123,15 +123,18 @@ scrController.OnLandOnPortal 被 Postfix 观察
 - 逐 Camera 处理完成后确认是否仍有 live Camera 精确引用 `captureTarget`：仍有则保留 `captureTarget` 与 ownership、返回失败供下次重试，**绝不** Release / Destroy 仍被引用的 RenderTexture；无则 `Release()` + `Destroy()` 并清空引用与冻结尺寸。
 - 全部 cleanup/restore 幂等、partial-safe、retry-safe。`RenderTexture.active` 只在单次 `ReadPixels` 临界区内改变，`finally` 恢复。
 - cleanup 顺序保持：先停 capture source 与全部 hook，再恢复 `RDC.auto` / 编辑器选择 / playback，最后恢复 Unity timing。
+- **`EnsureCleanedUp(stopEvent, stopReason)` 是统一 ownership 收敛入口**：`_running` 时先 `StopNow` 再走 residual gate，非 running 时直接重试 `RestoreAll`；幂等、可重复调用，且不依赖 controller session 是否 terminal（**session terminal ≠ scheduler owns nothing**）。
+- **residual ownership 跨调用保留已实机验证**：`RestoreAll` **不短路**，逐项尝试恢复并收集 `failures`；单项失败不会阻止其余项完成，但 `_restored` / `_savedRdcAuto` / `_savedSelectedFloorSeqs` **只在 `failures.Count == 0` 时清零**。因此 cleanup 失败后 residual 会真实保留到**下一次外部调用**（下一次 `Start` 的 `ValidatePreStartConditions`、terminal session 的 `Stop`/`Cancel`、`OnToggle(false)` 的 Mod disable），并在那里补做成功。此时 session 层 stopReason 可能仍是硬编码的 `controller-fail`，`cleanup-failed:<失败项列表>` 只出现在 scheduler 层与启动拒绝原因中。
+- Start gate 与 terminal 收敛共用同一 retry 语义：`ValidatePreStartConditions → EnsurePreviousRunCleanedUp → RestoreAll`。只要 residual 未清零，新的 Start 会被 `cleanup-failed:*` 拒绝且**不创建 session 目录**（gate 在目录创建之前）。
 
 ---
 
 ## 4. 关键模块
 
 - `MasterTimeline`：FrameIndex 是唯一逻辑时间 authority。
-- `PlaybackLifecycleHandoff`：关联 Renderist-owned `editor.Play()` 的 `StateEngine.Changed` 与 `OnMusicScheduled`。
+- `PlaybackLifecycleHandoff`：关联 Renderist-owned `editor.Play()` 的 `StateEngine.Changed` 与 `OnMusicScheduled`。**`IsReady` 的前置条件是全部满足**：`PlayRequested && PlayReturned && SawStart && SawMusicScheduled && SawCountdown && SawPlayerControl && 当前 state=="PlayerControl" && playerAlive && !paused`。其中任一（尤其 `SawCountdown`：必须真的观察到一次 `Countdown` 状态提交）缺失，`InitializationHold` 就会每个 Tick 提前返回、永不释放，session 最终以 `native-playback-stopped` 取消且 `outputFrameIndex` 恒为 0。
 - `EditorVisualClock`：强制 `songposition_minusi` getter/setter，并精确撤销 Harmony Patch。
-- `RenderistAutoPlay`：按 `nextFloor.entryTime` 消费 due floor；`RDC.auto` 只在单次官方 `Hit(true)` 事务内临时置 true 并恢复。它不拥有时间，也不决定 session 完成。
+- `RenderistAutoPlay`：按 `nextFloor.entryTime` 消费 due floor；`RDC.auto` 只在单次官方 `Hit(true)` 事务内临时置 true 并恢复。它不拥有时间，也不决定 session 完成。**progression bound 已移除固定魔数**：单次 `CatchUp`（一个输出帧）的合法命中上界是**当前谱面 `floors.Count`**（每次 `Hit` 都要求 `seqID` 严格向前）；`floors` 不可读时 fail-closed。成功条件是 canonical progression 严格单调向前：`after == before` 与 `after < before` 都立即 `hit-progression-not-forward` fail-closed；多格前进允许（记录但接受）。bound 耗尽后的尾部检查与主循环**同一判定**：`next == null` → success；`entryTime` 不可读 / NaN / Infinity → `next-entry-time-unavailable` fail-closed；仍 due → `autoplay-progression-bound-exceeded`；未 due → success。
 - `EndTailPolicy`：校验并把单一玩家输入的 Frames / Seconds / Beats 换算为 output-frame tail。
 - `DeterministicFrameScheduler`：启动、Initialization Hold、逐帧事务、canonical completion 观测、native Esc observer、input guard、冻结/解析 tail、capture commit、停止与恢复。
 - `FrameCaptureDriver`：同步 PNG 后端，带 generation 隔离。两阶段生命周期：`Start()` 只建立 generation / host / coroutine；`TryActivateCameraSource()` 才取得当前 session 的摄像机链并接管 `targetTexture`。source 未激活时 `RequestCapture` 一律拒绝，不回退 Screen framebuffer。
@@ -228,13 +231,50 @@ Safety / watchdog 绝不能把未完成谱面伪装成 Completed。
 - Running 期间 End Tail 配置 UI 被禁用（Start 时冻结）。
 - canonical completion 出现在 frame 201，证明固定 180 帧不再是正常终止 authority。
 
+### 0.3.5.1 — RUNTIME VALIDATED（用户实机，异常路径与边界专项）
+
+**cleanup / residual ownership 收敛**
+
+- 异常路径（会话启动阶段故障、capture 后端启动故障）后 cleanup 全项收敛：`[debug] restored captureFramerate=… targetFrameRate=… vSyncCount=… rdcAuto=…` 只在 `failures.Count == 0` 时打印，是"全项收敛"的正面证据。
+- residual 跨调用保留与补做已实测：cleanup 失败后 session 进入 terminal 且 residual 真实保留；下一次 `Start` 被 `cleanup-failed:*` 拒绝（**且不创建 session 目录**）；解除故障后同一 `Start` 路径先补做 `RestoreAll` 再正常启动。
+- terminal session 的 Mod disable 链路（`OnToggle(false) → Cancel → EnsureCleanedUp`）同样能补做 residual；成功时**不打印** `确定性帧调度器已停止`（`_running == false`，不走 `ProcessStop`），唯一正面证据是那条 `restored` debug 行。
+- 已确认的 residual 清理项与恢复顺序：capture host / 全部 hook / forced clock / input guard / lifecycle handoff / playback / 编辑器选择 / Unity timing / `RDC.auto`。cleanup 失败时 `RDC.auto` ownership 会作为唯一残留项保留到下次补做。
+- idle（无任何 ownership）时的 disable/enable 是安全 no-op：`EnsureCleanedUp` 走 `!HasResidualOwnership()` 快速返回分支，不执行 `RestoreAll`、不打印 `restored`、不产生 `cleanup-failed`。
+
+**progression bound（单输出帧高频命中）**
+
+- 固定 `MaxHitsPerFrame` 魔数已移除，上界改为 `floors.Count` 后已实测通过：单输出帧 27–28 次连续命中在多个连续帧上稳定成立，progression 逐次 `+1` 严格单调、零违例、零链条断裂，未出现 `autoplay-progression-bound-exceeded` 或任何其它 fail-closed 误报。
+- 高密度谱需保证 `floors.Count` 显著大于单帧命中数（`progressionBound = floors.Count`，谱面过短会失去测试意义）。
+- 实践换算：`floorsPerFrame ≈ B_eff / (60 × outputFps)`（`B_eff = scrConductor.bpm × scrFloor.speed`），实测与预测吻合。
+
+**completion + End Tail（高密度谱回归）**
+
+- 高密度谱完整跑通 canonical completion：`OnLandOnPortal`（state 仍为 `PlayerControl`）→ `Won` 确认 → `canonical-completion-tail-drained` / `terminationKind=canonical-completion`；completion 当帧仍 commit，tail 帧数精确等于 `resolvedTailFrames`，`captureRequestCount == capturedFrameCount`。
+- 多帧连续高频命中不影响完成语义与 tail 计数；末 floor（`nextFloor=null`）正常命中，未触发 `next-entry-time-unavailable`。
+
+**多轮连续导出**
+
+- 同一游戏进程内连续多次导出（含 Completed 与 Esc Cancelled 交替）无 residual 累积：每一轮都有自己独立的一次 `restored`，无 gate 拒绝、无 `cleanup-failed`。
+- Completed 之后控制器停在 `Won`，下一次 `Start` **不**经 `TryBeginTerminalControllerRearm`（`Won` 不是 Fail/Fail2），而是由官方 `editor.Play()` 自行重置 `Won → Start → Countdown → PlayerControl`；该路径已实测正常。
+
+**RDC.auto 与官方 Auto 模式互斥**
+
+- `RDC.auto == true`（ADOFAI 编辑器自身 Auto / 自动命中处于开启状态）会在 Start 阶段破坏 session 前置条件：控制器可能在 `InitializationHold` 期间就被游戏自身打到 `Won` 并触发 native teardown，于是永远观察不到 `Countdown` 状态提交，`PlaybackLifecycleHandoff.IsReady` 恒为 false，`InitializationHold` 永不释放，session 以 `native-playback-stopped` 取消且 `outputFrameIndex` 恒为 0（未接管捕获）。
+- 该情况下 Renderist **不会**接管相机、不写帧，且**不修改游戏原有的 `RDC.auto` 值**（`savedRdcAuto` 原样恢复）——属正确的 fail-safe，不是缺陷。
+- 因此实机验证与正常使用都应保持编辑器 Auto **关闭**；判定任何 session 是否有效，必须先确认日志中出现 `InitializationHold` 之后完整的 `Countdown → PlayerControl → lifecycle-ready → capture source active` 序列，再解读 `hitsThisFrame` 等帧级指标。
+
+**编排（高密度谱的可用结构）**
+
+- 谱面应从常规 BPM 起步、把高密度 burst 放在中后段、并在终点前回到常规 BPM 收尾到 portal；开局直接进入极端状态会让关卡在 lifecycle 完成前就结束。实测可行的梯度是"常规 BPM 起步 → 逐级提速到目标 burst → 常规 BPM 收尾"。
+
 ### 尚未验证 / 仍需更广泛验证
 
-- `safetyFrameLimit=36000` 的专门异常注入：只有静态代码 / build 证据，未做 runtime injection。
+- `safetyFrameLimit=36000` 的**耗尽**注入：仍只有静态代码 / build 证据，未做 runtime validation。（cleanup、会话启动、capture 后端启动、autoplay progression 等异常路径已完成注入式实机验证，见 0.3.5.1 小节。）
 - 任意 FPS / pitch 组合、长时间大规模导出稳定性。
 - 更极端的复杂谱面类型：BPM change、Twirl、Midspin、复杂角度 / 旋转方向、event-heavy chart、checkpoint / 特殊 startup（Hold 已实测正常）。
 - custom resolution / supersampling、audio capture、FFmpeg、replay。
 - Preview Bridge。
+- native Esc teardown 期间 Unity 引擎会打印 `Coroutine couldn't be started because the the game object 'Conductor' is inactive!`（无 mod 前缀）。静态证据指向 native teardown，Renderist 唯一的 `StartCoroutine` 位于自有 host GameObject，未观察到功能性影响；**未做禁用 mod 的 A/B 对照**，仍属待确认。
 
 ---
 
@@ -293,7 +333,7 @@ Safety / watchdog 绝不能把未完成谱面伪装成 Completed。
 
 ## 11. 发布与部署
 
-- `0.3.5.0` checkpoint：`79706b3b67c7c8c03da2cde9a0177f49a9dc7ca2`（`main`）。
+- 版本历史：`0.3.5.0` checkpoint = `79706b3b67c7c8c03da2cde9a0177f49a9dc7ca2`；`0.3.5.1` 为异常路径 ownership 收敛与 autoplay progression bound 的修订版本。
 - 发布包固定为 `Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` 保持 Git 忽略。
 - 自动验证链：`dotnet build src/ADOFAI.Renderist/ADOFAI.Renderist.csproj -c Release -t:Rebuild` → `scripts/package-release.ps1 -Configuration Release -Force` → `scripts/verify-release-package.ps1`。
 - 部署使用 `scripts/copy-to-mods.ps1`（Release），只更新 `Mods\ADOFAI.Renderist\` 下本 Mod 自身文件，不触碰其他 Mod；可选 `-CleanRuntimeCache` 清除 UMM 运行时缓存。

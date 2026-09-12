@@ -22,7 +22,7 @@ namespace ADOFAI.Renderist
         /// 当前 mod 版本。与 Info.json / csproj / 启动日志保持同步，
         /// 由 scripts/set-version.ps1 自动同步。
         /// </summary>
-        internal const string ModVersion = "0.3.5.0";
+        internal const string ModVersion = "0.3.5.1";
 
         internal static UnityModManager.ModEntry Mod;
         internal static UnityModManager.ModEntry.ModLogger Logger;
@@ -65,7 +65,7 @@ namespace ADOFAI.Renderist
 
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.3.5.0 (Phase 3.5.0 Render Source Isolation).");
+                Log.Info("Loaded ADOFAI Renderist 0.3.5.1 (Phase 3.5.0 Render Source Isolation).");
                 return true;
             }
             catch (Exception ex)
