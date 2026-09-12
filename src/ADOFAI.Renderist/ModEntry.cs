@@ -121,35 +121,12 @@ namespace ADOFAI.Renderist
                 DrawOutputDirectoryGui();
                 GUILayout.Space(8f);
                 DrawEditorExportGui();
-#if DEBUG
-                DrawFaultInjectionGui();
-#endif
             }
             catch (Exception ex)
             {
                 Logger?.LogException("OnGUI failed", ex);
             }
         }
-
-#if DEBUG
-        /// <summary>临时 fault injection 面板。仅 Debug 构建存在；验证完成后随注入点一并删除。</summary>
-        private static void DrawFaultInjectionGui()
-        {
-            GUILayout.Space(10f);
-            GUILayout.Label("[DEV] Fault injection（临时验证，仅 Debug 构建）", GUI.skin.label);
-            FaultInjection.F1_StartSessionAfterSchedulerStart = GUILayout.Toggle(
-                FaultInjection.F1_StartSessionAfterSchedulerStart, " F1 StartSession 异常（TryStart 成功后）");
-            FaultInjection.F2_RdcAutoRestoreForceFail = GUILayout.Toggle(
-                FaultInjection.F2_RdcAutoRestoreForceFail,
-                " F2 RDC.auto 恢复【持续失败】——验证期间需保持开启，验证 residual 保留后手动关闭");
-            FaultInjection.F3a_CaptureStartAfterAddComponent = GUILayout.Toggle(
-                FaultInjection.F3a_CaptureStartAfterAddComponent, " F3a Capture Start：AddComponent 后异常");
-            FaultInjection.F3b_CaptureStartAfterConfigure = GUILayout.Toggle(
-                FaultInjection.F3b_CaptureStartAfterConfigure, " F3b Capture Start：Configure 后异常");
-            FaultInjection.F4_SkipOneHit = GUILayout.Toggle(
-                FaultInjection.F4_SkipOneHit, " F4 跳过一次 Hit（progression 不前进）");
-        }
-#endif
 
         /// <summary>
         /// 刷新 EditorExportReadiness 报告缓存。每 0.5 秒最多一次，无副作用。

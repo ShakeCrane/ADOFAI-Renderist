@@ -213,12 +213,6 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
-#if DEBUG
-                // TEMPORARY fault injection F1（验证后随 FaultInjection.cs 一并删除）。
-                if (FaultInjection.Consume(ref FaultInjection.F1_StartSessionAfterSchedulerStart, "F1"))
-                    throw new InvalidOperationException("fault-injection:F1-start-session-after-scheduler-start");
-#endif
-
                 CopyFrozenEndTailFromScheduler(session);
                 session.State = EditorExportState.Running;
                 session.StateDetail = "确定性帧调度器运行中。";

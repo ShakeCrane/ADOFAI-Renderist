@@ -127,20 +127,7 @@ namespace ADOFAI.Renderist.Export
                         }
 
                         PrepareHitState(player, controller);
-#if DEBUG
-                        // TEMPORARY fault injection F4（验证后随 FaultInjection.cs 一并删除）：
-                        // 跳过官方 Hit 调用但仍走原事务路径，模拟 progression 不前进。
-                        if (FaultInjection.Consume(ref FaultInjection.F4_SkipOneHit, "F4"))
-                        {
-                            result = null;
-                        }
-                        else
-                        {
-                            result = _mPlayerHit.Invoke(player, new object[] { true });
-                        }
-#else
                         result = _mPlayerHit.Invoke(player, new object[] { true });
-#endif
                         hitCount++;
 
                         Log.Info("MasterTimeline Hit: frameIndex=" + frameIndex.ToString(CultureInfo.InvariantCulture) +

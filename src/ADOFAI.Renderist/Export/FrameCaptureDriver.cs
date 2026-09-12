@@ -99,18 +99,8 @@ namespace ADOFAI.Renderist.Export
                 UnityEngine.Object.DontDestroyOnLoad(host);
 
                 behaviour = host.AddComponent<CaptureHostBehaviour>();
-#if DEBUG
-                // TEMPORARY fault injection F3a（验证后随 FaultInjection.cs 一并删除）。
-                if (FaultInjection.Consume(ref FaultInjection.F3a_CaptureStartAfterAddComponent, "F3a"))
-                    throw new InvalidOperationException("fault-injection:F3a-capture-start-after-addcomponent");
-#endif
                 behaviour.Configure(outputDirectory, string.IsNullOrEmpty(prefix) ? "frame_" : prefix,
                     zeroPadWidth < 1 ? 1 : zeroPadWidth, onResult, generation);
-#if DEBUG
-                // TEMPORARY fault injection F3b（验证后随 FaultInjection.cs 一并删除）。
-                if (FaultInjection.Consume(ref FaultInjection.F3b_CaptureStartAfterConfigure, "F3b"))
-                    throw new InvalidOperationException("fault-injection:F3b-capture-start-after-configure");
-#endif
 
                 // 静态 ownership 只在全部启动步骤成功后交接；此前 host/behaviour
                 // 属于局部 ownership，中途异常由 catch 就地清理。

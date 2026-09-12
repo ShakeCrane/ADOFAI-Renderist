@@ -1584,16 +1584,6 @@ namespace ADOFAI.Renderist.Export
         private static bool RestoreRdcAuto()
         {
             if (!_savedRdcAuto.HasValue) return true;
-#if DEBUG
-            // TEMPORARY fault injection F2（验证后随 FaultInjection.cs 一并删除）。
-            // 持续失败：开启期间每一次调用都失败且不自动复位，使 _savedRdcAuto 保持
-            // 非 null（RDC.auto residual ownership 未被错误清零），只有用户手动关闭
-            // 开关后的下一次 cleanup retry 才允许真正恢复。
-            if (FaultInjection.Persistent("F2", FaultInjection.F2_RdcAutoRestoreForceFail))
-            {
-                return false;
-            }
-#endif
             if (!EditorGameReflection.TryWriteRdcAuto(_savedRdcAuto.Value))
             {
                 Log.Warn("DeterministicFrameScheduler: RDC.auto 恢复失败。");
