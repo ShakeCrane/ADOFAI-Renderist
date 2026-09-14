@@ -7,7 +7,7 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 确定性编辑器导出会话数据模型（Phase 3.5.0）。
+    /// 确定性编辑器导出会话数据模型（Phase 3.6.0）。
     ///
     /// 保存本阶段真实存在的信息：会话 ID、开始/结束时间、输出目录、当前状态、
     /// TickCount（Unity OnUpdate 推进次数，不是导出帧号）、OutputFps、tail / safety policy、
@@ -46,7 +46,7 @@ namespace ADOFAI.Renderist.Export
         public long CaptureWidth;
         public long CaptureHeight;
 
-        private const string PhaseLabel = "Phase 3.5.0 Render Source Isolation";
+        private const string PhaseLabel = "Phase 3.6.0 Render Time Determinism";
         private const string ModeLabel = "editor-export-png-sequence";
         private const string MetadataFileName = "metadata.json";
 

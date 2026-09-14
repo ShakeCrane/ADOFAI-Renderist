@@ -30,9 +30,9 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 产品版本 | `0.3.5.1` |
-| 阶段 | `Phase 3.5.0 Render Source Isolation` |
-| Git 基线 | `main`；`0.3.5.1` 收敛提交见本文件 §11 |
+| 产品版本 | `0.3.6.0` |
+| 阶段 | `Phase 3.6.0 Render Time Determinism` |
+| Git 基线 | `main`；`0.3.6.0` 收敛内容见本文件 §11 |
 | ADOFAI | Steam public buildid `24397494`；`Assembly-CSharp.dll` FileVersion `0.4.3.0` |
 | Unity | `6000.3.10f1` / Mono |
 | UMM | `0.33.0` |
@@ -76,7 +76,7 @@ FrameIndex N
   → tail 排空后 Completed；否则 N++
 ```
 
-关键不变量：**Frame N 的 PNG 没有成功写盘，就不 commit N，也不开始 N+1。** `MasterTimeline` 的 FrameIndex 是唯一逻辑时间 authority；wall clock、Unity Update 次数与 audio 都不推进时间。
+关键不变量：**Frame N 的 PNG 没有成功写盘，就不 commit N，也不开始 N+1。** `MasterTimeline` 的 FrameIndex 是唯一 **export / chart timeline** authority；wall clock 与 audio 都不推进它。（引擎侧时间另由 `Time.captureFramerate` 决定，见 §3.7——不要把它读成"MasterTimeline 直接拥有全部 Unity engine state"。）
 
 ### 3.3 Completion
 
@@ -127,14 +127,44 @@ scrController.OnLandOnPortal 被 Postfix 观察
 - **residual ownership 跨调用保留已实机验证**：`RestoreAll` **不短路**，逐项尝试恢复并收集 `failures`；单项失败不会阻止其余项完成，但 `_restored` / `_savedRdcAuto` / `_savedSelectedFloorSeqs` **只在 `failures.Count == 0` 时清零**。因此 cleanup 失败后 residual 会真实保留到**下一次外部调用**（下一次 `Start` 的 `ValidatePreStartConditions`、terminal session 的 `Stop`/`Cancel`、`OnToggle(false)` 的 Mod disable），并在那里补做成功。此时 session 层 stopReason 可能仍是硬编码的 `controller-fail`，`cleanup-failed:<失败项列表>` 只出现在 scheduler 层与启动拒绝原因中。
 - Start gate 与 terminal 收敛共用同一 retry 语义：`ValidatePreStartConditions → EnsurePreviousRunCleanedUp → RestoreAll`。只要 residual 未清零，新的 Start 会被 `cleanup-failed:*` 拒绝且**不创建 session 目录**（gate 在目录创建之前）。
 
+### 3.7 Render Time（0.3.6.0）
+
+职责划分必须区分两层，不要混为一谈：
+
+- **chart timeline**：`MasterTimeline.FrameIndex` 是唯一 authority（§3.2）。
+- **engine time**：由 `Time.captureFramerate` 承担，**不是** `MasterTimeline` 直接拥有。
+
+已实机确认（60 / 30 FPS 两组导出，见 §8）：
+
+```text
+Time.captureFramerate = OutputFps
+Time.captureDeltaTime = 1 / OutputFps
+Time.deltaTime        = 1 / OutputFps
+```
+
+并且 **capture transaction 中 1 个 output frame 对应 1 个连续 Unity frame**（output frame index 与 `Time.frameCount` 均严格 +1）。因此 `outputFps` 是输出采样密度：引擎侧 scaled 时间每帧恰好前进 `1/OutputFps`。
+
+- **`Time.timeScale` 不是 Renderist-owned state**。Renderist 只读（诊断）不写。output capture frames 实机恒为 `1`；`Play` / `InitializationHold` 边界可出现 native transient `0`（本 DLL 内唯一的持续非 1 写入者是 `scrController.TogglePauseGame` 且 `paused == true`，已被 Input Guard 抑制）。**不要新增 `Time.timeScale == 1` 的启动 preflight 或 ownership。**
+- **`controller.paused == false` 是 session precondition**（fail-closed，区分 `paused == true` 与读取失败两种情况；读取失败不得当作 false 放行）。只阻止，不修复：不 `TogglePauseGame`、不写 `paused`、不写 `Time.timeScale`。
+- **Output FPS 范围**由 `Export/OutputFpsPolicy` 单点定义（`1..1000`，默认 `60`），GUI 与 preflight 共用同一规则；`outputFps * 4` 这类派生量必须走溢出安全计算，不得依赖整数回绕后由 `Math.Max` 兜底。
+
+### 3.8 `averageFrameTime` 与 multipress gate（Renderist 不拥有）
+
+- `scrController.averageFrameTime`（`public float`）：**唯一 writer 是 `scrController.PlayerControl_Update()`**，语义为 EMA `a_n = 0.5·a_(n-1) + 0.5·Time.deltaTime`；**唯一外部 reader 是 `scrPlanet.SwitchChosen()`**。无属性、无第二读者。它**不参与命中判定**（`GetHitMargin` / `SnapAngleCardinal` / `targetExitAngle` 都不读它），只影响**多重按压惩罚记账与显示**（`scrFailBar` 伤害、`missesOnCurrFloor` miss 标记、判定文字被改写为 `HitMargin.Multipress`）。
+- `SwitchChosen` 的 multipress 门是**跨调用状态**：门在 `@2100/@2116` 读取 `multipressAndHasPressedFirstPress` / `multipressPenalty`，而武装它们的 `MoveToNextFloor` 在同一方法内更晚的 `@3240` 才执行（1-floor lag）。
+- **Renderist 不拥有 `averageFrameTime`**：不写、不 seed、不 pin、不新增 ownership。
+- **`RenderistAutoPlay.PrepareHitState` 对 `multipressPenalty` / `multipressAndHasPressedFirstPress` / `keyTimes` 的中和是 deterministic autoplay invariant**：每次官方 `Hit(true)` 之前把 gate 的两个 flag 清回 `false` 并清空 `keyTimes`，因此 gate 恒为 false、`averageFrameTime` 相关的 multipress block 永不被进入。该不变量的正常路径与 completion 路径均已实机确认。
+- 该不变量**不需要**用常驻 Harmony 监控来守护：为一个已被实机确认不可达的原生分支永久增加 patch 是不必要的复杂度。
+- `PrepareHitState` **不再写 `controller.paused`**：`CatchUp` 在进入命中循环前已对 `paused == true` 提前 return，因此该写入是可证明的 no-op，移除它避免在没有 ownership 的情况下修改游戏状态。
+
 ---
 
 ## 4. 关键模块
 
-- `MasterTimeline`：FrameIndex 是唯一逻辑时间 authority。
+- `MasterTimeline`：FrameIndex 是唯一 **export / chart timeline** authority。
 - `PlaybackLifecycleHandoff`：关联 Renderist-owned `editor.Play()` 的 `StateEngine.Changed` 与 `OnMusicScheduled`。**`IsReady` 的前置条件是全部满足**：`PlayRequested && PlayReturned && SawStart && SawMusicScheduled && SawCountdown && SawPlayerControl && 当前 state=="PlayerControl" && playerAlive && !paused`。其中任一（尤其 `SawCountdown`：必须真的观察到一次 `Countdown` 状态提交）缺失，`InitializationHold` 就会每个 Tick 提前返回、永不释放，session 最终以 `native-playback-stopped` 取消且 `outputFrameIndex` 恒为 0。
 - `EditorVisualClock`：强制 `songposition_minusi` getter/setter，并精确撤销 Harmony Patch。
-- `RenderistAutoPlay`：按 `nextFloor.entryTime` 消费 due floor；`RDC.auto` 只在单次官方 `Hit(true)` 事务内临时置 true 并恢复。它不拥有时间，也不决定 session 完成。**progression bound 已移除固定魔数**：单次 `CatchUp`（一个输出帧）的合法命中上界是**当前谱面 `floors.Count`**（每次 `Hit` 都要求 `seqID` 严格向前）；`floors` 不可读时 fail-closed。成功条件是 canonical progression 严格单调向前：`after == before` 与 `after < before` 都立即 `hit-progression-not-forward` fail-closed；多格前进允许（记录但接受）。bound 耗尽后的尾部检查与主循环**同一判定**：`next == null` → success；`entryTime` 不可读 / NaN / Infinity → `next-entry-time-unavailable` fail-closed；仍 due → `autoplay-progression-bound-exceeded`；未 due → success。
+- `RenderistAutoPlay`：按 `nextFloor.entryTime` 消费 due floor；`RDC.auto` 只在单次官方 `Hit(true)` 事务内临时置 true 并恢复。它不拥有时间，也不决定 session 完成。**`PrepareHitState` 的 multipress / `keyTimes` 中和是 deterministic autoplay invariant（见 §3.8）。** **progression bound 已移除固定魔数**：单次 `CatchUp`（一个输出帧）的合法命中上界是**当前谱面 `floors.Count`**（每次 `Hit` 都要求 `seqID` 严格向前）；`floors` 不可读时 fail-closed。成功条件是 canonical progression 严格单调向前：`after == before` 与 `after < before` 都立即 `hit-progression-not-forward` fail-closed；多格前进允许（记录但接受）。bound 耗尽后的尾部检查与主循环**同一判定**：`next == null` → success；`entryTime` 不可读 / NaN / Infinity → `next-entry-time-unavailable` fail-closed；仍 due → `autoplay-progression-bound-exceeded`；未 due → success。
 - `EndTailPolicy`：校验并把单一玩家输入的 Frames / Seconds / Beats 换算为 output-frame tail。
 - `DeterministicFrameScheduler`：启动、Initialization Hold、逐帧事务、canonical completion 观测、native Esc observer、input guard、冻结/解析 tail、capture commit、停止与恢复。
 - `FrameCaptureDriver`：同步 PNG 后端，带 generation 隔离。两阶段生命周期：`Start()` 只建立 generation / host / coroutine；`TryActivateCameraSource()` 才取得当前 session 的摄像机链并接管 `targetTexture`。source 未激活时 `RequestCapture` 一律拒绝，不回退 Screen framebuffer。
@@ -194,6 +224,35 @@ Safety / watchdog 绝不能把未完成谱面伪装成 Completed。
 ---
 
 ## 8. Runtime 验证状态
+
+### 0.3.6.0 — RUNTIME VALIDATED（用户实机，Render Time Determinism P0）
+
+同一谱面、同一配置、仅 `outputFps` 不同（60 / 30）的两组导出，均正常 `Completed`：
+
+| 项 | 60 FPS | 30 FPS |
+| --- | --- | --- |
+| `completionFrameIndex` | 201 | 101 |
+| `capturedFrameCount` / `captureRequestCount` | 214 / 214 | 114 / 114 |
+| `tailFramesCaptured` / `resolvedTailFrames` | 12 / 12 | 12 / 12 |
+| `terminationKind` | `canonical-completion` | `canonical-completion` |
+| `captureSource` / 尺寸 | `scrCamera-rendertexture` / 3072×1920 | 同 |
+
+**engine time（逐帧观测，全帧无例外）**
+
+- `Time.captureFramerate` 恒等于 `outputFps`；`Time.captureDeltaTime` 与 `Time.deltaTime` 恒等于 `1/outputFps`（60 → 0.016667，30 → 0.033333）。
+- output frame index 与 `Time.frameCount` 均严格 +1，**1 output frame = 1 连续 Unity frame**。
+- output capture frames 期间 `Time.timeScale` 恒为 `1`、`paused` 恒为 `false`；`Play` / `InitializationHold` 边界可观测到 native transient `timeScale = 0` / `deltaTime = 0`，进入 output frame 0 前已恢复 —— 因此**不需要** `timeScale` preflight 或 ownership（见 §3.7）。
+
+**`averageFrameTime`**
+
+- 逐帧轨迹符合 EMA `a_n = 0.5·a_(n-1) + 0.5·Time.deltaTime`，稳态收敛到 `1/outputFps`。
+- **跨 session history carry 已实机确认**：30 FPS 会话的 frame 0 值恰为 `0.5 × (1/60) + 0.5 × (1/30) = 0.025`，即继承了前一 60 FPS 会话的稳态值。
+
+**multipress block / completion**
+
+- 两组共 22 次 `SwitchChosen` transaction：**全部 `multipressBlockEntered = false`，无 `AngleToTime` 判定事件、无 `OnDamage` 事件**；每次 transaction 入口 `keyTimes = 0`、`multipressAndHasPressedFirstPress = false`。
+- 普通命中的最后一次 transaction 与 completion transaction **同样未进入该 block**。
+- 这实机验证了 §3.8 的 deterministic autoplay invariant。**Renderist 不拥有 `averageFrameTime`。**
 
 ### 0.3.5.0 — RUNTIME VALIDATED（用户实机）
 
@@ -281,7 +340,7 @@ Safety / watchdog 绝不能把未完成谱面伪装成 Completed。
 ## 9. 已知边界（当前阶段不处理）
 
 1. **导出期间游戏窗口 world view 静止**：三台谱面 Camera 的输出已重定向到 Renderist CaptureTarget，ADOFAI 自身的 `camRT` 不再更新，当前没有 Preview Bridge（`Overlaycam` / `quad` 未接管）。**不影响成品 PNG。**
-2. **audible music / metronome 仍按 wall-clock 原速**：`MasterTimeline` 当前只拥有 visual / gameplay logical timeline，不拥有 audible audio timeline。不得为了「听起来同步」改动 Conductor 时间设计。
+2. **audible music / metronome 仍按 wall-clock 原速**：`MasterTimeline` 只拥有 export / chart timeline（visual / gameplay logical timeline），不拥有 audible audio timeline。不得为了「听起来同步」改动 Conductor 时间设计。
 3. **尚未实现**：custom resolution、supersampling、audio capture、FFmpeg、replay。
 4. **尚未实现/未纳入**：任何 Loader 抽象层、多 Loader 支持。
 
@@ -333,7 +392,7 @@ Safety / watchdog 绝不能把未完成谱面伪装成 Completed。
 
 ## 11. 发布与部署
 
-- 版本历史：`0.3.5.0` checkpoint = `79706b3b67c7c8c03da2cde9a0177f49a9dc7ca2`；`0.3.5.1` 为异常路径 ownership 收敛与 autoplay progression bound 的修订版本。
+- 版本历史：`0.3.5.0` checkpoint = `79706b3b67c7c8c03da2cde9a0177f49a9dc7ca2`；`0.3.5.1` 为异常路径 ownership 收敛与 autoplay progression bound 的修订版本；`0.3.6.0` 为 Render Time Determinism（engine time 实机确认、`averageFrameTime` / multipress 边界定案、Output FPS 正式化与范围约束、`paused` session precondition）。
 - 发布包固定为 `Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` 保持 Git 忽略。
 - 自动验证链：`dotnet build src/ADOFAI.Renderist/ADOFAI.Renderist.csproj -c Release -t:Rebuild` → `scripts/package-release.ps1 -Configuration Release -Force` → `scripts/verify-release-package.ps1`。
 - 部署使用 `scripts/copy-to-mods.ps1`（Release），只更新 `Mods\ADOFAI.Renderist\` 下本 Mod 自身文件，不触碰其他 Mod；可选 `-CleanRuntimeCache` 清除 UMM 运行时缓存。

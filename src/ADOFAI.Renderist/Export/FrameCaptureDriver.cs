@@ -8,7 +8,7 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 确定性编辑器导出的同步 PNG 捕获后端（Phase 3.5.0 Render Source Isolation）。
+    /// 确定性编辑器导出的同步 PNG 捕获后端（Phase 3.6.0 Render Time Determinism）。
     ///
     /// Render Source：ADOFAI 原生谱面摄像机链（scrCamera.Bgcamstatic / BGcam / camobj）
     /// 的 targetTexture 在本 session 内被接管到 Renderist-owned RenderTexture。
