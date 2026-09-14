@@ -1747,6 +1747,19 @@ namespace ADOFAI.Renderist.Export
             {
                 return "editor-already-playing";
             }
+
+            // paused 是 session precondition：只阻止，不修复（不 TogglePauseGame、
+            // 不写 paused、不写 Time.timeScale）。读取失败必须 fail-closed，不得当作 false 放行。
+            bool? paused = EditorGameReflection.ReadControllerPaused();
+            if (!paused.HasValue)
+            {
+                return "controller-paused-state-unavailable";
+            }
+            if (paused.Value)
+            {
+                return "controller-paused";
+            }
+
             if (EditorGameReflection.ReadRdcAuto() == null)
             {
                 return "rdc-auto-unavailable";
