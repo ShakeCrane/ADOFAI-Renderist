@@ -166,7 +166,11 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
-                int outputFps = settings.EditorTargetFrameRate > 0
+                // 与 preflight 共用同一范围规则（OutputFpsPolicy）；越界值在这里
+                // 不会被静默替换为可用值，而是交由 scheduler 的启动 gate fail-closed。
+                // 该 fallback 只保留原有语义：非法/缺失时沿用上一次会话的 outputFps
+                // 作为 metadata 记录值；真正决定能否启动的是 scheduler gate。
+                int outputFps = OutputFpsPolicy.IsValid(settings.EditorTargetFrameRate)
                     ? settings.EditorTargetFrameRate
                     : DeterministicFrameScheduler.OutputFps;
                 int safetyFrameLimit = DeterministicFrameScheduler.NormalizeSafetyFrameLimit(

@@ -38,7 +38,7 @@ namespace ADOFAI.Renderist.Export
             Failed,
         }
 
-        private const int DefaultOutputFps = 60;
+        private const int DefaultOutputFps = OutputFpsPolicy.Default;
         /// <summary>End Tail 默认值；玩家可改为 Frames / Seconds / Beats。</summary>
         public const int DefaultTailFrameCount = 12;
         /// <summary>
@@ -228,6 +228,12 @@ namespace ADOFAI.Renderist.Export
                 {
                     return "end-tail-invalid:" + endTailInputError;
                 }
+                // outputFps 范围是 fail-closed gate，不做静默替换：preflight 与 GUI
+                // 使用同一条 OutputFpsPolicy 规则。
+                if (!OutputFpsPolicy.TryValidate(outputFps, out string outputFpsError))
+                {
+                    return "output-fps-invalid:" + outputFpsError;
+                }
 
                 _status = SchedulerStatus.Preparing;
                 _running = true;
@@ -236,7 +242,7 @@ namespace ADOFAI.Renderist.Export
 
                 ResetRunStateForStart();
 
-                _outputFps = outputFps > 0 ? outputFps : DefaultOutputFps;
+                _outputFps = outputFps;
                 _safetyFrameLimit = NormalizeSafetyFrameLimit(safetyFrameLimit);
                 _endTailInput = endTailInput;
                 _initializationDeadlineRealtime = Time.realtimeSinceStartupAsDouble + PlaybackReadyTimeoutSeconds;
@@ -246,7 +252,7 @@ namespace ADOFAI.Renderist.Export
                 // ---- Unity 时间设置（复用 PoC 已验证 baseline）----
                 Time.captureFramerate = _outputFps;
                 QualitySettings.vSyncCount = 0;
-                Application.targetFrameRate = Math.Max(1000, _outputFps * 4);
+                Application.targetFrameRate = OutputFpsPolicy.ResolveUnityTargetFrameRate(_outputFps);
 
                 // pitch 在 editor.Play() 内部最终确定，因此 Play 返回后读取。
 

@@ -52,7 +52,7 @@ namespace ADOFAI.Renderist.Export
                     env, dirResult, targetFrameRate);
             }
 
-            if (targetFrameRate <= 0)
+            if (!OutputFpsPolicy.IsValid(targetFrameRate))
             {
                 return CreateReport(EditorExportReadiness.Blocked, EditorExportReadinessReason.InvalidTargetFrameRate,
                     env, dirResult, targetFrameRate);

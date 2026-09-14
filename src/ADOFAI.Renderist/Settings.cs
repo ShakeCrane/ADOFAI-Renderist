@@ -30,9 +30,9 @@ namespace ADOFAI.Renderist
 
         /// <summary>
         /// Target output frame rate for the deterministic editor export session.
-        /// Must be greater than 0 to pass readiness checks.
+        /// 取值范围与默认值由 OutputFpsPolicy 单点定义。
         /// </summary>
-        public int EditorTargetFrameRate = 60;
+        public int EditorTargetFrameRate = OutputFpsPolicy.Default;
 
         /// <summary>
         /// Single player-facing End Tail value. Its interpretation is selected by

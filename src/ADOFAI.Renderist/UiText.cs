@@ -61,6 +61,9 @@ namespace ADOFAI.Renderist
         public const string GuiMasterTimelineHandoffTailPrefix = "视觉尾帧：";
         public const string GuiMasterTimelineHandoffSafetyPrefix = "安全上限：";
         public const string GuiEndTailLabel = "结束延长：";
+        public const string GuiOutputFpsLabel = "输出帧率：";
+        public const string GuiOutputFpsEffectivePrefix = "实际：";
+        public const string GuiOutputFpsInvalidFormat = "输出帧率输入无效：必须是 {0} 之间的整数；设置未被修改。";
         public const string GuiEndTailUnitFrames = "帧";
         public const string GuiEndTailUnitSeconds = "秒";
         public const string GuiEndTailUnitBeats = "拍";

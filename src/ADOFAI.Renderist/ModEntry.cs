@@ -45,6 +45,11 @@ namespace ADOFAI.Renderist
         private static string _endTailInputError;
         private static bool _endTailUnitMenuOpen;
 
+        // Output FPS 编辑缓冲。Settings.EditorTargetFrameRate 仍是唯一配置来源；
+        // 这里只保存正在输入的文本，非法输入不会写回 Settings。
+        private static string _outputFpsText;
+        private static bool _outputFpsInputValid = true;
+
         /// <summary>
         /// UMM entry method, invoked via Info.json's "EntryMethod".
         /// </summary>
@@ -57,6 +62,7 @@ namespace ADOFAI.Renderist
 
                 Settings = UnityModManager.ModSettings.Load<Settings>(modEntry);
                 ResetEndTailGuiState();
+                ResetOutputFpsGuiState();
 
                 modEntry.OnToggle = OnToggle;
                 modEntry.OnGUI = OnGUI;
@@ -353,6 +359,7 @@ namespace ADOFAI.Renderist
         {
             GUILayout.Label(UiText.GuiMasterTimelineHandoffSectionTitle, GUI.skin.label);
 
+            DrawOutputFpsGui();
             DrawEndTailGui();
 
             EditorExportSession session = EditorExportController.CurrentSession;
@@ -383,6 +390,77 @@ namespace ADOFAI.Renderist
                 else
                     EditorExportController.Start();
             }
+        }
+
+        /// <summary>
+        /// Output FPS 输入框。唯一配置来源仍是 Settings.EditorTargetFrameRate
+        /// （不新增第二套 FPS 配置）；本方法只提供编辑入口。
+        /// 只接受正整数：空值 / 非法 / &lt;=0 一律不写入 Settings，实际值保持原样。
+        /// session 进行中（EditorExportController.IsBusy）禁用编辑；Start 时仍由
+        /// 既有 session / preflight 冻结与校验。
+        /// </summary>
+        private static void DrawOutputFpsGui()
+        {
+            EnsureOutputFpsGuiState();
+
+            bool previousEnabled = GUI.enabled;
+            GUI.enabled = previousEnabled && !EditorExportController.IsBusy;
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(UiText.GuiOutputFpsLabel, GUI.skin.label, GUILayout.Width(82f));
+            string changedText = GUILayout.TextField(_outputFpsText ?? string.Empty, GUILayout.Width(110f));
+            if (!string.Equals(changedText, _outputFpsText, StringComparison.Ordinal))
+            {
+                _outputFpsText = changedText;
+                ApplyOutputFpsTextInput();
+            }
+
+            // 始终显示当前真正生效的值：输入非法时它不会与输入框内容一致。
+            GUILayout.Label(UiText.GuiOutputFpsEffectivePrefix +
+                Settings.EditorTargetFrameRate.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
+            GUILayout.EndHorizontal();
+
+            GUI.enabled = previousEnabled;
+
+            if (!_outputFpsInputValid)
+                GUILayout.Label(UiText.Format(UiText.GuiOutputFpsInvalidFormat, OutputFpsPolicy.RangeText),
+                    GUI.skin.label);
+        }
+
+        private static void ResetOutputFpsGuiState()
+        {
+            _outputFpsText = Settings.EditorTargetFrameRate.ToString(CultureInfo.InvariantCulture);
+            _outputFpsInputValid = true;
+        }
+
+        private static void EnsureOutputFpsGuiState()
+        {
+            if (_outputFpsText == null)
+                ResetOutputFpsGuiState();
+        }
+
+        private static void ApplyOutputFpsTextInput()
+        {
+            // 与 preflight / scheduler gate 共用同一范围规则（OutputFpsPolicy）。
+            if (!OutputFpsPolicy.TryParse(_outputFpsText, out int parsed, out _))
+            {
+                _outputFpsInputValid = false;
+                return; // 非法或越界输入：不写 Settings。
+            }
+
+            _outputFpsInputValid = true;
+
+            if (parsed == Settings.EditorTargetFrameRate)
+                return;
+
+            Settings.EditorTargetFrameRate = parsed;
+
+            // 与其它影响 preflight 的 GUI 配置保持一致：使 readiness 缓存失效。
+            _lastReadinessCacheRealtime = float.NegativeInfinity;
+
+            // End Tail 的 Beats / Seconds 换算依赖 outputFps，强制重新换算，
+            // 避免沿用旧的 canonical seconds。
+            _endTailCanonicalSecondsValid = false;
         }
 
         private static void DrawEndTailGui()
@@ -584,7 +662,7 @@ namespace ADOFAI.Renderist
             // Frames is quantized once with ceil. Keep that exact duration as
             // the new canonical UI duration; later switches never parse the
             // rounded display text back into the conversion chain.
-            if (targetUnit == EndTailUnit.Frames && Settings.EditorTargetFrameRate > 0)
+            if (targetUnit == EndTailUnit.Frames && OutputFpsPolicy.IsValid(Settings.EditorTargetFrameRate))
                 _endTailCanonicalSeconds = converted / Settings.EditorTargetFrameRate;
         }
 
