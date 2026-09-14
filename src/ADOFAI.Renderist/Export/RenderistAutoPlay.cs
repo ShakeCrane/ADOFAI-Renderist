@@ -275,7 +275,15 @@ namespace ADOFAI.Renderist.Export
 
         private static void PrepareHitState(object player, object controller)
         {
-            SetMember(controller, "paused", false);
+            // 这里刻意不写 controller.paused。CatchUp 在进入命中循环之前就已经对
+            // `paused == true` 提前 return，因此本方法被执行时 paused 必然已经是 false，
+            // 写入它是可证明的 no-op；删除它可以避免在没有 ownership 的情况下修改游戏状态。
+            //
+            // 以下三项是 deterministic autoplay invariant：把 multipress gate 的跨调用
+            // 状态在每次官方 Hit 之前清回 false。scrPlanet.SwitchChosen 在 gate 判定
+            // (@2100/@2116) 读取这两个 flag，而武装它们的 MoveToNextFloor 在同一方法内
+            // 更晚的位置 (@3240) 才执行，因此每一次 Renderist 驱动的命中都必然跳过
+            // averageFrameTime 相关的 multipress 分支。
             SetMember(controller, "multipressPenalty", false);
             SetMember(controller, "multipressAndHasPressedFirstPress", false);
             SetMember(player, "consecMultipressCounter", 0);
