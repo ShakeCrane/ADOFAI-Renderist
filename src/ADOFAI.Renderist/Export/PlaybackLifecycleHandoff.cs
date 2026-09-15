@@ -100,11 +100,21 @@ namespace ADOFAI.Renderist.Export
         internal void MarkPlayRequested() { PlayRequested = true; }
         internal void MarkPlayReturned() { PlayReturned = true; }
 
-        internal bool IsReady(object state, bool playerAlive, bool paused)
+        /// <summary>
+        /// 生命周期是否已真正到达 playback 状态：Play 已请求并返回、Start / OnMusicScheduled /
+        /// Countdown / PlayerControl 均已观测、当前已提交 state == PlayerControl 且玩家存活。
+        /// **不含** paused 条件——paused 是 runtime 条件，只有在到达这里之后仍未清零才是异常。
+        /// </summary>
+        internal bool IsReadyExceptPaused(object state, bool playerAlive)
         {
             string current = state is Enum e ? e.ToString() : Convert.ToString(state);
             return PlayRequested && PlayReturned && SawStart && SawMusicScheduled && SawCountdown && SawPlayerControl &&
-                   string.Equals(current, "PlayerControl", StringComparison.Ordinal) && playerAlive && !paused;
+                   string.Equals(current, "PlayerControl", StringComparison.Ordinal) && playerAlive;
+        }
+
+        internal bool IsReady(object state, bool playerAlive, bool paused)
+        {
+            return !paused && IsReadyExceptPaused(state, playerAlive);
         }
 
         private void OnStateChanged(Enum committedState)

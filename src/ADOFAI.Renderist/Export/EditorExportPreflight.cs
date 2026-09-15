@@ -66,8 +66,11 @@ namespace ADOFAI.Renderist.Export
                 : (double?)null;
             double pitchValue = EditorGameReflection.ReadPitch(out bool pitchUnavailable);
             double? pitch = pitchUnavailable ? (double?)null : pitchValue;
-            int safetyFrameLimit = DeterministicFrameScheduler.NormalizeSafetyFrameLimit(
+            // safety 默认未配置（unbounded）：0 表示不存在总帧数 / 总时长上限，
+            // End Tail 只受自身数值可表达性约束；显式配置时才按配置值判定。
+            SafetyLimitResolution safety = SafetyFrameLimitPolicy.Resolve(
                 settings.EditorExportSafetyFrameLimit);
+            long safetyFrameLimit = safety.FrameLimit;
 
             if (!EndTailPolicy.TryResolve(
                     endTailInput,
@@ -123,6 +126,10 @@ namespace ADOFAI.Renderist.Export
             return EditorGameReflection.EditorMultiSelectFloorsMethod != null;
         }
 
+        /// <summary>
+        /// safetyFrameLimit: 0 = 未配置上限（unbounded），报告中记为 <c>null</c>；
+        /// 正数 = 显式配置的 output-frame 上限，原样记录。
+        /// </summary>
         private static EditorExportReadinessReport CreateReport(
             EditorExportReadiness readiness,
             EditorExportReadinessReason reason,
@@ -133,7 +140,7 @@ namespace ADOFAI.Renderist.Export
             EndTailResolution? endTailResolution = null,
             double? completionBpm = null,
             double? pitch = null,
-            int safetyFrameLimit = 0,
+            long safetyFrameLimit = 0,
             string endTailValidationError = null)
         {
             var report = new EditorExportReadinessReport
@@ -150,7 +157,7 @@ namespace ADOFAI.Renderist.Export
                 ResolvedTailBeats = endTailResolution?.Beats,
                 CompletionBpm = completionBpm,
                 Pitch = pitch,
-                SafetyFrameLimit = safetyFrameLimit,
+                SafetyFrameLimit = safetyFrameLimit > 0 ? safetyFrameLimit : (long?)null,
                 EndTailValidationError = endTailValidationError,
             };
 

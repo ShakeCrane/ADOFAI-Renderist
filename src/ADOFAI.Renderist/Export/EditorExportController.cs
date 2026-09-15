@@ -166,15 +166,18 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
-                // 与 preflight 共用同一范围规则（OutputFpsPolicy）；越界值在这里
+                // 与 preflight 共用同一范围规则（OutputFpsPolicy）；非法值在这里
                 // 不会被静默替换为可用值，而是交由 scheduler 的启动 gate fail-closed。
                 // 该 fallback 只保留原有语义：非法/缺失时沿用上一次会话的 outputFps
                 // 作为 metadata 记录值；真正决定能否启动的是 scheduler gate。
                 int outputFps = OutputFpsPolicy.IsValid(settings.EditorTargetFrameRate)
                     ? settings.EditorTargetFrameRate
                     : DeterministicFrameScheduler.OutputFps;
-                int safetyFrameLimit = DeterministicFrameScheduler.NormalizeSafetyFrameLimit(
-                    settings.EditorExportSafetyFrameLimit);
+                // safety 默认未配置（unbounded）：0 表示不存在总帧数 / 总时长上限。
+                // authority 是 scheduler 自己用同一个纯函数解析的结果；这里先按同一
+                // 配置值解析一次，用于启动前写 metadata。
+                int configuredSafetyFrameLimit = settings.EditorExportSafetyFrameLimit;
+                SafetyLimitResolution safety = SafetyFrameLimitPolicy.Resolve(configuredSafetyFrameLimit);
                 var endTailInput = new EndTailInput(
                     settings.EditorEndTailValue, settings.EditorEndTailUnit);
 
@@ -183,7 +186,11 @@ namespace ADOFAI.Renderist.Export
                     State = EditorExportState.Preparing,
                     StateDetail = "正在启动确定性帧调度器。",
                     OutputFps = outputFps,
-                    SafetyFrameLimit = safetyFrameLimit,
+                    SafetyPolicy = SafetyFrameLimitPolicy.KindLabel(safety.Kind),
+                    SafetyFrameLimit = safety.FrameLimit > 0 ? safety.FrameLimit : (long?)null,
+                    SafetyDurationSeconds = safety.FrameLimit > 0
+                        ? safety.FrameLimit / (double)outputFps
+                        : (double?)null,
                     EndTailInputValue = endTailInput.Value,
                     EndTailInputUnit = endTailInput.Unit.ToString(),
                     ResolvedTailFrames = report.ResolvedTailFrames,
@@ -208,7 +215,7 @@ namespace ADOFAI.Renderist.Export
 
                 // 这里是 terminal re-arm 后的正常路径；只允许一次 official Play。
                 string reject = DeterministicFrameScheduler.TryStart(
-                    session.OutputDirectory, outputFps, safetyFrameLimit, endTailInput, false);
+                    session.OutputDirectory, outputFps, configuredSafetyFrameLimit, endTailInput, false);
                 if (reject != null)
                 {
                     LastStartRejectReason = reject;
@@ -217,7 +224,7 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
-                CopyFrozenEndTailFromScheduler(session);
+                CopyFrozenPolicyFromScheduler(session);
                 session.State = EditorExportState.Running;
                 session.StateDetail = "确定性帧调度器运行中。";
                 TryWriteMetadataBestEffort(session);
@@ -492,8 +499,7 @@ namespace ADOFAI.Renderist.Export
             s.CaptureSource = DeterministicFrameScheduler.CaptureSource;
             s.CaptureWidth = DeterministicFrameScheduler.CaptureWidth;
             s.CaptureHeight = DeterministicFrameScheduler.CaptureHeight;
-            s.SafetyFrameLimit = DeterministicFrameScheduler.SafetyFrameLimit;
-            CopyFrozenEndTailFromScheduler(s);
+            CopyFrozenPolicyFromScheduler(s);
             s.TailFramesCaptured = DeterministicFrameScheduler.TailFramesCaptured;
             s.CanonicalCompletionCallbackSeen = DeterministicFrameScheduler.CanonicalCompletionCallbackSeen;
             s.CanonicalCompletionStateSeen = DeterministicFrameScheduler.CanonicalCompletionStateSeen;
@@ -505,8 +511,15 @@ namespace ADOFAI.Renderist.Export
                 s.State.ToString(), s.StopReason));
         }
 
-        private static void CopyFrozenEndTailFromScheduler(EditorExportSession session)
+        /// <summary>
+        /// 把 scheduler 在本 session 实际冻结的 policy 回填到 session：
+        /// safety（policy 标签 / 可选 frame 上限 / 可选逻辑时长，unbounded 时为 null）与 End Tail。
+        /// </summary>
+        private static void CopyFrozenPolicyFromScheduler(EditorExportSession session)
         {
+            session.SafetyPolicy = DeterministicFrameScheduler.SafetyPolicy;
+            session.SafetyFrameLimit = DeterministicFrameScheduler.SafetyFrameLimit;
+            session.SafetyDurationSeconds = DeterministicFrameScheduler.SafetyDurationSeconds;
             session.EndTailInputValue = DeterministicFrameScheduler.EndTailInputValue;
             session.EndTailInputUnit = DeterministicFrameScheduler.EndTailInputUnit.ToString();
             session.ResolvedTailFrames = DeterministicFrameScheduler.ResolvedTailFrameCount;

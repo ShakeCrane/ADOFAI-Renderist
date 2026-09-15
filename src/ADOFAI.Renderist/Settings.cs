@@ -44,11 +44,21 @@ namespace ADOFAI.Renderist
         public EndTailUnit EditorEndTailUnit = EndTailPolicy.DefaultUnit;
 
         /// <summary>
-        /// Safety-only maximum number of output frames for a session that never
-        /// reaches native completion. Zero uses the built-in safe default.
+        /// Optional safety-only output-frame limit for a session that never reaches
+        /// native completion. 0 (default) and the historical default 36000 both mean
+        /// "not configured": no total frame-count and no total-duration limit exists.
+        /// Any other positive value is used verbatim as an output-frame limit and is
+        /// never capped by the product layer (int.MaxValue is only the data-type
+        /// boundary of this field, not a recommended or supported performance target).
+        ///
+        /// Known ambiguity, deliberately accepted: safety never had a GUI, so a 36000
+        /// written by UMM is the historical default, but a hand-edited 36000 is
+        /// indistinguishable from it. Both are intentionally migrated to "not
+        /// configured" (unbounded); use any other positive value to opt in explicitly.
+        ///
         /// This is not a normal completion condition.
         /// </summary>
-        public int EditorExportSafetyFrameLimit = 36000;
+        public int EditorExportSafetyFrameLimit = 0;
 
         public override void Save(UnityModManager.ModEntry modEntry)
         {

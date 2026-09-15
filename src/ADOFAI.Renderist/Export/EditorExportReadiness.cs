@@ -83,12 +83,16 @@ namespace ADOFAI.Renderist.Export
 
         public double? EndTailInputValue { get; set; }
         public EndTailUnit? EndTailInputUnit { get; set; }
-        public int? ResolvedTailFrames { get; set; }
+        public long? ResolvedTailFrames { get; set; }
         public double? ResolvedTailSeconds { get; set; }
         public double? ResolvedTailBeats { get; set; }
         public double? CompletionBpm { get; set; }
         public double? Pitch { get; set; }
-        public int SafetyFrameLimit { get; set; }
+        /// <summary>
+        /// 本报告采用的 output-frame safety 上限；<c>null</c> = 未配置
+        /// （无总帧数 / 总时长上限），不是 0 帧。
+        /// </summary>
+        public long? SafetyFrameLimit { get; set; }
         public string EndTailValidationError { get; set; }
     }
 }

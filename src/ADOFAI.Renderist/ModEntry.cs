@@ -369,8 +369,12 @@ namespace ADOFAI.Renderist
             {
                 GUILayout.Label(UiText.GuiMasterTimelineHandoffFramesPrefix +
                     session.CapturedFrameCount.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
-                GUILayout.Label(UiText.GuiMasterTimelineHandoffSafetyPrefix +
-                    session.SafetyFrameLimit.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
+                GUILayout.Label(session.SafetyFrameLimit.HasValue
+                    ? UiText.Format(UiText.GuiMasterTimelineHandoffSafetyFormat,
+                        session.SafetyFrameLimit.Value.ToString(CultureInfo.InvariantCulture),
+                        (session.SafetyDurationSeconds ?? 0.0).ToString("0.###", CultureInfo.InvariantCulture))
+                    : UiText.GuiMasterTimelineHandoffSafetyUnbounded,
+                    GUI.skin.label);
                 GUILayout.Label(UiText.GuiMasterTimelineHandoffTailPrefix +
                     session.TailFramesCaptured.ToString(CultureInfo.InvariantCulture) + "/" +
                     (session.ResolvedTailFrames?.ToString(CultureInfo.InvariantCulture) ?? "?"), GUI.skin.label);
@@ -423,8 +427,7 @@ namespace ADOFAI.Renderist
             GUI.enabled = previousEnabled;
 
             if (!_outputFpsInputValid)
-                GUILayout.Label(UiText.Format(UiText.GuiOutputFpsInvalidFormat, OutputFpsPolicy.RangeText),
-                    GUI.skin.label);
+                GUILayout.Label(UiText.GuiOutputFpsInvalid, GUI.skin.label);
         }
 
         private static void ResetOutputFpsGuiState()
@@ -675,8 +678,10 @@ namespace ADOFAI.Renderist
             }
 
             var input = new EndTailInput(value, _endTailDisplayedUnit);
-            int safetyFrameLimit = DeterministicFrameScheduler.NormalizeSafetyFrameLimit(
-                Settings.EditorExportSafetyFrameLimit);
+            // safety 默认未配置（unbounded）；只有显式正整数才是真实上限。
+            // 与 preflight / scheduler 共用同一解析，0 = 无上限。
+            long safetyFrameLimit = SafetyFrameLimitPolicy.Resolve(
+                Settings.EditorExportSafetyFrameLimit).FrameLimit;
             if (!EndTailPolicy.TryResolve(
                     input,
                     Settings.EditorTargetFrameRate,

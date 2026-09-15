@@ -28,8 +28,12 @@ namespace ADOFAI.Renderist.Export
     /// </summary>
     internal static class FrameCaptureDriver
     {
-        /// <summary>捕获结果回调（在 Unity 主线程 WaitForEndOfFrame 之后调用）。</summary>
-        public delegate void CaptureResultCallback(long generation, int frameIndex, bool success, string filePath, string error);
+        /// <summary>
+        /// 捕获结果回调（在 Unity 主线程 WaitForEndOfFrame 之后调用）。
+        /// frameIndex 是 canonical output frame number，类型为 long（合法 Output FPS
+        /// 为任意正 int，帧号不能依赖 int）。
+        /// </summary>
+        public delegate void CaptureResultCallback(long generation, long frameIndex, bool success, string filePath, string error);
 
         /// <summary>本阶段 Render Source 标签；写入 session metadata。</summary>
         public const string CameraSourceLabel = "scrCamera-rendertexture";
@@ -255,7 +259,7 @@ namespace ADOFAI.Renderist.Export
         /// generation 与当前 active generation 不一致、或 Render Source 尚未激活时返回 false。
         /// 绝不回退到 Screen framebuffer。
         /// </summary>
-        public static bool RequestCapture(long generation, int frameIndex)
+        public static bool RequestCapture(long generation, long frameIndex)
         {
             if (generation != _activeGeneration) return false;
             if (!_sourceActive || _captureTarget == null) return false;
@@ -516,7 +520,7 @@ namespace ADOFAI.Renderist.Export
             private long _generation;
 
             private bool _pending;
-            private int _pendingIndex;
+            private long _pendingIndex;
             private Texture2D _texture;
             private bool _stopped;
 
@@ -538,7 +542,7 @@ namespace ADOFAI.Renderist.Export
                 }
             }
 
-            public void RequestCapture(int frameIndex)
+            public void RequestCapture(long frameIndex)
             {
                 if (_stopped || _generation != _activeGeneration) return;
                 if (!_pending)
@@ -572,7 +576,7 @@ namespace ADOFAI.Renderist.Export
                     if (_stopped || _generation != _activeGeneration) yield break;
                     if (!_pending) continue;
 
-                    int index = _pendingIndex;
+                    long index = _pendingIndex;
                     _pending = false;
                     if (index == 0) Log.Info("MasterTimeline Stage=Frame0 AFTER_EOF frameIndex=0");
                     _pendingIndex = -1;
@@ -580,7 +584,7 @@ namespace ADOFAI.Renderist.Export
                 }
             }
 
-            private void CaptureNow(int frameIndex)
+            private void CaptureNow(long frameIndex)
             {
                 if (_stopped || _generation != _activeGeneration) return;
 
@@ -658,7 +662,12 @@ namespace ADOFAI.Renderist.Export
                 _texture = new Texture2D(_captureWidth, _captureHeight, TextureFormat.RGB24, false);
             }
 
-            private string BuildFilePath(int frameIndex)
+            /// <summary>
+            /// frame_&lt;index&gt;.png。index 是 long：ZeroPadWidth 只是**最小**补零宽度，
+            /// 位数超过它时自然扩展（PadLeft 只补不截），因此不存在编号截断，
+            /// 也绝不把 index 转回 int。
+            /// </summary>
+            private string BuildFilePath(long frameIndex)
             {
                 string indexText = frameIndex
                     .ToString(CultureInfo.InvariantCulture)

@@ -26,14 +26,16 @@ namespace ADOFAI.Renderist.Export
     /// <summary>最终供 scheduler 使用的 output-frame 解析结果。</summary>
     internal readonly struct EndTailResolution
     {
-        internal EndTailResolution(int frameCount, double seconds, double? beats)
+        internal EndTailResolution(long frameCount, double seconds, double? beats)
         {
             FrameCount = frameCount;
             Seconds = seconds;
             Beats = beats;
         }
 
-        internal int FrameCount { get; }
+        /// <summary>tail 的 output-frame 数（long：与 canonical output frame 计数同一域）。</summary>
+        internal long FrameCount { get; }
+
         internal double Seconds { get; }
         internal double? Beats { get; }
     }
@@ -49,6 +51,13 @@ namespace ADOFAI.Renderist.Export
 
         private const double MinimumPositiveValue = 0.0001;
         private const double IntegerSnapRelativeTolerance = 1e-10;
+
+        /// <summary>
+        /// double → long 转换的可表达边界（2^63）。这是**数据类型结构边界**，不是产品级
+        /// 上限：超过它的 tail 帧数无法用 long 表达，因此必须显式 fail-closed，
+        /// 绝不依赖 unchecked 转换（C# 的 checked 对浮点→整数转换无效）。
+        /// </summary>
+        private const double LongFrameCountExclusiveLimit = 9223372036854775808.0;
 
         internal static bool TryValidateInput(EndTailInput input, out string error)
         {
@@ -76,7 +85,7 @@ namespace ADOFAI.Renderist.Export
             int outputFps,
             double? completionBpm,
             double? pitch,
-            int safetyFrameLimit,
+            long safetyFrameLimit,
             out EndTailResolution resolution,
             out string error)
         {
@@ -117,20 +126,17 @@ namespace ADOFAI.Renderist.Export
                     return false;
             }
 
-            if (!IsFinite(rawFrames) || rawFrames < 0.0 || rawFrames > int.MaxValue)
+            if (!IsFinite(rawFrames) || rawFrames < 0.0 || rawFrames >= LongFrameCountExclusiveLimit)
             {
                 error = "end-tail-frame-count-overflow";
                 return false;
             }
 
             rawFrames = SnapNearInteger(rawFrames);
+            // 上面的边界检查已保证 Ceiling 结果落在 long 可表达范围内。
             long frameCount = (long)Math.Ceiling(rawFrames);
-            if (frameCount < 0 || frameCount > int.MaxValue)
-            {
-                error = "end-tail-frame-count-overflow";
-                return false;
-            }
-            if (safetyFrameLimit > 0 && frameCount >= safetyFrameLimit)
+            // safetyFrameLimit == 0 表示未配置上限（unbounded）：End Tail 不受 safety 限制。
+            if (SafetyFrameLimitPolicy.IsFrameLimitReached(safetyFrameLimit, frameCount))
             {
                 error = "end-tail-exceeds-safety-limit";
                 return false;
@@ -140,7 +146,7 @@ namespace ADOFAI.Renderist.Export
             double? resolvedBeats = IsPositiveFinite(completionBpm) && IsPositiveFinite(pitch)
                 ? resolvedSeconds * completionBpm.Value * pitch.Value / 60.0
                 : (double?)null;
-            resolution = new EndTailResolution((int)frameCount, resolvedSeconds, resolvedBeats);
+            resolution = new EndTailResolution(frameCount, resolvedSeconds, resolvedBeats);
             error = null;
             return true;
         }
@@ -224,7 +230,7 @@ namespace ADOFAI.Renderist.Export
             {
                 case EndTailUnit.Frames:
                     double rawFrames = SnapNearInteger(seconds * outputFps);
-                    if (!IsFinite(rawFrames) || rawFrames > int.MaxValue)
+                    if (!IsFinite(rawFrames) || rawFrames < 0.0 || rawFrames >= LongFrameCountExclusiveLimit)
                     {
                         error = "end-tail-frame-count-overflow";
                         return false;

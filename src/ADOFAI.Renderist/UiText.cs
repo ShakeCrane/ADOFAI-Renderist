@@ -59,11 +59,13 @@ namespace ADOFAI.Renderist
         public const string GuiMasterTimelineHandoffStatusPrefix = "Handoff 状态：";
         public const string GuiMasterTimelineHandoffFramesPrefix = "已提交帧：";
         public const string GuiMasterTimelineHandoffTailPrefix = "视觉尾帧：";
-        public const string GuiMasterTimelineHandoffSafetyPrefix = "安全上限：";
+        // {0}=safetyFrameLimit, {1}=safetyDurationSeconds
+        public const string GuiMasterTimelineHandoffSafetyFormat = "安全上限：{0} 帧 / {1} 秒";
+        public const string GuiMasterTimelineHandoffSafetyUnbounded = "安全上限：未配置（无总帧数 / 总时长上限）";
         public const string GuiEndTailLabel = "结束延长：";
         public const string GuiOutputFpsLabel = "输出帧率：";
         public const string GuiOutputFpsEffectivePrefix = "实际：";
-        public const string GuiOutputFpsInvalidFormat = "输出帧率输入无效：必须是 {0} 之间的整数；设置未被修改。";
+        public const string GuiOutputFpsInvalid = "输出帧率输入无效：必须是正整数；设置未被修改。";
         public const string GuiEndTailUnitFrames = "帧";
         public const string GuiEndTailUnitSeconds = "秒";
         public const string GuiEndTailUnitBeats = "拍";
@@ -100,9 +102,9 @@ namespace ADOFAI.Renderist
 
         // ---------------- Log: DeterministicFrameScheduler ----------------
 
-        // {0}=outputFps, {1}=safetyFrameLimit, {2}=outputDirectory
+        // {0}=outputFps, {1}=safetyPolicy, {2}=safetyFrameLimit|unbounded, {3}=outputDirectory
         public const string LogSchedulerStartedFormat =
-            "确定性帧调度器已启动：outputFps={0}, safetyFrameLimit={1}, 输出目录={2}";
+            "确定性帧调度器已启动：outputFps={0}, safetyPolicy={1}, safetyFrameLimit={2}, 输出目录={3}";
         // {0}=reason
         public const string LogSchedulerStartRejectedFormat =
             "确定性帧调度器启动被拒绝：{0}";
@@ -117,6 +119,9 @@ namespace ADOFAI.Renderist
             "Initialization Hold 已开始：不推进输出帧、不捕获。";
         public const string LogSchedulerEditorPlayCalled =
             "已调用 editor.Play()。";
+        // {0}=reason, {1}=controllerState, {2}=handoffStatus, {3}=runtimeSnapshot
+        public const string LogSchedulerPlaybackPausedFormat =
+            "播放生命周期已到达 PlayerControl，但 paused 状态异常（{0}）：state={1} handoff={2} {3}。Renderist 不写 paused、不调用 TogglePauseGame，会话 fail-closed。";
         // {0}=canonicalStartTime, {1}=pitch
         public const string LogSchedulerInitHoldReleasedFormat =
             "回放就绪，Initialization Hold 已释放：CanonicalStartTime={0}, pitch={1}。";
@@ -129,6 +134,12 @@ namespace ADOFAI.Renderist
         // {0}=frameIndex, {1}=error
         public const string LogSchedulerCaptureFailedFormat =
             "确定性帧调度器：输出帧 {0} 捕获失败：{1}";
+
+        // ---------------- Log: RenderistAutoPlay ----------------
+
+        // {0}=error
+        public const string LogAutoPlayHitStateFailedFormat =
+            "命中前 deterministic autoplay invariant 建立失败，已跳过官方 Hit(true)：{0}";
 
         // ---------------- Log: OutputPath ----------------
 

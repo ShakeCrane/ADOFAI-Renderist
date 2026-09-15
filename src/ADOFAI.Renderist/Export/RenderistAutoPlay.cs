@@ -49,7 +49,11 @@ namespace ADOFAI.Renderist.Export
             }
         }
 
-        internal static bool CatchUp(int frameIndex, double chartTime, out int hitCount, out string error)
+        /// <summary>
+        /// frameIndex 是 canonical output frame number（long）；hitCount 的合法上界是
+        /// 当前谱面 floor 数，因此保持 int。
+        /// </summary>
+        internal static bool CatchUp(long frameIndex, double chartTime, out int hitCount, out string error)
         {
             hitCount = 0;
             error = null;

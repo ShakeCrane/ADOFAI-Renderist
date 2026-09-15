@@ -23,7 +23,8 @@ namespace ADOFAI.Renderist.Export
         public string StopReason;
         public string TerminationKind;  // canonical-completion | user-cancel | safety-limit | watchdog | capture-failure | lifecycle-failure
         public string CompletionSignal;
-        public int CompletionFrameIndex;
+        /// <summary>canonical completion 时的 output frame 编号（long；-1 = 未观测）。</summary>
+        public long CompletionFrameIndex;
         public bool CanonicalCompletionCallbackSeen;
         public bool CanonicalCompletionStateSeen;
         public string SceneName;
@@ -31,10 +32,19 @@ namespace ADOFAI.Renderist.Export
         public DateTime? EndedAtUtc;
         public long TickCount;
         public int OutputFps;
-        public long SafetyFrameLimit;
+        /// <summary>本 session 实际采用的 safety policy 标签：unbounded | explicit-frames。</summary>
+        public string SafetyPolicy;
+        /// <summary>
+        /// 实际生效的 output-frame safety 上限；null = 未配置（无总帧数 / 总时长上限），
+        /// 不是 0 帧，也不是 sentinel。
+        /// </summary>
+        public long? SafetyFrameLimit;
+        /// <summary>与 SafetyFrameLimit 对应的逻辑 output duration（秒）；unbounded 时为 null。</summary>
+        public double? SafetyDurationSeconds;
         public double EndTailInputValue;
         public string EndTailInputUnit;
-        public int? ResolvedTailFrames;
+        /// <summary>解析后的 End Tail output-frame 数（long：与 canonical frame 计数同一域）。</summary>
+        public long? ResolvedTailFrames;
         public double? ResolvedTailSeconds;
         public double? ResolvedTailBeats;
         public double? CompletionBpm;
@@ -61,7 +71,9 @@ namespace ADOFAI.Renderist.Export
             EndedAtUtc = null;
             TickCount = 0;
             OutputFps = 0;
-            SafetyFrameLimit = 0;
+            SafetyPolicy = null;
+            SafetyFrameLimit = null;
+            SafetyDurationSeconds = null;
             EndTailInputValue = EndTailPolicy.DefaultValue;
             EndTailInputUnit = EndTailPolicy.DefaultUnit.ToString();
             ResolvedTailFrames = null;
@@ -124,7 +136,9 @@ namespace ADOFAI.Renderist.Export
             AppendStringNullable(sb, "outputDirectory", OutputDirectory, true);
             AppendLong(sb, "tickCount", TickCount, true);
             AppendLong(sb, "outputFps", OutputFps, true);
-            AppendLong(sb, "safetyFrameLimit", SafetyFrameLimit, true);
+            AppendStringNullable(sb, "safetyPolicy", SafetyPolicy, true);
+            AppendLongNullable(sb, "safetyFrameLimit", SafetyFrameLimit, true);
+            AppendDoubleNullable(sb, "safetyDurationSeconds", SafetyDurationSeconds, true);
             AppendDouble(sb, "endTailInputValue", EndTailInputValue, true);
             AppendString(sb, "endTailInputUnit", EndTailInputUnit ?? string.Empty, true);
             AppendLongNullable(sb, "resolvedTailFrames", ResolvedTailFrames, true);

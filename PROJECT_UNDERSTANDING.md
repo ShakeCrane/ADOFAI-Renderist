@@ -22,7 +22,9 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 - 不提交游戏、Unity、UMM、Harmony、第三方 Mod DLL 或反编译源码
 - README 由用户维护，默认不修改
 - 发布包固定为 `Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`
-- 四位版本号；`0.3.4.0 → 0.3.5.0` 与 `0.3.5.0 → 0.3.5.1` 均已获用户明确批准并已同步
+- **非实时导出原则**：不得因性能、wall-clock 处理速度、PNG 编码耗时、文件数量、磁盘写入速度或预计导出时长而人为限制导出参数。"参数合法性" ≠ "当前机器性能是否足够"；1000 FPS 不要求现实时间每秒完成 1000 张 PNG。性能问题只用 warning / estimate / benchmark / disk estimate / recommendation 表达，**不用 legality gate 禁止参数**
+- **不存在内建的最大导出时长或最大总输出帧数**：safety 默认为未配置（unbounded，见 §3.8）；正常谱面长度、正常总帧数与高 Output FPS 都不是故障条件。导出只由 canonical completion、用户 cancel、异常 fail-closed 与"无进展 / 卡死 / 状态异常"watchdog 终止
+- 四位版本号；`0.3.4.0 → 0.3.5.0`、`0.3.5.0 → 0.3.5.1`、`0.3.5.1 → 0.3.6.0` 与 `0.3.6.0 → 0.3.6.1` 均已获用户明确批准并已同步
 
 ---
 
@@ -30,9 +32,10 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 产品版本 | `0.3.6.0` |
+| 产品版本 | `0.3.6.1` |
 | 阶段 | `Phase 3.6.0 Render Time Determinism` |
-| Git 基线 | `main`；`0.3.6.0` 收敛内容见本文件 §11 |
+| Git 基线 | `main`；`0.3.6.0` 收敛内容见本文件 §11，`0.3.6.1` 为 Output FPS legality 语义、safety 默认 unbounded（移除人为总帧数 / 总时长上限）、canonical frame index `long`、`PrepareHitState` fail-closed 与 `controller.paused` 阶段修正的修订版本 |
+| 实机验证状态 | `0.3.6.1`：**30 FPS 与 1000 FPS 完整导出均通过**（用户实机 2026-09-15，见 §8） |
 | ADOFAI | Steam public buildid `24397494`；`Assembly-CSharp.dll` FileVersion `0.4.3.0` |
 | Unity | `6000.3.10f1` / Mono |
 | UMM | `0.33.0` |
@@ -76,7 +79,7 @@ FrameIndex N
   → tail 排空后 Completed；否则 N++
 ```
 
-关键不变量：**Frame N 的 PNG 没有成功写盘，就不 commit N，也不开始 N+1。** `MasterTimeline` 的 FrameIndex 是唯一 **export / chart timeline** authority；wall clock 与 audio 都不推进它。（引擎侧时间另由 `Time.captureFramerate` 决定，见 §3.7——不要把它读成"MasterTimeline 直接拥有全部 Unity engine state"。）
+关键不变量：**Frame N 的 PNG 没有成功写盘，就不 commit N，也不开始 N+1。** `MasterTimeline` 的 FrameIndex 是唯一 **export / chart timeline** authority（类型为 `long`，见 §3.7）；wall clock 与 audio 都不推进它。（引擎侧时间另由 `Time.captureFramerate` 决定，见 §3.7——不要把它读成"MasterTimeline 直接拥有全部 Unity engine state"。）
 
 ### 3.3 Completion
 
@@ -145,29 +148,65 @@ Time.deltaTime        = 1 / OutputFps
 并且 **capture transaction 中 1 个 output frame 对应 1 个连续 Unity frame**（output frame index 与 `Time.frameCount` 均严格 +1）。因此 `outputFps` 是输出采样密度：引擎侧 scaled 时间每帧恰好前进 `1/OutputFps`。
 
 - **`Time.timeScale` 不是 Renderist-owned state**。Renderist 只读（诊断）不写。output capture frames 实机恒为 `1`；`Play` / `InitializationHold` 边界可出现 native transient `0`（本 DLL 内唯一的持续非 1 写入者是 `scrController.TogglePauseGame` 且 `paused == true`，已被 Input Guard 抑制）。**不要新增 `Time.timeScale == 1` 的启动 preflight 或 ownership。**
-- **`controller.paused == false` 是 session precondition**（fail-closed，区分 `paused == true` 与读取失败两种情况；读取失败不得当作 false 放行）。只阻止，不修复：不 `TogglePauseGame`、不写 `paused`、不写 `Time.timeScale`。
-- **Output FPS 范围**由 `Export/OutputFpsPolicy` 单点定义（`1..1000`，默认 `60`），GUI 与 preflight 共用同一规则；`outputFps * 4` 这类派生量必须走溢出安全计算，不得依赖整数回绕后由 `Math.Max` 兜底。
+- **`controller.paused` 是 runtime condition，不是启动前条件**（0.3.6.1 修正）。真实语义（静态 IL 已确认，见 §10.5）：
+  - 编辑器 idle（以及 Esc 返回编辑模式后）`paused == true` 是**正常状态**：`scrController.Awake` 执行 `paused = ADOBase.isLevelEditor`，返回编辑模式时 `scnEditor.SwitchToEditMode → TogglePause → scnGame.ResetScene` 的编辑器分支又会重新 pause。
+  - 唯一会把它清零的是官方 `editor.Play()` → `scnGame.Play()`（`paused = false`），因此**启动前检查它必然误杀正常导出**。0.3.6.0 的 `controller-paused` 启动拒绝即为此阶段错误，已删除。
+  - 正确判定点是 **playback readiness**：生命周期真正到达 `PlayerControl` + `playerAlive` 之后仍 `paused == true`（或 `paused` 不可读）才是异常，立即 fail-closed（`controller-paused` / `controller-paused-during-playback` / `controller-paused-state-unavailable-during-playback`）。`PlaybackLifecycleHandoff.IsReady` 仍要求 `!paused`，`IsReadyExceptPaused` 只描述"生命周期是否已到达可判定阶段"。
+  - 只阻止，不修复：**Renderist 在任何阶段都不写 `paused`、不调用 `TogglePauseGame`、不写 `Time.timeScale`**；读取失败不得当作 false 放行（`IsPlaybackReady` 与异常判定都 fail-closed）。
+- **Output FPS 合法性**由 `Export/OutputFpsPolicy` 单点定义（0.3.6.1 起）：**没有产品级上限**，合法即"当前配置 / API 能表达的正整数"（`Settings.EditorTargetFrameRate` 与 `Time.captureFramerate` 都是 `int`，因此无需额外定义 Maximum；`int.MaxValue` 只是数据类型边界，不是推荐值或性能目标）。GUI 文案为"必须是正整数"。默认 `60`，最小 `1`（`Time.captureFramerate == 0` 在 Unity 约定中表示"未启用捕获节拍"）。
+- `Application.targetFrameRate` 只是 **best-effort derived hint**（让 Unity 不节流导出循环），**不是** authority：`outputFps * 4` 一律用 `long` 计算并在超过 `int.MaxValue` 时饱和到 `int.MaxValue`，**绝不**因为这个内部派生量拒绝用户的 Output FPS。
+- 性能 / PNG 编码耗时 / 磁盘占用 / 预计时长都不是合法性条件，也不得成为新的参数上限；未来只用 warning / estimate / benchmark / disk estimate / recommendation 表达（见 §1 非实时导出原则）。
+- **帧编号类型**：Renderist 自有的 canonical / output frame 编号与计数一律是 `long`——`MasterTimeline.FrameIndex` / `Prepare(long)`、`_outputFrameIndex`（prepared / committed / pending capture index）、capture request / captured / tail 计数、`FrameCaptureDriver` 的帧号与 PNG 文件名编号、`completionFrameIndex` 与 `resolvedTailFrames`。`long` 只是内部帧序号的**结构可表达边界**，不是产品级上限，也不允许建立人为 `long` 上限。
+- **仍是 `int` 的部分**（有意保留）：`Settings.EditorTargetFrameRate` 与 `Time.captureFramerate`（Unity API / 配置类型，都是正 int）、`Application.targetFrameRate` 派生（饱和到 `int.MaxValue`）、Unity 侧 `Time.frameCount` 与 `_activationUnityFrame` / `_lastPrepareUnityFrame`、单帧命中数 `_hitsThisFrame`（上界是当前谱面 floor 数）、文件名 `ZeroPadWidth`（只是**最小**补零宽度，位数超过时自然扩展，不截断）。
+- **frame → 逻辑时间换算**在 `double` 中进行（`(double)frameIndex / OutputFps`），不存在 int 中间值乘法或转换；因此 `int.MaxValue + 1L` 及更大的帧号不会出现负数、截断或 int cast。
+- **double timeline 仍有有限浮点精度边界**：`outputTime` / `chartTime` 是 `double`，尾数 53 位，因此当帧号超过 `2^53 ≈ 9.007e15` 后，相邻帧号不再能被逐一精确表示，`outputTime` 的步进会出现量化（相邻帧可能落在同一 double 上）。这是数据类型精度边界，不是产品上限：按 1000 FPS 计 `2^53` 帧约合 9e12 秒（约 28 万年），实际导出（含 1000 FPS 的 3336 帧实机用例）远在边界之内；如未来要支持该量级，需要改用更高精度的时间表示，而不是给帧数或 FPS 加人为上限。
+- **long 边界的 fail-closed**：帧号理论上到达 `long.MaxValue` 时无法再表达"下一帧"，`PrepareFrame` / `CommitFrame` 在递增前显式 `RequestStop("frame-index-exhausted", "output-frame-index-exceeds-long-range")`，**不依赖 unchecked 递增回绕**；End Tail 的 double → long 转换同样有显式边界检查（`9223372036854775808.0`，即 2^63），不使用 C# 的 `checked`（对浮点→整数转换无效）。
 
-### 3.8 `averageFrameTime` 与 multipress gate（Renderist 不拥有）
+### 3.8 Safety policy：默认 unbounded，显式 frame limit 可选（0.3.6.1）
+
+safety 上限的唯一解析点与判定点是 `Export/SafetyFrameLimitPolicy`；`Export/EndTailPolicy` 与 `DeterministicFrameScheduler` 都只通过 `SafetyFrameLimitPolicy.IsFrameLimitReached(frameLimit, count)` 做帧数判定，不存在第二处比较。
+
+| 配置情况 | 解释 | 本 session 的 frame 上限 |
+| --- | --- | --- |
+| `EditorExportSafetyFrameLimit <= 0` | 未配置（内建默认，Settings 字段默认值就是 `0`） | **无限制**：不存在总帧数 / 总时长上限 |
+| `EditorExportSafetyFrameLimit == 36000` | legacy 历史默认标记（0.3.6.0 及更早的内建默认值） | **无限制**（同上） |
+| 其它正整数（显式设置） | 显式 output-frame 上限 | **按配置值原样使用，不夹取** |
+
+- 判定语义：`frameLimit <= 0` 时 `IsFrameLimitReached` 恒为 `false`，即 unbounded 状态下导出**永远不会因为帧数而终止**；只有显式配置的正整数会触发 `safety-limit` 终止。
+- **已移除的人为限制**：`min(value, 1000000)` 夹取、`ceil(600 × outputFps)` / 600 秒默认 duration policy、Output FPS 上界。`int.MaxValue` 只是 `Settings` 字段当前数据类型的结构边界，不是产品推荐值或性能限制。
+- safety 的职责边界：保留 manual cancel、异常 fail-closed 与"无进展 / 卡死 / 状态异常"watchdog（initialization readiness 30 s、单次 capture 事务 30 s、逐帧 progress 30 s，均由成功 commit 刷新；它们只覆盖单个阶段或一次进度间隙，不是总帧数或总时长上限，也绝不推进 `MasterTimeline`）。**不得**用"总帧数过多""谱面超过 N 秒""FPS 太高"作为默认故障判断。
+- **legacy Settings 兼容**（无配置版本系统，含一处刻意接受的歧义）：
+  - UMM 的 `OnSaveGUI → ModSettings.Save` 会把整个 Settings 对象（含默认值）序列化到 `Settings.xml`，历史默认 `36000` 因此会真实落盘（实测本机 `Mods\ADOFAI.Renderist\Settings.xml` 即带 `<EditorExportSafetyFrameLimit>36000</EditorExportSafetyFrameLimit>`）。
+  - safety 配置从未在 GUI 暴露，因此**正常 GUI 使用下**写盘的 `36000` 就是 legacy 默认值。
+  - 但用户**仍可手工编辑** `Settings.xml` 写成 `36000`；Renderist **无法区分**"legacy 默认 36000"与"手工显式 36000"。
+  - 当前**刻意选择**把 `36000` 统一迁移解释为 unbounded（与 `<= 0` 同义），其它正整数才按显式 frame limit 解释；代价是手工写入的 `36000` 也会被当作 unbounded。这是兼容策略的**已知歧义**，不使用配置版本系统来消除。
+- 表示方式：内部与 End Tail 边界用 `0` 表示未配置（并由上述谓词统一守卫）；**对外表示一律用"无值"**——`EditorExportReadinessReport.SafetyFrameLimit`、`EditorExportSession.SafetyFrameLimit` / `SafetyDurationSeconds`、`DeterministicFrameScheduler.SafetyFrameLimit` / `SafetyDurationSeconds` 都是可空类型，unbounded 时为 `null`，日志与 GUI 显示 `unbounded` / "未配置"，**不用 `0` 或 `long.MaxValue` sentinel 冒充真实上限**。
+- metadata 记录最终实际采用的 policy：`safetyPolicy`（`unbounded` / `explicit-frames`）、`safetyFrameLimit`（帧数或 `null`）、`safetyDurationSeconds`（秒数或 `null`；仅显式配置时有真实含义）；启动日志另记录 `configuredSafetyFrameLimit`（原始配置值，仅诊断 legacy 来源）。
+
+### 3.9 `averageFrameTime` 与 multipress gate（Renderist 不拥有）
 
 - `scrController.averageFrameTime`（`public float`）：**唯一 writer 是 `scrController.PlayerControl_Update()`**，语义为 EMA `a_n = 0.5·a_(n-1) + 0.5·Time.deltaTime`；**唯一外部 reader 是 `scrPlanet.SwitchChosen()`**。无属性、无第二读者。它**不参与命中判定**（`GetHitMargin` / `SnapAngleCardinal` / `targetExitAngle` 都不读它），只影响**多重按压惩罚记账与显示**（`scrFailBar` 伤害、`missesOnCurrFloor` miss 标记、判定文字被改写为 `HitMargin.Multipress`）。
 - `SwitchChosen` 的 multipress 门是**跨调用状态**：门在 `@2100/@2116` 读取 `multipressAndHasPressedFirstPress` / `multipressPenalty`，而武装它们的 `MoveToNextFloor` 在同一方法内更晚的 `@3240` 才执行（1-floor lag）。
 - **Renderist 不拥有 `averageFrameTime`**：不写、不 seed、不 pin、不新增 ownership。
-- **`RenderistAutoPlay.PrepareHitState` 对 `multipressPenalty` / `multipressAndHasPressedFirstPress` / `keyTimes` 的中和是 deterministic autoplay invariant**：每次官方 `Hit(true)` 之前把 gate 的两个 flag 清回 `false` 并清空 `keyTimes`，因此 gate 恒为 false、`averageFrameTime` 相关的 multipress block 永不被进入。该不变量的正常路径与 completion 路径均已实机确认。
+- **`RenderistAutoPlay.TryPrepareHitState` 对 `multipressPenalty` / `multipressAndHasPressedFirstPress` / `consecMultipressCounter` / `keyTimes` 的中和是 deterministic autoplay invariant，且自 0.3.6.1 起是 fail-closed 的**：每次官方 `Hit(true)` 之前把 gate 的两个 flag 清回 `false`、清空 `keyTimes`、清零 `consecMultipressCounter`；任一写入失败即返回 `false`，调用方在官方 `Hit(true)` **之前**停止并以 `hit-state-prepare-failed:<具体原因>` 结束 session。该不变量的正常路径与 completion 路径均已实机确认（0.3.6.0）。
+- **`SetAllPlayerResponsive(true)` 同样是 load-bearing 项**（0.3.6.1 起必需）：静态 IL 已确认 `scrPlayer.Hit(bool)` 的第一个 guard 就是 `ldfld scrPlayer::responsive; brfalse → return false`（`IL_0009`/`IL_000e`），而 `scrPlayerManager.SetAllPlayerResponsive(bool)` 的实现就是逐个 `stfld scrPlayer::responsive`。`scnEditor.Play()` 经 `scrPlayerManager.UnlockAllPlayerInput() → scrPlayer.UnlockInput()` 在 session 启动时给出该保证，`scrController.Update()` 也会调用它；Renderist 在每次命中前重新断言 `true`，因此该 API 不可解析时不再静默降级（`EnsureAvailable` 返回 `autoplay-player-responsive-api-unavailable`，session 不启动）。
 - 该不变量**不需要**用常驻 Harmony 监控来守护：为一个已被实机确认不可达的原生分支永久增加 patch 是不必要的复杂度。
-- `PrepareHitState` **不再写 `controller.paused`**：`CatchUp` 在进入命中循环前已对 `paused == true` 提前 return，因此该写入是可证明的 no-op，移除它避免在没有 ownership 的情况下修改游戏状态。
+- `TryPrepareHitState` **不再写 `controller.paused`**：`CatchUp` 在进入命中循环前已对 `paused == true` 提前 return，因此该写入是可证明的 no-op，移除它避免在没有 ownership 的情况下修改游戏状态。
+- **RDC.auto 的 finally 恢复不受 fail-closed 影响**：`TryPrepareHitState` 失败路径仍经过同一 `try/finally`（IL 的 `Finally try=IL_01fe+352 handler=IL_035e+33` 覆盖整个命中事务），因此 `RDC.auto` 一定恢复原值，恢复失败仍以 `rdc-auto-restore-failed` 优先上报。
 
 ---
 
 ## 4. 关键模块
 
-- `MasterTimeline`：FrameIndex 是唯一 **export / chart timeline** authority。
-- `PlaybackLifecycleHandoff`：关联 Renderist-owned `editor.Play()` 的 `StateEngine.Changed` 与 `OnMusicScheduled`。**`IsReady` 的前置条件是全部满足**：`PlayRequested && PlayReturned && SawStart && SawMusicScheduled && SawCountdown && SawPlayerControl && 当前 state=="PlayerControl" && playerAlive && !paused`。其中任一（尤其 `SawCountdown`：必须真的观察到一次 `Countdown` 状态提交）缺失，`InitializationHold` 就会每个 Tick 提前返回、永不释放，session 最终以 `native-playback-stopped` 取消且 `outputFrameIndex` 恒为 0。
+- `MasterTimeline`：FrameIndex 是唯一 **export / chart timeline** authority（`long`）；`Prepare(long)` 用 double 完成 frame → outputTime / chartTime 换算。
+- `PlaybackLifecycleHandoff`：关联 Renderist-owned `editor.Play()` 的 `StateEngine.Changed` 与 `OnMusicScheduled`。**`IsReady` 的前置条件是全部满足**：`PlayRequested && PlayReturned && SawStart && SawMusicScheduled && SawCountdown && SawPlayerControl && 当前 state=="PlayerControl" && playerAlive && !paused`（实现上 `IsReady = IsReadyExceptPaused && !paused`，后者只描述"生命周期是否已到达可判定阶段"，供 paused 异常判定复用）。其中任一（尤其 `SawCountdown`：必须真的观察到一次 `Countdown` 状态提交）缺失，`InitializationHold` 就会每个 Tick 提前返回、永不释放，session 最终以 `native-playback-stopped` 取消且 `outputFrameIndex` 恒为 0。
 - `EditorVisualClock`：强制 `songposition_minusi` getter/setter，并精确撤销 Harmony Patch。
-- `RenderistAutoPlay`：按 `nextFloor.entryTime` 消费 due floor；`RDC.auto` 只在单次官方 `Hit(true)` 事务内临时置 true 并恢复。它不拥有时间，也不决定 session 完成。**`PrepareHitState` 的 multipress / `keyTimes` 中和是 deterministic autoplay invariant（见 §3.8）。** **progression bound 已移除固定魔数**：单次 `CatchUp`（一个输出帧）的合法命中上界是**当前谱面 `floors.Count`**（每次 `Hit` 都要求 `seqID` 严格向前）；`floors` 不可读时 fail-closed。成功条件是 canonical progression 严格单调向前：`after == before` 与 `after < before` 都立即 `hit-progression-not-forward` fail-closed；多格前进允许（记录但接受）。bound 耗尽后的尾部检查与主循环**同一判定**：`next == null` → success；`entryTime` 不可读 / NaN / Infinity → `next-entry-time-unavailable` fail-closed；仍 due → `autoplay-progression-bound-exceeded`；未 due → success。
-- `EndTailPolicy`：校验并把单一玩家输入的 Frames / Seconds / Beats 换算为 output-frame tail。
-- `DeterministicFrameScheduler`：启动、Initialization Hold、逐帧事务、canonical completion 观测、native Esc observer、input guard、冻结/解析 tail、capture commit、停止与恢复。
-- `FrameCaptureDriver`：同步 PNG 后端，带 generation 隔离。两阶段生命周期：`Start()` 只建立 generation / host / coroutine；`TryActivateCameraSource()` 才取得当前 session 的摄像机链并接管 `targetTexture`。source 未激活时 `RequestCapture` 一律拒绝，不回退 Screen framebuffer。
+- `RenderistAutoPlay`：按 `nextFloor.entryTime` 消费 due floor；`RDC.auto` 只在单次官方 `Hit(true)` 事务内临时置 true 并恢复。它不拥有时间，也不决定 session 完成。**`TryPrepareHitState` 的 multipress / `keyTimes` / `consecMultipressCounter` / `SetAllPlayerResponsive(true)` 是 fail-closed 的 deterministic autoplay invariant（见 §3.9）。** **progression bound 已移除固定魔数**：单次 `CatchUp`（一个输出帧）的合法命中上界是**当前谱面 `floors.Count`**（每次 `Hit` 都要求 `seqID` 严格向前）；`floors` 不可读时 fail-closed。成功条件是 canonical progression 严格单调向前：`after == before` 与 `after < before` 都立即 `hit-progression-not-forward` fail-closed；多格前进允许（记录但接受）。bound 耗尽后的尾部检查与主循环**同一判定**：`next == null` → success；`entryTime` 不可读 / NaN / Infinity → `next-entry-time-unavailable` fail-closed；仍 due → `autoplay-progression-bound-exceeded`；未 due → success。
+- `EndTailPolicy`：校验并把单一玩家输入的 Frames / Seconds / Beats 换算为 output-frame tail；safety 参数是 `long`，`0` 表示未配置上限（unbounded），显式配置时按配置值原样判定（见 §3.8）。
+- `OutputFpsPolicy`：Output FPS 的唯一合法性 / 派生单点（正整数，无产品级上限；`Application.targetFrameRate` 是饱和派生的 best-effort hint）。
+- `SafetyFrameLimitPolicy`：safety 上限的唯一解析点与判定点（默认 unbounded，显式 frame limit 原样使用，见 §3.8）。
+- `DeterministicFrameScheduler`：启动、Initialization Hold、逐帧事务、canonical completion 观测、native Esc observer、input guard、冻结/解析 tail 与 safety policy、capture commit、停止与恢复；canonical frame 编号 / 计数为 `long` 并带 long 边界 fail-closed。
+- `FrameCaptureDriver`：同步 PNG 后端，带 generation 隔离。两阶段生命周期：`Start()` 只建立 generation / host / coroutine；`TryActivateCameraSource()` 才取得当前 session 的摄像机链并接管 `targetTexture`。source 未激活时 `RequestCapture` 一律拒绝，不回退 Screen framebuffer。帧号是 `long`；文件名 `frame_<index>.png` 采用**最小 6 位补零**（`frame_000000.png`），编号超过 6 位时自然扩展（`frame_1000000.png`）、绝不截断。
 - `EditorExportController` / `EditorExportSession`：preflight、独立 session、metadata、Completed/Cancelled/Failed 生命周期。
 - `EditorGameReflection`：当前 ADOFAI 内部 API 的运行时反射层（摄像机链、canonical completion、input guard 目标、只读生命周期诊断）。
 
@@ -177,15 +216,15 @@ Time.deltaTime        = 1 / OutputFps
 
 ## 5. 终止模型与 metadata
 
-`completionFrameIndex` 是确认 `Won` 时正在捕获、尚未 commit 的 output frame index。该帧仍会正常捕获并 commit；tail 只从其后成功 commit 的 output frame 开始计数。每一帧只有 PNG 成功后才 commit。
+`completionFrameIndex` 是确认 `Won` 时正在捕获、尚未 commit 的 output frame index（`long`）。该帧仍会正常捕获并 commit；tail 只从其后成功 commit 的 output frame 开始计数。每一帧只有 PNG 成功后才 commit。
 
-metadata 通过 `terminationKind`、`stopReason`、`completionSignal`、`completionFrameIndex`、canonical 两个观测布尔值、`tailFramesCaptured` 与 `safetyFrameLimit` 区分。End Tail 另记录 `endTailInputValue`、`endTailInputUnit`、`resolvedTailFrames`、`resolvedTailSeconds`、`resolvedTailBeats`、`completionBpm`、`outputFps` 与 `pitch`。Render Source 另记录 `captureSource`（值 `scrCamera-rendertexture`）、`captureWidth`、`captureHeight`。
+metadata 通过 `terminationKind`、`stopReason`、`completionSignal`、`completionFrameIndex`、canonical 两个观测布尔值、`tailFramesCaptured` 与 safety 三元组区分。Safety 三元组是 `safetyPolicy`（`unbounded` / `explicit-frames`）、`safetyFrameLimit`（显式配置时的 output-frame 上限，unbounded 时为 `null`）与 `safetyDurationSeconds`（仅显式配置时有真实含义，unbounded 时为 `null`）；**unbounded 状态绝不写出 `0`、`600` 或 sentinel 冒充上限**。End Tail 另记录 `endTailInputValue`、`endTailInputUnit`、`resolvedTailFrames`、`resolvedTailSeconds`、`resolvedTailBeats`、`completionBpm`、`outputFps` 与 `pitch`。Render Source 另记录 `captureSource`（值 `scrCamera-rendertexture`）、`captureWidth`、`captureHeight`。
 
 | 结果 | 条件 | `terminationKind` |
 | --- | --- | --- |
 | Completed | canonical completion + tail 排空 | `canonical-completion` |
 | Cancelled | 用户 Stop、Esc 导致的 native stop、离开编辑器、Mod 禁用等 | `user-cancel` |
-| Failed | safety 上限命中 | `safety-limit` |
+| Failed | safety 上限命中（**仅显式配置 frame limit 时可能**） | `safety-limit` |
 | Failed | 初始化/捕获/逐帧 watchdog 超时 | `watchdog` |
 | Failed | PNG 请求、写盘或帧事务失败 | `capture-failure` |
 | Failed | 其它 API、生命周期或 cleanup 失败 | `lifecycle-failure` |
@@ -215,8 +254,8 @@ Safety / watchdog 绝不能把未完成谱面伪装成 Completed。
 
 ## 7. Arbitrary-length、安全上限与恢复
 
-- 正常 session 可持续到 canonical completion，不受固定 180 帧截断。
-- `EditorExportSafetyFrameLimit` 默认 `36000`，最大 `1000000`；`0` 使用默认值。它只是 completion 永不出现时的 fail-safe。
+- 正常 session 可持续到 canonical completion，不受固定 180 帧截断，也不受任何内建总帧数 / 总时长限制（safety 默认 unbounded，见 §3.8）。
+- `EditorExportSafetyFrameLimit` 是**可选**的显式 output-frame 上限：`0`（字段默认值）与 legacy 历史默认 `36000` 都表示"未配置"；其它正整数按配置值原样生效、不夹取。它只是 completion 永不出现时的 fail-safe，**不是**导出能力上限。显式上限同样约束 End Tail 解析（`end-tail-exceeds-safety-limit` 只在显式配置下可能出现）。
 - 三个 wall-clock watchdog 都只是失败保护，且都不推进 `MasterTimeline`；它们分别只覆盖单个阶段或单次帧进度间隙，不覆盖整个 session：initialization readiness（frame 0 之前）30 秒；单次 capture callback 事务 30 秒；逐帧 progress（连续 30 秒没有成功 commit 的帧）。实机已出现一次 wall-clock 约 `50.45` 秒且正常 canonical completion 的 session，因此 30 秒 watchdog 不是全局 session 上限。
 - terminal session 仍允许单击重新启动；启动前先执行 residual ownership gate。Completed 后仍通过已确认的 `scrController.ChangeToStartState()` re-arm 到 Start，之后才创建新 session 并调用一次官方 `editor.Play()`。Esc（Cancelled）后可直接再次 export。
 - 用户关卡不会被修改。
@@ -225,7 +264,45 @@ Safety / watchdog 绝不能把未完成谱面伪装成 Completed。
 
 ## 8. Runtime 验证状态
 
+### 0.3.6.1 — RUNTIME VALIDATED（用户实机：30 FPS 与 1000 FPS 完整导出）
+
+实机结论（用户，session `editor_20260915_095106` 为 1000 FPS 组）：
+
+- **`controller.paused` 阶段修复有效**：编辑器 idle 直接启动不再被拒（修复前的第一次实机曾稳定出现 `EditorExportPreflight: Ready / None` → `编辑器导出启动被拒绝：controller-paused`；根因见 §10.5），lifecycle 正常走完 `Start → OnMusicScheduled → Countdown → PlayerControl`，Initialization Hold 正常释放。
+- **30 FPS 完整导出通过**：autoplay 正常（同一 output frame 曾成功执行 2 次 Hit）、canonical completion 正常、completion 后精确捕获 12 个 End Tail、`frame_000000.png`..`frame_000113.png` 连续、最终 `Completed`。
+- **1000 FPS 完整导出通过**：
+
+| metadata | 值 |
+| --- | --- |
+| `version` / `state` / `stopReason` | `0.3.6.1` / `Completed` / `canonical-completion-tail-drained` |
+| `terminationKind` / `completionSignal` | `canonical-completion` / `scrController.OnLandOnPortal+state=Won` |
+| `completionFrameIndex` | `3323`（`canonicalCompletionCallbackSeen` 与 `canonicalCompletionStateSeen` 均为 `true`） |
+| `outputFps` / safety | `1000` / `safetyPolicy=unbounded`、`safetyFrameLimit=null`、`safetyDurationSeconds=null` |
+| End Tail | `resolvedTailFrames=12`、`resolvedTailSeconds=0.012`、`tailFramesCaptured=12` |
+| frames | `captureRequestCount=3336`、`capturedFrameCount=3336`；capture 尺寸 3072×1920 |
+
+完整 Player.log 确认：scheduler 以 `outputFps=1000` 启动、safety 为 unbounded、lifecycle 正常到 PlayerControl、`canonical completion observed at outputFrame=3323`、最后写入/commit frame 为 3335、最终 `canonical-completion-tail-drained` / `Completed`；**未**观察到 `controller-paused`、`controller-paused-during-playback`、`hit-state-prepare-failed`、`rdc-auto-restore-failed`、`safety-limit`、`frame-index-exhausted` 或任何 Renderist watchdog failure。
+
+**静态 / 离线证据**（与上述实机结论一致，作为回归基线保留）：
+
+- **Output FPS legality / `Application.targetFrameRate` 派生**：`1/30/60/120/240/500/1000/10000/65535/1000000/536870911/536870912/int.MaxValue` 全部合法（正整数语义）；`0/-1/int.MinValue` 全部以 `output-fps-not-positive` 拒绝；派生量在 `536870912` 起饱和到 `int.MaxValue`，`536870911 → 2147483644` 仍精确。
+- **safety 默认 unbounded**：`<= 0` 与 legacy `36000` 都解析为 `unbounded`（无 frame 上限）；`IsFrameLimitReached(0, N)` 对 `N` 直到 `long.MaxValue` 恒为 `false`；解析结果与 Output FPS 无关（改变 FPS 不会重新产生 duration / frame limit）。**显式 frame limit 原样生效**：`1/2/35999/36001/1000000/1000001/5000000/int.MaxValue` 均无夹取，判定恰好在配置值处触发；End Tail 同理（unbounded 下 `10,000,000` 帧 tail 仍可解析，显式 `5000` 帧上限仍按配置拒绝 `5000` 帧 tail）。
+- **scheduler 判定路径（构建产物级）**：`PrepareFrame` 与 `CommitFrame` 的帧数判定都经 `SafetyFrameLimitPolicy::IsFrameLimitReached`，`TryStart` 经同一 `Resolve` 冻结 policy；不存在第二处 `_safetyFrameLimit` 比较。
+- **long 帧号链（离线 + 构建产物级）**：`MasterTimeline.Prepare(Int64)`、`FrameCaptureDriver.BuildFilePath(Int64)`、`OnCaptureResult(Int64, Int64, …)`、`CommitFrame(Int64, String)`、`RenderistAutoPlay.CatchUp(Int64, …)` 均为 64 位帧号，帧号路径中不含 `conv.i4` 或 `Int32::ToString`；`0 / 1 / int.MaxValue-1 / int.MaxValue / int.MaxValue+1L / 3e9 / long.MaxValue` 全部无负数、无截断、无回绕；`PrepareFrame` / `CommitFrame` 内含 `_outputFrameIndex == long.MaxValue` 的结构性 fail-closed（`frame-index-exhausted`），不依赖 unchecked 递增；End Tail 的 double → long 转换在 2^63 边界显式报 `end-tail-frame-count-overflow`，而 `3e9` / `9e18` 帧这类超过 int 的合法值正常解析为 long。文件名在 `999999 / 1000000 / int.MaxValue / int.MaxValue+1L` 下完整输出编号（`PadLeft` 只补不截）。
+- **`TryPrepareHitState` fail-closed 的控制流（构建产物级）**：命中调用位于 `TryPrepareHitState` 之后并由其结果守卫，失败路径跳过整个命中块；异常表 `Finally` 覆盖整个命中事务，`RDC.auto` 恢复在两条路径上都执行；判定顺序为 `rdc-auto-restore-failed` → `hit-state-prepare-failed:<原因>` → `scr-player-hit-threw`。
+- **paused 阶段修复（构建产物级）**：`ValidateStartConditions` 的 IL 中已无任何 `controller-paused` 拒绝串，也不再调用 `EditorGameReflection::ReadControllerPaused`；`ReadControllerPaused` 的调用点只剩 `TogglePauseGamePrefix`（返回兼容）、`IsPlaybackReady`、`TryDetectAbnormalPlaybackPause`（playback readiness 阶段）与 Esc observer 诊断；`IsReady` 仍组合 `!paused`，`IsReadyExceptPaused(Object, Boolean)` 不含 paused；全仓库无 `paused` 写入、无 `TogglePauseGame` 直接调用、无 `Time.timeScale` 写入。
+- 版本一致性：`mod/Info.json` = csproj `<Version>` = `ModEntry.ModVersion` = 启动日志 = `0.3.6.1`；`RenderTimeProbe` 未恢复（构建产物中不含该符号）。
+
+**仍然未验证（不阻塞 0.3.6.1）**：
+
+1. **显式 safety frame limit 的触发 / 耗尽注入**：只有静态与纯计算证据（默认 unbounded，因此这不是正常导出的终止条件）。
+2. **`TryPrepareHitState` 故障注入**：只有 IL 级控制流证据，未做实机注入（需要真实 `scrPlayer` / `scrController`）。
+3. 更广泛的谱面 / 时长覆盖：BPM change、Twirl、Midspin、长时导出、多轮连续导出（部分已在 0.3.5.1 覆盖）。
+4. trail / star-trail 视觉状态（见下节"尚未验证 / 仍需更广泛验证"）。
+
 ### 0.3.6.0 — RUNTIME VALIDATED（用户实机，Render Time Determinism P0）
+
+> 实机数据来自当时部署的开发构建（该 DLL 的 FileVersion 为 `0.3.5.1`、含 `RenderTimeProbe`、尚不含 multipress 中和，且**没有**启动前 paused gate）；随后的发布构建（probe 移除 + multipress invariant 固化 + 当时的 `paused` 启动前 precondition）与 `0.3.6.1` 的二进制**尚未**实机验证。
 
 同一谱面、同一配置、仅 `outputFps` 不同（60 / 30）的两组导出，均正常 `Completed`：
 
@@ -252,7 +329,7 @@ Safety / watchdog 绝不能把未完成谱面伪装成 Completed。
 
 - 两组共 22 次 `SwitchChosen` transaction：**全部 `multipressBlockEntered = false`，无 `AngleToTime` 判定事件、无 `OnDamage` 事件**；每次 transaction 入口 `keyTimes = 0`、`multipressAndHasPressedFirstPress = false`。
 - 普通命中的最后一次 transaction 与 completion transaction **同样未进入该 block**。
-- 这实机验证了 §3.8 的 deterministic autoplay invariant。**Renderist 不拥有 `averageFrameTime`。**
+- 这实机验证了 §3.9 的 deterministic autoplay invariant。**Renderist 不拥有 `averageFrameTime`。**
 
 ### 0.3.5.0 — RUNTIME VALIDATED（用户实机）
 
@@ -328,12 +405,24 @@ Safety / watchdog 绝不能把未完成谱面伪装成 Completed。
 
 ### 尚未验证 / 仍需更广泛验证
 
-- `safetyFrameLimit=36000` 的**耗尽**注入：仍只有静态代码 / build 证据，未做 runtime validation。（cleanup、会话启动、capture 后端启动、autoplay progression 等异常路径已完成注入式实机验证，见 0.3.5.1 小节。）
+- **显式 safety frame limit 的触发 / 耗尽注入**：只有静态与纯计算证据，未做 runtime validation（默认状态 unbounded，因此这不是正常导出的终止条件）。
+- `TryPrepareHitState` fail-closed 的**故障注入**：只有 IL 级控制流证据，未做实机注入（需要真实 `scrPlayer` / `scrController`）。
 - 任意 FPS / pitch 组合、长时间大规模导出稳定性。
 - 更极端的复杂谱面类型：BPM change、Twirl、Midspin、复杂角度 / 旋转方向、event-heavy chart、checkpoint / 特殊 startup（Hold 已实测正常）。
 - custom resolution / supersampling、audio capture、FFmpeg、replay。
 - Preview Bridge。
+- **trail / star-trail 视觉状态（待录屏验证）**：用户观察在 capture 正式开始**之前**，球拖尾与星轨的运动看起来比正常轨迹僵硬。**尚未调查、未改代码、不记录根因猜测**；需要用户提供录屏后确认 `Initialization Hold` / capture activation 前后的 trail / star-trail 状态是否连续，以及是否影响实际 frame 0+ 的导出内容（30 FPS / 1000 FPS 两次完整导出的 PNG 序列本身已通过）。
 - native Esc teardown 期间 Unity 引擎会打印 `Coroutine couldn't be started because the the game object 'Conductor' is inactive!`（无 mod 前缀）。静态证据指向 native teardown，Renderist 唯一的 `StartCoroutine` 位于自有 host GameObject，未观察到功能性影响；**未做禁用 mod 的 A/B 对照**，仍属待确认。
+
+### 后续需求候选（不属当前阶段，建议 0.3.6.2 独立小闭环）
+
+- **log-only / image-output-disabled 诊断模式**：开启详细日志时可选"不输出 PNG、只输出日志"，避免高 FPS 调试大量占用磁盘。设计要求（尚未实现、本轮不得实现）：
+  - `MasterTimeline` / lifecycle / autoplay / completion / End Tail 照常运行（时间与命中语义不变）；
+  - 可关闭 PNG 编码与文件写出；
+  - **不要**把"详细日志"与"不写 PNG"永久绑定（两个独立开关）；
+  - metadata 需要明确表示 image output 是否启用；
+  - `capturedFrameCount` / written frame count 的语义（commit 是否仍以"写出成功"为条件、capture request 如何计数）必须在实现前结合当前代码确定；
+  - frame commit 语义与 completion / End Tail 计数不得因此被静默改变。
 
 ---
 
@@ -388,12 +477,27 @@ Safety / watchdog 绝不能把未完成谱面伪装成 Completed。
 - `scrController.BeatLevel` 的调用只出现在调试路径与 `OttoButtonController`，不是正常完成依据。
 - 最终选择：只观察 `OnLandOnPortal` Postfix + 确认 `state == Won`；不调用、不替换、不改参数、不使用 Transpiler、不从 floor index 或命中数推导完成。
 
+### 10.5 `scrController.paused` 的写入者与阶段语义
+
+`paused` 是属性（`get_paused` / `set_paused`）。全程序集内 **直接** 调用 `set_paused` 的只有 5 处：
+
+| 写入者 | 语义 |
+| --- | --- |
+| `scrController.Awake` | `paused = ADOBase.isLevelEditor`（IL: `ldarg.0` → `get_isLevelEditor` → `set_paused`）⇒ **编辑器场景加载后 paused 恒为 true** |
+| `scnGame.Play(Int32, Boolean)` | `paused = false`（IL: `ldc.i4.0` → `set_paused`）；调用者包含 `scnEditor.Play()`（IL: `ldc.i4.1` → `call scnGame::Play`）⇒ **进入播放时才清零** |
+| `scrController.TogglePauseGame` | 暂停/恢复切换（也是 `Time.timeScale` 的持续写入者）；被 Input Guard 以 Prefix 抑制 |
+| `RedeemCode.EnablePanel` / `MobileMenu.scnMobileMenu.Start` | 与本阶段无关的场景 |
+
+间接路径：`scnEditor.SwitchToEditMode` → `scnEditor.TogglePause` → `scnGame.ResetScene(bool)`；`ResetScene` 的两个分支（`if (isLevelEditor && !paused)` 与 `if (isScnGame && paused)`）都通过 `TogglePauseGame` 生效，编辑器内走第一条 ⇒ **从播放返回编辑模式后重新 paused**。
+
+因此阶段语义为：editor idle / 返回编辑模式 → `paused == true`（正常）；`editor.Play()` 之后 → `paused == false`；`Countdown` / `PlayerControl`（playback ready）→ 必须仍为 false，否则是该阶段可判定的异常。`scnEditor.playMode`（= `pausedInPlayMode ? true : !controller.paused`）在编辑器内与 `paused` 互补，`editor-already-playing` 这个启动前 gate 已覆盖"编辑器已处于播放状态"的情况，因此启动前**不需要**额外检查 `paused`。
+
 ---
 
 ## 11. 发布与部署
 
-- 版本历史：`0.3.5.0` checkpoint = `79706b3b67c7c8c03da2cde9a0177f49a9dc7ca2`；`0.3.5.1` 为异常路径 ownership 收敛与 autoplay progression bound 的修订版本；`0.3.6.0` 为 Render Time Determinism（engine time 实机确认、`averageFrameTime` / multipress 边界定案、Output FPS 正式化与范围约束、`paused` session precondition）。
+- 版本历史：`0.3.5.0` checkpoint = `79706b3b67c7c8c03da2cde9a0177f49a9dc7ca2`；`0.3.5.1` 为异常路径 ownership 收敛与 autoplay progression bound 的修订版本；`0.3.6.0` 为 Render Time Determinism（engine time 实机确认、`averageFrameTime` / multipress 边界定案、Output FPS 正式化、当时的 `paused` session precondition）；`0.3.6.1` 移除 Output FPS 人为上限、把 safety 默认改为 unbounded（移除内建总时长 / 总帧数上限与显式值夹取）、把 canonical output frame 编号与计数收敛到 `long`（含 long 边界 fail-closed）、把 `PrepareHitState` 改为 fail-closed，并把 `controller.paused` fail-closed 从启动前移到 playback readiness 阶段——**该版本已实机验证通过（30 FPS 与 1000 FPS 完整导出，见 §8）**。
 - 发布包固定为 `Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` 保持 Git 忽略。
-- 自动验证链：`dotnet build src/ADOFAI.Renderist/ADOFAI.Renderist.csproj -c Release -t:Rebuild` → `scripts/package-release.ps1 -Configuration Release -Force` → `scripts/verify-release-package.ps1`。
+- 自动验证链：`dotnet build src/ADOFAI.Renderist/ADOFAI.Renderist.csproj -c Release -t:Rebuild` → `scripts/package-release.ps1 -Configuration Release -Force` → `scripts/verify-release-package.ps1 -ZipPath dist/ADOFAI.Renderist.zip`（`-ZipPath` 是 **mandatory** 参数，省略会直接报错）。
 - 部署使用 `scripts/copy-to-mods.ps1`（Release），只更新 `Mods\ADOFAI.Renderist\` 下本 Mod 自身文件，不触碰其他 Mod；可选 `-CleanRuntimeCache` 清除 UMM 运行时缓存。
 - 本地 Mods 路径由 `build/local.props` 的 `AdofaiInstallDir` 决定；未配置时不猜测路径。

@@ -22,8 +22,15 @@ namespace ADOFAI.Renderist.Export
     ///
     /// 关键不变量：Frame N 未成功捕获，就不提交 N，也不开始 N+1。
     ///
-    /// 时间只来自 MasterTimeline；不使用 wall clock、Unity Update 次数或 AudioRenderer。
-    /// wall clock（Time.realtimeSinceStartupAsDouble）仅用于 watchdog 失败保护，绝不推进 timeline。
+    /// 时间 authority 必须分两层理解：
+    ///   * MasterTimeline 是 **export / chart timeline** 的唯一 authority：
+    ///     outputTime = frameIndex / OutputFps，chartTime = canonicalStart + outputTime × pitch。
+    ///   * Time.captureFramerate 提供 deterministic Unity engine timestep
+    ///     （captureDeltaTime = deltaTime = 1 / OutputFps），使 1 个 output frame
+    ///     对应 1 个连续 Unity frame；它不是 chart timeline authority。
+    ///   * wall clock（Time.realtimeSinceStartupAsDouble）仅用于 watchdog 失败保护，
+    ///     绝不推进 timeline。
+    ///   * audible audio 不推进 chart timeline（Renderist 不拥有 audio timeline）。
     /// </summary>
     internal static class DeterministicFrameScheduler
     {
@@ -40,13 +47,7 @@ namespace ADOFAI.Renderist.Export
 
         private const int DefaultOutputFps = OutputFpsPolicy.Default;
         /// <summary>End Tail 默认值；玩家可改为 Frames / Seconds / Beats。</summary>
-        public const int DefaultTailFrameCount = 12;
-        /// <summary>
-        /// 默认 safety-only 上限：600 秒 @ 60 FPS。它只用于防止异常谱面无限运行，
-        /// 不参与正常完成判断。
-        /// </summary>
-        public const int DefaultSafetyFrameLimit = 36000;
-        private const int MaxSafetyFrameLimit = 1000000;
+        public const long DefaultTailFrameCount = 12;
         private const string FramePrefix = "frame_";
         private const int ZeroPadWidth = 6;
         private const double AnchorInvalidThresholdSeconds = 3600.0;
@@ -63,17 +64,25 @@ namespace ADOFAI.Renderist.Export
         private static string _terminalStopReason;
 
         private static int _outputFps = DefaultOutputFps;
-        private static int _safetyFrameLimit = DefaultSafetyFrameLimit;
-        private static int _resolvedTailFrameCount = DefaultTailFrameCount;
-        private static int _tailFramesCaptured;
+        // safety policy 由 SafetyFrameLimitPolicy 在 Start 时一次性解析。
+        // _safetyFrameLimit == 0 表示未配置（disabled / unbounded）：不存在默认总帧数或
+        // 总时长上限，导出只由 canonical completion、manual cancel、异常 fail-closed 与
+        // 无进展 watchdog 终止。
+        private static long _safetyFrameLimit;
+        private static SafetyLimitKind _safetyPolicyKind = SafetyLimitKind.Disabled;
+        private static int _configuredSafetyFrameLimit;
+        private static long _resolvedTailFrameCount = DefaultTailFrameCount;
+        private static long _tailFramesCaptured;
         private static EndTailInput _endTailInput =
             new EndTailInput(EndTailPolicy.DefaultValue, EndTailPolicy.DefaultUnit);
         private static double _resolvedTailSeconds;
         private static double? _resolvedTailBeats;
         private static double? _completionBpm;
-        private static int _outputFrameIndex;              // 已提交数量，同时也是“下一帧”编号
-        private static int _captureRequestCount;
-        private static int _capturedFrameCount;
+        // canonical output frame 编号 / 计数全部是 long：合法 Output FPS 是任意正 int，
+        // 且默认 safety unbounded，因此帧号不能依赖 int。
+        private static long _outputFrameIndex;             // 已提交数量，同时也是“下一帧”编号
+        private static long _captureRequestCount;
+        private static long _capturedFrameCount;
 
         private static double _outputTime;
         private static double _forcedSongPosition;
@@ -88,12 +97,14 @@ namespace ADOFAI.Renderist.Export
         private static int _captureWidth;
         private static int _captureHeight;
 
+        // Unity frame 域（Time.frameCount）与逐帧命中数保持 int：
+        // 前者是 Unity API 的帧计数器，后者上界是当前谱面 floor 数。
         private static int _awaitFrameCount;
         private static int _activationUnityFrame = -1;
         private static int _lastPrepareUnityFrame = -1;
         private static bool _clockActive;
         private static bool _pendingCapture;
-        private static int _pendingCaptureIndex = -1;
+        private static long _pendingCaptureIndex = -1;
         private static string _prefixSongPosition;
         private static string _lastFrame0Stage;
         private static int _hitsThisFrame;
@@ -105,7 +116,7 @@ namespace ADOFAI.Renderist.Export
         // alone never sets these flags.
         private static bool _canonicalCompletionCallbackSeen;
         private static bool _canonicalCompletionStateSeen;
-        private static int _canonicalCompletionFrameIndex = -1;
+        private static long _canonicalCompletionFrameIndex = -1;
         private static string _canonicalCompletionSignal;
 
         // wall-clock watchdog deadlines（仅失败保护，不推进 timeline）
@@ -159,18 +170,33 @@ namespace ADOFAI.Renderist.Export
         public static bool IsRunning => _running;
         public static SchedulerStatus Status => _status;
         public static string StopReason => _terminalStopReason;
-        public static int OutputFrameIndex => _outputFrameIndex;
+        public static long OutputFrameIndex => _outputFrameIndex;
         public static int OutputFps => _outputFps;
-        public static int SafetyFrameLimit => _safetyFrameLimit;
-        public static int ResolvedTailFrameCount => _resolvedTailFrameCount;
-        public static int TailFramesCaptured => _tailFramesCaptured;
+        /// <summary>
+        /// 本 session 实际生效的 output-frame safety 上限；<c>null</c> = 未配置
+        /// （无总帧数 / 总时长上限），不是 0 帧或某个 sentinel。
+        /// </summary>
+        public static long? SafetyFrameLimit =>
+            _safetyFrameLimit > 0 ? _safetyFrameLimit : (long?)null;
+        /// <summary>
+        /// 与 <see cref="SafetyFrameLimit"/> 对应的逻辑 output duration（秒）；
+        /// unbounded 时无真实含义，返回 <c>null</c>。
+        /// </summary>
+        public static double? SafetyDurationSeconds =>
+            _safetyFrameLimit > 0 && _outputFps > 0 ? _safetyFrameLimit / (double)_outputFps : (double?)null;
+        /// <summary>实际采用的 safety policy 标签（metadata 记录用）：unbounded | explicit-frames。</summary>
+        public static string SafetyPolicy => SafetyFrameLimitPolicy.KindLabel(_safetyPolicyKind);
+        /// <summary>Settings 里的原始配置值（诊断用，未解析）。</summary>
+        public static int ConfiguredSafetyFrameLimit => _configuredSafetyFrameLimit;
+        public static long ResolvedTailFrameCount => _resolvedTailFrameCount;
+        public static long TailFramesCaptured => _tailFramesCaptured;
         public static double EndTailInputValue => _endTailInput.Value;
         public static EndTailUnit EndTailInputUnit => _endTailInput.Unit;
         public static double ResolvedTailSeconds => _resolvedTailSeconds;
         public static double? ResolvedTailBeats => _resolvedTailBeats;
         public static double? CompletionBpm => _completionBpm;
-        public static int CaptureRequestCount => _captureRequestCount;
-        public static int CapturedFrameCount => _capturedFrameCount;
+        public static long CaptureRequestCount => _captureRequestCount;
+        public static long CapturedFrameCount => _capturedFrameCount;
         public static double OutputTime => _outputTime;
         public static double ForcedSongPosition => _forcedSongPosition;
         public static double CanonicalStartTime => _canonicalStartTime;
@@ -181,7 +207,7 @@ namespace ADOFAI.Renderist.Export
         public static int CaptureHeight => _captureHeight;
         public static bool CanonicalCompletionCallbackSeen => _canonicalCompletionCallbackSeen;
         public static bool CanonicalCompletionStateSeen => _canonicalCompletionStateSeen;
-        public static int CanonicalCompletionFrameIndex => _canonicalCompletionFrameIndex;
+        public static long CanonicalCompletionFrameIndex => _canonicalCompletionFrameIndex;
         public static string CompletionSignal => _canonicalCompletionSignal;
         public static string TerminationKind => ClassifyTermination(_terminalStopReason, _status);
 
@@ -196,8 +222,12 @@ namespace ADOFAI.Renderist.Export
         /// <summary>
         /// 尝试启动调度器。成功返回 null；失败返回机器可读拒绝原因。
         /// 启动成功后进入 Preparing → InitializationHold，由 Tick 继续推进。
+        ///
+        /// configuredSafetyFrameLimit 是 Settings 的原始配置值（未解析）；
+        /// safety policy 在这里结合 outputFps 一次性解析，scheduler 内部只消费
+        /// 解析后的 long frame 上限与逻辑时长。
         /// </summary>
-        public static string TryStart(string outputDirectory, int outputFps, int safetyFrameLimit,
+        public static string TryStart(string outputDirectory, int outputFps, int configuredSafetyFrameLimit,
             EndTailInput endTailInput, bool allowExpectedTerminalControllerFail = false)
         {
             if (_running || !Terminal && _status != SchedulerStatus.Idle)
@@ -243,7 +273,10 @@ namespace ADOFAI.Renderist.Export
                 ResetRunStateForStart();
 
                 _outputFps = outputFps;
-                _safetyFrameLimit = NormalizeSafetyFrameLimit(safetyFrameLimit);
+                SafetyLimitResolution safety = SafetyFrameLimitPolicy.Resolve(configuredSafetyFrameLimit);
+                _safetyFrameLimit = safety.FrameLimit;
+                _safetyPolicyKind = safety.Kind;
+                _configuredSafetyFrameLimit = safety.ConfiguredFrameLimit;
                 _endTailInput = endTailInput;
                 _initializationDeadlineRealtime = Time.realtimeSinceStartupAsDouble + PlaybackReadyTimeoutSeconds;
 
@@ -376,7 +409,8 @@ namespace ADOFAI.Renderist.Export
                 _status = SchedulerStatus.InitializationHold;
                 Log.Info(UiText.Format(UiText.LogSchedulerStartedFormat,
                     _outputFps.ToString(CultureInfo.InvariantCulture),
-                    _safetyFrameLimit.ToString(CultureInfo.InvariantCulture),
+                    SafetyPolicy,
+                    SafetyFrameLimitPolicy.DescribeFrameLimit(_safetyFrameLimit),
                     outputDirectory));
                 Log.Info("DeterministicFrameScheduler End Tail: input=" +
                          _endTailInput.Value.ToString("0.######", CultureInfo.InvariantCulture) +
@@ -389,8 +423,14 @@ namespace ADOFAI.Renderist.Export
                          (_completionBpm.HasValue
                              ? _completionBpm.Value.ToString("0.######", CultureInfo.InvariantCulture)
                              : "unavailable") +
-                         " safetyFrameLimit=" +
-                         _safetyFrameLimit.ToString(CultureInfo.InvariantCulture));
+                         " safetyPolicy=" + SafetyPolicy +
+                         " configuredSafetyFrameLimit=" +
+                         _configuredSafetyFrameLimit.ToString(CultureInfo.InvariantCulture) +
+                         " safetyFrameLimit=" + SafetyFrameLimitPolicy.DescribeFrameLimit(_safetyFrameLimit) +
+                         " safetyDurationSeconds=" +
+                         (SafetyDurationSeconds.HasValue
+                             ? SafetyDurationSeconds.Value.ToString("0.######", CultureInfo.InvariantCulture)
+                             : SafetyFrameLimitPolicy.UnboundedLabel));
                 return null;
             }
             catch (Exception ex)
@@ -487,6 +527,9 @@ namespace ADOFAI.Renderist.Export
             _floor0EntryTime = 0.0;
             _pitch = 1.0;
             _pitchUnavailable = false;
+            _safetyFrameLimit = 0L;
+            _safetyPolicyKind = SafetyLimitKind.Disabled;
+            _configuredSafetyFrameLimit = 0;
             _captureSource = null;
             _captureWidth = 0;
             _captureHeight = 0;
@@ -659,6 +702,19 @@ namespace ADOFAI.Renderist.Export
             if (EditorGameReflection.IsFailureState(state))
             {
                 RequestStop("unexpected-fail", "controller-" + ToState(state));
+                return;
+            }
+
+            // paused 是 **runtime** precondition：生命周期真正到达 PlayerControl / playerAlive
+            // 之后仍 paused == true（或 paused 不可读）才是异常，立即 fail-closed，
+            // 不等待 readiness 超时、也不写入 paused。
+            if (TryDetectAbnormalPlaybackPause(state, out string playbackPauseReason))
+            {
+                Log.Warn(UiText.Format(UiText.LogSchedulerPlaybackPausedFormat,
+                    playbackPauseReason, ToState(state),
+                    _handoff == null ? "null" : _handoff.MarkerStatus,
+                    BuildRuntimeSnapshot()));
+                RequestStop("controller-paused", playbackPauseReason);
                 return;
             }
 
@@ -868,7 +924,16 @@ namespace ADOFAI.Renderist.Export
                 return;
             }
 
-            if (_outputFrameIndex >= _safetyFrameLimit)
+            // 结构性 fail-closed（**不是**产品级帧数上限）：帧号是 long，当已提交计数到达
+            // long.MaxValue 时，"下一帧"编号无法再用 long 表达，因此显式停止，
+            // 绝不依赖 unchecked 递增回绕。
+            if (_outputFrameIndex == long.MaxValue)
+            {
+                RequestStop("frame-index-exhausted", "output-frame-index-exceeds-long-range");
+                return;
+            }
+
+            if (SafetyFrameLimitPolicy.IsFrameLimitReached(_safetyFrameLimit, _outputFrameIndex))
             {
                 if (_canonicalCompletionStateSeen &&
                     _tailFramesCaptured >= _resolvedTailFrameCount)
@@ -878,7 +943,7 @@ namespace ADOFAI.Renderist.Export
                 return;
             }
 
-            int index = _outputFrameIndex;
+            long index = _outputFrameIndex;
             LogFrame0Stage(index, "BEGIN");
             MasterTimeline.FrameSample sample = _timeline.Prepare(index);
             _outputTime = sample.OutputTime;
@@ -925,7 +990,7 @@ namespace ADOFAI.Renderist.Export
         // Capture / Commit（WaitForEndOfFrame）
         // ================================================================
 
-        private static void OnCaptureResult(long generation, int frameIndex, bool success, string filePath, string error)
+        private static void OnCaptureResult(long generation, long frameIndex, bool success, string filePath, string error)
         {
             if (!_running) return;
 
@@ -972,7 +1037,7 @@ namespace ADOFAI.Renderist.Export
             CommitFrame(frameIndex, filePath);
         }
 
-        private static void CommitFrame(int frameIndex, string filePath)
+        private static void CommitFrame(long frameIndex, string filePath)
         {
             if (frameIndex != _outputFrameIndex)
             {
@@ -980,7 +1045,18 @@ namespace ADOFAI.Renderist.Export
                 return;
             }
 
+            // 与 PrepareFrame 同一结构性边界：帧号是 long，到达 long.MaxValue 时无法再
+            // 表达"下一个帧号"。此处按不可达性不该出现（PrepareFrame 已拒绝），但绝不依赖
+            // "不可达"来避免 unchecked 溢出；不推进任何计数即 fail-closed。
+            if (_outputFrameIndex == long.MaxValue)
+            {
+                RequestStop("frame-index-exhausted", "output-frame-index-exceeds-long-range");
+                return;
+            }
+
             LogFrame0Stage(frameIndex, "COMMIT");
+            // _capturedFrameCount / _captureRequestCount 与 _outputFrameIndex 同步递增，
+            // 且 _outputFrameIndex 全局受 long.MaxValue 边界守卫，因此它们同样不可能回绕。
             _capturedFrameCount++;
             _outputFrameIndex++;
 
@@ -998,7 +1074,7 @@ namespace ADOFAI.Renderist.Export
                 return;
             }
 
-            if (_outputFrameIndex >= _safetyFrameLimit)
+            if (SafetyFrameLimitPolicy.IsFrameLimitReached(_safetyFrameLimit, _outputFrameIndex))
             {
                 RequestStop("safety-limit", _canonicalCompletionStateSeen
                     ? "safety-frame-limit-before-tail-drained"
@@ -1748,17 +1824,16 @@ namespace ADOFAI.Renderist.Export
                 return "editor-already-playing";
             }
 
-            // paused 是 session precondition：只阻止，不修复（不 TogglePauseGame、
-            // 不写 paused、不写 Time.timeScale）。读取失败必须 fail-closed，不得当作 false 放行。
-            bool? paused = EditorGameReflection.ReadControllerPaused();
-            if (!paused.HasValue)
-            {
-                return "controller-paused-state-unavailable";
-            }
-            if (paused.Value)
-            {
-                return "controller-paused";
-            }
+            // 这里**刻意不检查** controller.paused。paused 是 runtime precondition，不是启动前
+            // 前提：静态 IL 已确认 `scrController.Awake` 执行 `paused = ADOBase.isLevelEditor`，
+            // 因此编辑器 idle（以及 Esc 返回编辑模式后）`paused == true` 是**正常状态**；
+            // 唯一会把它清零的是 Renderist 自己调用的官方 editor.Play() → scnGame.Play()
+            // （IL: `ldc.i4.0; call set_paused`），即 Play 之后才可能满足。
+            // 启动前检查它会必然误杀正常导出（0.3.6.0 的 `controller-paused` 启动拒绝即此原因），
+            // 而且与紧随其后的 editor-already-playing（编辑器内 playMode == !paused）互相矛盾。
+            // 正确的判定点是 playback readiness（生命周期真正到达 PlayerControl 之后），
+            // 见 TickInitializationHold 的 TryDetectAbnormalPlaybackPause。
+            // Renderist 在任何阶段都不写 paused、不调用 TogglePauseGame。
 
             if (EditorGameReflection.ReadRdcAuto() == null)
             {
@@ -1847,9 +1922,45 @@ namespace ADOFAI.Renderist.Export
             object controller = EditorGameReflection.Controller();
             object player = controller == null ? null : ReadInstanceMember(controller, "playerOne");
             bool playerAlive = ReadBool(ReadInstanceMember(player, "alive"));
-            bool paused = ReadBool(ReadInstanceMember(controller, "paused"));
+            // paused 读取失败不得当作 false 放行（否则会在无法证明未暂停的情况下开始导出）。
+            bool? pausedState = EditorGameReflection.ReadControllerPaused();
+            if (!pausedState.HasValue) return false;
 
-            return _handoff.IsReady(state, playerAlive, paused);
+            return _handoff.IsReady(state, playerAlive, pausedState.Value);
+        }
+
+        /// <summary>
+        /// 判定"播放生命周期已到达 PlayerControl，但 paused 状态异常"。
+        ///
+        /// 判定阶段必须正确：editor idle（以及 Esc 返回编辑模式后）`controller.paused == true`
+        /// 是正常状态，只有官方 editor.Play() → scnGame.Play() 才会把它清零；因此启动前
+        /// 不能据此拒绝（0.3.6.0 的 `controller-paused` 启动拒绝就是阶段错误）。
+        /// 到达 PlayerControl + playerAlive 之后仍未清零（或不可读）才是真正的异常。
+        /// Renderist 不写 paused、不调用 TogglePauseGame。
+        /// </summary>
+        private static bool TryDetectAbnormalPlaybackPause(object state, out string reason)
+        {
+            reason = null;
+            if (_handoff == null) return false;
+
+            object controller = EditorGameReflection.Controller();
+            object player = controller == null ? null : ReadInstanceMember(controller, "playerOne");
+            bool playerAlive = ReadBool(ReadInstanceMember(player, "alive"));
+            if (!_handoff.IsReadyExceptPaused(state, playerAlive))
+                return false;   // 生命周期尚未到达可判定阶段：交给 readiness / watchdog 处理
+
+            bool? paused = EditorGameReflection.ReadControllerPaused();
+            if (!paused.HasValue)
+            {
+                reason = "controller-paused-state-unavailable-during-playback";
+                return true;
+            }
+            if (paused.Value)
+            {
+                reason = "controller-paused-during-playback";
+                return true;
+            }
+            return false;
         }
 
         private static string CheckEarlyTermination()
@@ -2225,12 +2336,6 @@ namespace ADOFAI.Renderist.Export
         // helpers
         // ================================================================
 
-        internal static int NormalizeSafetyFrameLimit(int value)
-        {
-            if (value <= 0) return DefaultSafetyFrameLimit;
-            return Math.Min(value, MaxSafetyFrameLimit);
-        }
-
         private static object ReadInstanceMember(object instance, string name)
         {
             if (instance == null) return null;
@@ -2254,7 +2359,7 @@ namespace ADOFAI.Renderist.Export
             catch { return false; }
         }
 
-        private static void LogFrame0Stage(int frameIndex, string stage)
+        private static void LogFrame0Stage(long frameIndex, string stage)
         {
             if (frameIndex != 0 || string.Equals(_lastFrame0Stage, stage, StringComparison.Ordinal)) return;
             _lastFrame0Stage = stage;
