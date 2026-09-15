@@ -40,6 +40,16 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
+                // deterministic autoplay invariant 的一部分：官方 scrPlayer.Hit(bool) 的
+                // 第一个 guard 就读 scrPlayer::responsive，false 时直接 return false
+                // （静态 IL 已确认，见 PROJECT_UNDERSTANDING §3.9）。因此命中前的
+                // responsive 修复必须可执行；不可执行就不允许开始 session。
+                if (_mSetAllPlayerResponsive == null)
+                {
+                    error = "autoplay-player-responsive-api-unavailable";
+                    return false;
+                }
+
                 return true;
             }
             catch (Exception ex)
@@ -121,6 +131,7 @@ namespace ADOFAI.Renderist.Export
 
                     Exception hitException = null;
                     bool restoreFailed = false;
+                    string hitStateError = null;
                     object result = null;
                     try
                     {
@@ -130,18 +141,22 @@ namespace ADOFAI.Renderist.Export
                             return false;
                         }
 
-                        PrepareHitState(player, controller);
-                        result = _mPlayerHit.Invoke(player, new object[] { true });
-                        hitCount++;
+                        // fail-closed：deterministic autoplay invariant 未建立时绝不调用
+                        // 官方 Hit(true)。本分支仍然经过下面的 finally，RDC.auto 一定恢复。
+                        if (TryPrepareHitState(player, controller, out hitStateError))
+                        {
+                            result = _mPlayerHit.Invoke(player, new object[] { true });
+                            hitCount++;
 
-                        Log.Info("MasterTimeline Hit: frameIndex=" + frameIndex.ToString(CultureInfo.InvariantCulture) +
-                                 " forcedChartTime=" + chartTime.ToString("0.######", CultureInfo.InvariantCulture) +
-                                 " currentFloor=" + beforeFloor.ToString(CultureInfo.InvariantCulture) +
-                                 " nextFloor=" + nextFloor.ToString(CultureInfo.InvariantCulture) +
-                                 " nextFloorEntryTime=" + nextEntry.Value.ToString("0.######", CultureInfo.InvariantCulture) +
-                                 " due=true hitResult=" + ToText(result) +
-                                 " afterFloor=" + ToInt(ReadMember(ReadMember(player, "currFloor"), "seqID")).ToString(CultureInfo.InvariantCulture) +
-                                 " alive=" + ToText(ReadMember(player, "alive")));
+                            Log.Info("MasterTimeline Hit: frameIndex=" + frameIndex.ToString(CultureInfo.InvariantCulture) +
+                                     " forcedChartTime=" + chartTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                                     " currentFloor=" + beforeFloor.ToString(CultureInfo.InvariantCulture) +
+                                     " nextFloor=" + nextFloor.ToString(CultureInfo.InvariantCulture) +
+                                     " nextFloorEntryTime=" + nextEntry.Value.ToString("0.######", CultureInfo.InvariantCulture) +
+                                     " due=true hitResult=" + ToText(result) +
+                                     " afterFloor=" + ToInt(ReadMember(ReadMember(player, "currFloor"), "seqID")).ToString(CultureInfo.InvariantCulture) +
+                                     " alive=" + ToText(ReadMember(player, "alive")));
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -166,6 +181,13 @@ namespace ADOFAI.Renderist.Export
                             Log.Error("RenderistAutoPlay: RDC.auto 恢复失败");
                         }
                         error = "rdc-auto-restore-failed";
+                        return false;
+                    }
+
+                    if (hitStateError != null)
+                    {
+                        Log.Error(UiText.Format(UiText.LogAutoPlayHitStateFailedFormat, hitStateError));
+                        error = "hit-state-prepare-failed:" + hitStateError;
                         return false;
                     }
 
@@ -277,27 +299,85 @@ namespace ADOFAI.Renderist.Export
             _resolved = true;
         }
 
-        private static void PrepareHitState(object player, object controller)
+        /// <summary>
+        /// deterministic autoplay invariant 的 fail-closed 建立点。全部写操作都是
+        /// load-bearing，任一失败都返回 false，调用方必须在官方 Hit(true) 之前停止：
+        ///
+        ///   * multipressPenalty / multipressAndHasPressedFirstPress / keyTimes /
+        ///     consecMultipressCounter —— §3.9 的 multipress gate 中和。gate 在
+        ///     scrPlanet.SwitchChosen 中读取这两个跨调用 flag，而武装它们的
+        ///     MoveToNextFloor 在同一方法内更晚的位置才执行；每次命中前清回 false
+        ///     才能保证 averageFrameTime 相关的 multipress 分支不可达。写不进去就
+        ///     无法证明该分支不可达，因此必须 fail-closed。
+        ///   * SetAllPlayerResponsive(true) —— 官方 scrPlayer.Hit(bool) 的第一个 guard
+        ///     读取 scrPlayer::responsive，false 时直接 return false（静态 IL 已确认）；
+        ///     responsive 由 scrPlayerManager.SetAllPlayerResponsive 直接写入。
+        ///
+        /// 这里刻意不写 controller.paused：CatchUp 在进入命中循环之前就已经对
+        /// `paused == true` 提前 return，因此本方法被执行时 paused 必然已经是 false，
+        /// 写入它是可证明的 no-op，删除它可以避免在没有 ownership 的情况下修改游戏状态。
+        /// </summary>
+        private static bool TryPrepareHitState(object player, object controller, out string error)
         {
-            // 这里刻意不写 controller.paused。CatchUp 在进入命中循环之前就已经对
-            // `paused == true` 提前 return，因此本方法被执行时 paused 必然已经是 false，
-            // 写入它是可证明的 no-op；删除它可以避免在没有 ownership 的情况下修改游戏状态。
-            //
-            // 以下三项是 deterministic autoplay invariant：把 multipress gate 的跨调用
-            // 状态在每次官方 Hit 之前清回 false。scrPlanet.SwitchChosen 在 gate 判定
-            // (@2100/@2116) 读取这两个 flag，而武装它们的 MoveToNextFloor 在同一方法内
-            // 更晚的位置 (@3240) 才执行，因此每一次 Renderist 驱动的命中都必然跳过
-            // averageFrameTime 相关的 multipress 分支。
-            SetMember(controller, "multipressPenalty", false);
-            SetMember(controller, "multipressAndHasPressedFirstPress", false);
-            SetMember(player, "consecMultipressCounter", 0);
+            if (!SetMember(controller, "multipressPenalty", false))
+            {
+                error = "hit-state-multipress-penalty-write-failed";
+                return false;
+            }
+            if (!SetMember(controller, "multipressAndHasPressedFirstPress", false))
+            {
+                error = "hit-state-multipress-first-press-write-failed";
+                return false;
+            }
+            if (!SetMember(player, "consecMultipressCounter", 0))
+            {
+                error = "hit-state-consec-multipress-counter-write-failed";
+                return false;
+            }
 
             object keyTimes = ReadMember(player, "keyTimes");
-            MethodInfo clear = keyTimes?.GetType().GetMethod("Clear", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            clear?.Invoke(keyTimes, null);
+            if (keyTimes == null)
+            {
+                error = "hit-state-key-times-unavailable";
+                return false;
+            }
+            MethodInfo clear = keyTimes.GetType().GetMethod(
+                "Clear", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (clear == null)
+            {
+                error = "hit-state-key-times-clear-unavailable";
+                return false;
+            }
+            try
+            {
+                clear.Invoke(keyTimes, null);
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("RenderistAutoPlay: keyTimes.Clear() 失败", ex);
+                error = "hit-state-key-times-clear-failed";
+                return false;
+            }
 
             object manager = ReadStatic(_tAdoBase, "playerManager");
-            _mSetAllPlayerResponsive?.Invoke(manager, new object[] { true });
+            if (manager == null)
+            {
+                error = "hit-state-player-manager-unavailable";
+                return false;
+            }
+            try
+            {
+                _mSetAllPlayerResponsive.Invoke(manager, new object[] { true });
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("RenderistAutoPlay: SetAllPlayerResponsive(true) 失败", ex);
+                error = "hit-state-set-responsive-failed";
+                return false;
+            }
+
+            error = null;
+            return true;
         }
 
         private static void AlignPlanet(object current, object planet)
