@@ -38,10 +38,20 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 产品版本 | `0.3.6.1` |
+| 产品版本 | `0.3.6.2` |
 | Phase | `Phase 3.6.0 Render Time Determinism` |
-| 稳定实机基线 | 30 FPS 与 1000 FPS 完整导出通过（2026-09-15） |
-| 当前开发方向 | 进入 0.3.6.2 前先做 correctness hardening；尚未开始 log-only 功能 |
+| 版本定位 | `0.3.6.2` = **correctness hardening revision**（cleanup / activation ownership + End Tail numerical correctness）；无新功能 |
+| 稳定实机基线 | 30 FPS（0.3.6.1 与 0.3.6.2 各一次）与 1000 FPS 完整导出通过（2026-09-15，见 §9.1） |
+| 当前开发方向 | correctness hardening 已收敛；log-only / image-output-disabled 顺延为 0.3.6.3 候选，尚未开始 |
+
+`0.3.6.2` 相对 `0.3.6.1` 的四个 hardening 点（功能语义不变，只收敛异常路径与输入判定）：
+
+1. **cleanup host ownership**：`Destroy(host)` 成功前不丢 `_host` / `_behaviour`；failure 保留 ownership，下一次 `Stop()` 可重试。
+2. **capture target ownership**：`Release` / `Destroy` 成功前不丢 `_captureTarget`；live Camera 仍引用 target 时绝不销毁；failure 保留 residual ownership。
+3. **activation ownership**：RenderTexture 创建成功后不存在 untracked ownership window；Camera assignment 之前先 publish ownership；partial Camera assignment failure 走同一个 `RestoreCameraSource`；rollback failure 保留 Camera refs / saved targets / capture target，下一次 `Stop()` 继续收敛。
+4. **End Tail numerical hardening**：直接 Frames 输入使用**固定绝对容差 `1e-10`**（不再使用 magnitude-relative tolerance）；Seconds / Beats computed frame count 只用 `max(1e-10, half-ULP)` 吸收浮点表示误差；不引入任何 FPS / frame / duration 人为产品上限。
+
+对应实现提交：`8bceeef`（cleanup ownership + End Tail validation）与 `1af1205`（activation ownership）。
 
 版本同步事实：
 
@@ -295,9 +305,9 @@ metadata 记录：版本/phase、state/detail/reason/kind、completion signal/in
 
 ## 9. Runtime / 静态验证基线
 
-### 9.1 0.3.6.1 实机
+### 9.1 实机（0.3.6.1 / 0.3.6.2）
 
-30 FPS：
+**0.3.6.1 30 FPS**：
 
 - editor idle 直接启动正常；paused 生命周期修复有效。
 - lifecycle：Start → OnMusicScheduled → Countdown → PlayerControl。
@@ -307,7 +317,7 @@ metadata 记录：版本/phase、state/detail/reason/kind、completion signal/in
 - `frame_000000.png .. frame_000113.png` 连续。
 - 最终 Completed。
 
-1000 FPS session `editor_20260915_095106`：
+**0.3.6.1 1000 FPS session `editor_20260915_095106`**：
 
 - `state=Completed`
 - `stopReason=canonical-completion-tail-drained`
@@ -318,6 +328,14 @@ metadata 记录：版本/phase、state/detail/reason/kind、completion signal/in
 - `captureRequestCount=capturedFrameCount=3336`
 - capture 3072×1920
 - 未出现 controller-paused、hit-state、RDC restore、safety-limit、frame-index-exhausted 或 watchdog failure。
+
+**0.3.6.2 30 FPS smoke session `editor_20260915_115023`**（activation ownership hardening 的正常 Player 路径）：
+
+- `state=Completed`，`stopReason=canonical-completion-tail-drained`，`terminationKind=canonical-completion`
+- `completionFrameIndex=101`；`resolvedTailFrames=12`，`tailFramesCaptured=12`
+- `captureRequestCount=capturedFrameCount=114`，frames `0..113` 连续（PNG 与 scheduler commit 均 114 次、无缺号）
+- `captureSource=scrCamera-rendertexture`，3072×1920
+- 未出现 `capture-source-failed`、`capture-target-*`、`cleanup-failed`、`capture-stop`、`tick-exception`、host destroy / RT Release / RT Destroy failure、restore incomplete 或 residual retry warning
 
 ### 9.2 已验证的历史事实（仍影响当前设计）
 
@@ -334,6 +352,18 @@ metadata 记录：版本/phase、state/detail/reason/kind、completion signal/in
 - long frame chain 无 int 截断；filename 超 6 位自然扩展。
 - End Tail 直接 Frames 的大数小数不能被 magnitude-relative tolerance 误接收。
 - `TryPrepareHitState` failure path 在官方 Hit 前退出，且 RDC.auto finally 仍覆盖事务。
+
+`0.3.6.2` 收敛时的验证结果（临时 harness / 静态断言，测后已全部删除）：
+
+| 验证 | 结果 |
+| --- | --- |
+| activation fault injection（production `FrameCaptureDriver.cs` + Unity stub，注入 Destroy / Release / targetTexture 异常） | 45 checks / 0 failures |
+| activation 静态控制流断言 | 29 / 0 |
+| End Tail harness | 68 / 0 |
+| cross-module 回归（Output FPS / safety / long frame / End Tail） | 119 / 0 |
+| cleanup 静态证明 | 36 / 0 |
+| Release Rebuild / package / verify | 0 error / success / PASS 11–0 |
+| 30 FPS Unity smoke（`editor_20260915_115023`） | 通过（见 §9.1） |
 
 ---
 
@@ -386,14 +416,15 @@ metadata 记录：版本/phase、state/detail/reason/kind、completion signal/in
 6. **更广泛谱面覆盖**：BPM change、Twirl、Midspin、event-heavy、特殊 startup、长时大规模导出。
 7. **native Esc teardown 警告**：曾见 Unity `Coroutine couldn't be started ... Conductor is inactive`，静态证据更像 native teardown；未做 disable-mod A/B。
 8. custom resolution / supersampling、audio、FFmpeg、replay、Preview Bridge 均未实现。
-9. **后续 log-only / image-output-disabled 诊断模式**：尚未实现，不应与 VerboseLogging 永久绑定。未来设计必须先明确 logical commit、capture request、captured/written frame count 和 metadata 语义，再决定是否仍需激活 RT/Camera source；不得静默改变 completion / End Tail 计数。
+9. **log-only / image-output-disabled 诊断模式（0.3.6.3 候选）**：不属于 `0.3.6.2`，尚未实现，不应与 VerboseLogging 永久绑定。未来设计必须先明确 logical commit、capture request、captured/written frame count 和 metadata 语义，再决定是否仍需激活 RT/Camera source；不得静默改变 completion / End Tail 计数。
 10. `set-version.ps1` phase 同步范围说明可在后续 tooling 清理时收紧，当前不阻塞产品一致性。
 
 ---
 
 ## 12. 发布与部署
 
-- 当前产品版本仍为 `0.3.6.1`；本轮 correctness hardening 不擅自决定新的第四位版本，也不改变前三位。
+- 当前产品版本为 `0.3.6.2`（correctness hardening revision：cleanup / activation ownership + End Tail numerical semantics，无新功能）。前三位 `0.3.6` 与 Phase `Phase 3.6.0 Render Time Determinism` 均不变。
+- 历史：`0.3.6.1`（Output FPS 无上限、safety 默认 unbounded、long frame chain、autoplay fail-closed、paused 阶段修正）→ `8bceeef` + `1af1205` hardening → `0.3.6.2`。
 - 发布包：`Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` ignored。
 - 自动验证链：
   `dotnet build src/ADOFAI.Renderist/ADOFAI.Renderist.csproj -c Release -t:Rebuild`
