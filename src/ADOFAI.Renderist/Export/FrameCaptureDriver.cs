@@ -25,6 +25,15 @@ namespace ADOFAI.Renderist.Export
     ///   TryActivateCameraSource()  → 取得当前 session 的 Camera 链并接管 targetTexture
     /// Start 不得假定 scrCamera 摄像机链已经可用；source 未激活时 RequestCapture 一律拒绝，
     /// 绝不回退到 Screen framebuffer。
+    ///
+    /// Activation ownership 不变量：
+    ///   * RenderTexture 一旦创建成功，任何失败路径都必须二选一：Release + Destroy 均成功，
+    ///     或把该引用保存在本类可观察、可重试的 ownership 中（`_captureTarget`），
+    ///     绝不作为 local reference 丢失。
+    ///   * Camera refs / saved old targets / captureTarget 在**第一次 Camera 写入之前**就登记，
+    ///     因此 partial camera assignment 天然属于 `_sourceActive` 的 ownership transaction，
+    ///     由同一个 `RestoreCameraSource` 收敛（不新增第二套 partial cleanup）。
+    ///   * 只有 `IsCaptureTargetStillReferenced() == false` 时才 Release / Destroy RT。
     /// </summary>
     internal static class FrameCaptureDriver
     {
@@ -47,6 +56,12 @@ namespace ADOFAI.Renderist.Export
         private static long _activeGeneration;
 
         // ---- Render Source ownership（只在本 session 内有效）----
+        //
+        // 语义：Camera source ownership **transaction** 是否已开始（可能 partial）。
+        // 接管前会先把 captureTarget / capture dimensions / camera refs / saved old targets
+        // 全部登记，再逐个写入 Camera，因此 `_sourceActive == true` 不代表"三台已全部接管"，
+        // 只代表"partial assignment 也已进入统一 restore 路径"。
+        // 写入失败即由 RestoreCameraSource 收敛；未能收敛时状态保留供 Stop 重试。
         private static bool _sourceActive;
         private static RenderTexture _captureTarget;
         private static int _captureWidth;
@@ -60,7 +75,11 @@ namespace ADOFAI.Renderist.Export
 
         public static bool IsRunning => _host != null && _behaviour != null;
 
-        /// <summary>Render Source 是否仍被本 session 接管（cleanup ownership 追踪用）。</summary>
+        /// <summary>
+        /// Camera source ownership transaction 是否已开始（**可能 partial**）。
+        /// cleanup ownership 追踪用：为 true 时 RestoreCameraSource 会逐 Camera 做
+        /// ownership-aware 恢复；未成功收敛前不得视作"已释放"。
+        /// </summary>
         public static bool HasActiveCameraSource => _sourceActive;
 
         /// <summary>
@@ -202,12 +221,6 @@ namespace ADOFAI.Renderist.Export
                 target.useMipMap = false;
                 target.autoGenerateMips = false;
                 target.Create();
-                if (!target.IsCreated())
-                {
-                    TryDestroyTexture(target);
-                    error = "capture-target-not-created";
-                    return false;
-                }
             }
             catch (Exception ex)
             {
@@ -216,28 +229,35 @@ namespace ADOFAI.Renderist.Export
                 return false;
             }
 
-            // 保存真实旧值：不得假定原值为 null。
-            RenderTexture oldBgStaticTarget = bgStaticCamera.targetTexture;
-            RenderTexture oldBgTarget = bgCamera.targetTexture;
-            RenderTexture oldMainTarget = mainCamera.targetTexture;
-
-            try
+            // 从这里开始 target 已存在：任何失败路径都必须"销毁成功"或"保留为 ownership"。
+            if (!target.IsCreated())
             {
-                bgStaticCamera.targetTexture = target;
-                bgCamera.targetTexture = target;
-                mainCamera.targetTexture = target;
-            }
-            catch (Exception ex)
-            {
-                Log.Exception("FrameCaptureDriver: 接管 targetTexture 失败，回滚", ex);
-                TryAssignTargetTexture(bgStaticCamera, oldBgStaticTarget, "Bgcamstatic");
-                TryAssignTargetTexture(bgCamera, oldBgTarget, "BGcam");
-                TryAssignTargetTexture(mainCamera, oldMainTarget, "camobj");
-                TryDestroyTexture(target);
-                error = "capture-source-assign-failed:" + ex.Message;
+                DiscardOrRetainUntouchedTarget(target);
+                error = "capture-target-not-created";
                 return false;
             }
 
+            // 保存真实旧值：不得假定原值为 null。getter 也可能抛异常（例如 Camera 已销毁），
+            // 因此整体受保护，失败时同样走"销毁成功或保留 ownership"。
+            RenderTexture oldBgStaticTarget;
+            RenderTexture oldBgTarget;
+            RenderTexture oldMainTarget;
+            try
+            {
+                oldBgStaticTarget = bgStaticCamera.targetTexture;
+                oldBgTarget = bgCamera.targetTexture;
+                oldMainTarget = mainCamera.targetTexture;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("FrameCaptureDriver: 读取 Camera 旧 targetTexture 失败", ex);
+                DiscardOrRetainUntouchedTarget(target);
+                error = "capture-source-saved-target-unavailable:" + ex.Message;
+                return false;
+            }
+
+            // 在**第一次 Camera 写入之前**登记 ownership：partial assignment 也必须可见、可重试。
+            // 从此 _sourceActive 表示"ownership transaction 已开始（可能 partial）"。
             _captureTarget = target;
             _captureWidth = width;
             _captureHeight = height;
@@ -248,6 +268,20 @@ namespace ADOFAI.Renderist.Export
             _oldBgTarget = oldBgTarget;
             _oldMainTarget = oldMainTarget;
             _sourceActive = true;
+
+            try
+            {
+                bgStaticCamera.targetTexture = target;
+                bgCamera.targetTexture = target;
+                mainCamera.targetTexture = target;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("FrameCaptureDriver: 接管 targetTexture 失败，交由统一 ownership cleanup 收敛", ex);
+                error = "capture-source-assign-failed:" + ex.Message;
+                ConvergeSourceOwnershipAfterFailedAssignment();
+                return false;
+            }
 
             // 只在 source activate 时记录一次完整 inventory；不逐帧刷日志。
             Log.Info("FrameCaptureDriver: capture source active source=" + CameraSourceLabel +
@@ -273,6 +307,50 @@ namespace ADOFAI.Renderist.Export
             if (b == null) return false;
             b.RequestCapture(frameIndex);
             return true;
+        }
+
+        /// <summary>
+        /// target 已创建但**尚未接触任何 Camera** 时的失败收敛：
+        /// 先尝试完整 Release + Destroy；失败则把引用交给 ownership（`_captureTarget`，
+        /// 不伪造 Camera ownership、`_sourceActive` 保持 false），由 Stop /
+        /// RestoreCameraSource 的 source-inactive retry path 继续收敛。
+        /// 绝不把已创建的 RenderTexture 作为 local reference 丢弃。
+        /// </summary>
+        private static void DiscardOrRetainUntouchedTarget(RenderTexture target)
+        {
+            if (TryDestroyTexture(target))
+                return;
+
+            _captureTarget = target;
+            Log.Warn("FrameCaptureDriver: capture target 销毁失败，保留 ownership 供下一次 Stop 重试");
+        }
+
+        /// <summary>
+        /// Camera 接管过程中失败后的统一收敛：直接把已登记的 ownership（captureTarget +
+        /// Camera refs + saved old targets）交给既有 <see cref="RestoreCameraSource"/>。
+        /// partial assignment 与完整 assignment 走同一条 ownership-aware 路径：
+        ///   * cleanup 成功 → ownership 全清，返回 false 让 scheduler fail-closed；
+        ///   * cleanup 失败 → 状态原样保留为 residual ownership，下一次 Stop 继续重试。
+        /// 不新增第二套 partial-source cleanup 状态机，也不吞 cleanup 异常。
+        /// </summary>
+        private static void ConvergeSourceOwnershipAfterFailedAssignment()
+        {
+            bool restored;
+            try
+            {
+                restored = RestoreCameraSource();
+            }
+            catch (Exception cleanupEx)
+            {
+                restored = false;
+                Log.Exception("FrameCaptureDriver: partial capture source cleanup 异常，保留 ownership 供重试", cleanupEx);
+            }
+
+            if (!restored)
+            {
+                Log.Warn("FrameCaptureDriver: partial capture source ownership 未收敛，" +
+                         "保留 captureTarget / Camera refs 供下一次 Stop 重试");
+            }
         }
 
         /// <summary>

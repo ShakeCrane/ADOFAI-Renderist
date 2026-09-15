@@ -142,6 +142,10 @@ Esc 不经过 `TogglePauseGame`，因此 guard 不阻断 Esc cancellation。
 - live Camera 仍引用 captureTarget 时绝不 Release/Destroy RT。
 - **capture host ownership**：`CaptureHostBehaviour.Shutdown()` 先同步失效 coroutine/callback；`_host/_behaviour` 只有在 `Destroy(host)` 返回成功后才清空。Destroy 抛异常时保留引用，下一次 `Stop()` 可重试。
 - **capture target ownership**：Camera ownership 已 relinquish 后，`Release()` / `Destroy()` 任一步失败都返回 cleanup failure，并保留 `_captureTarget` 及必要状态；只有两步成功后才丢引用。异常不再被吞掉。
+- **activation 前的 ownership tracking（durable invariant）**：capture target 从 **RenderTexture 创建成功那一刻**起就受 ownership tracking——创建后到 source activation 完成之间的任何失败路径都必须二选一：Release + Destroy 均成功，或引用保存在 `_captureTarget`（可观察、可重试），绝不作为 local reference 丢失。其中：
+  - 尚未接触任何 Camera 的失败（`IsCreated()==false`、读取 saved old target 抛异常、销毁失败）→ 只保留 `_captureTarget`，`_sourceActive` 保持 false，由 `Stop()` 的 source-inactive retry path 重试 `TryDestroyTexture`；
+  - 已可能写入过 Camera 的失败（partial Camera assignment）→ 因为 `_captureTarget` / capture dimensions / camera refs / saved old targets 在**第一次 Camera 写入之前**就已登记，`_sourceActive` 表示"ownership transaction 已开始（可能 partial）"，失败即走同一个 `RestoreCameraSource`（不新增第二套 partial cleanup）；rollback 写失败时保留全部 refs 作为 residual，下一次 `Stop()` 重试；
+  - **只有 `IsCaptureTargetStillReferenced() == false` 时才 Release / Destroy RT**：partial 状态下即使 cleanup 失败也**不会**销毁仍可能被 live Camera 引用的 RenderTexture。
 - 若 Camera 已 relinquish、host 已销毁，但 capture target 销毁失败，scheduler 的 `_captureGeneration` 与 `FrameCaptureDriver.HasOwnedCaptureTarget` 仍构成 residual ownership；下一次 cleanup 只需重试资源销毁，不会重新改写 Camera。
 - `RestoreAll` 不短路：各项尽量恢复并收集 failures；有任何 failure 时 residual token 不应被提前清空。下一次 Start / Stop / Mod disable 会先补做 cleanup。
 - 0.3.5.1 已实机确认 residual ownership 可跨调用保留并在下一次入口补做；本轮 hardening 针对的是此前未覆盖到的 host Destroy / RT Release/Destroy 异常分支。该异常分支仍缺真实 Unity fault injection。
@@ -261,7 +265,7 @@ B. **显式 migration/sanitize**：继续自动修复，但要把它定义成正
 - `PlaybackLifecycleHandoff`：关联本次 Renderist-owned `editor.Play()`；ready 需要 Start + OnMusicScheduled + Countdown + PlayerControl + playerAlive + !paused。
 - `EditorVisualClock`：强制视觉 songposition，并精确撤销 hooks。
 - `RenderistAutoPlay`：due-floor helper，复用官方 Hit。
-- `FrameCaptureDriver`：generation 隔离、两阶段 Camera source activation、同步 PNG、ownership-aware cleanup。
+- `FrameCaptureDriver`：generation 隔离、两阶段 Camera source activation（创建 target → 登记 ownership → 逐 Camera 接管）、同步 PNG、ownership-aware cleanup（activation 窗口内也不丢 ownership）。
 - `EndTailPolicy`：Frames / Seconds / Beats 校验与 output-frame 解析。
 - `OutputFpsPolicy`：正整数 Output FPS 与 targetFrameRate 安全派生。
 - `SafetyFrameLimitPolicy`：unbounded / explicit frame limit 的唯一 policy。
@@ -375,7 +379,7 @@ metadata 记录：版本/phase、state/detail/reason/kind、completion signal/in
 ## 11. 未解决问题 / 风险 / 下一步
 
 1. **Persisted End Tail 政策待用户选择**：保留非法值 fail-closed vs 显式 migration/sanitize（见 §5.2）。
-2. **cleanup exception fault injection**：本轮源码已让 host/RT ownership 在 Destroy/Release 失败时可重试，但真实 Unity `Destroy/Release` 异常注入尚未实机验证；正常路径已有历史实机基线。
+2. **cleanup / activation 异常注入的真实 Unity 验证**：host Destroy、RT Release/Destroy 与 partial Camera assignment 的异常路径已用 **production source + Unity stub 的确定性 fault injection** 与静态断言验证（含"仍被引用时绝不 Destroy"、"失败后 ownership 保留"、"重试后清空"）；**仍未在真实 Unity Player 内注入 `Object.Destroy` / `RenderTexture.Release` 异常**。正常路径已有历史实机基线。
 3. **显式 safety frame-limit runtime trigger**：目前主要是静态/纯计算证据。
 4. **TryPrepareHitState 故障注入**：正常路径已实机，注入失败路径主要是 IL/control-flow 证据。
 5. **trail / star-trail 待录屏**：用户观察 capture 正式开始前拖尾/星轨轨迹僵硬；尚未调查，不猜根因。需录屏后确认 Initialization Hold → lifecycle-ready → forced clock/source activation → frame 0 是否有状态不连续、是否污染成品帧。
