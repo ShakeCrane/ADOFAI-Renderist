@@ -63,6 +63,12 @@ namespace ADOFAI.Renderist.Export
         /// <summary>Render Source 是否仍被本 session 接管（cleanup ownership 追踪用）。</summary>
         public static bool HasActiveCameraSource => _sourceActive;
 
+        /// <summary>
+        /// 是否仍持有 Renderist-owned capture target。source 已经从 Camera 上 relinquish 后，
+        /// Release / Destroy 若失败，target 仍属于 residual ownership，必须保留到下一次 Stop 重试。
+        /// </summary>
+        public static bool HasOwnedCaptureTarget => _captureTarget != null;
+
         /// <summary>本 session 冻结的捕获尺寸；未激活时为 0。</summary>
         public static int CaptureWidth => _captureWidth;
 
@@ -198,7 +204,7 @@ namespace ADOFAI.Renderist.Export
                 target.Create();
                 if (!target.IsCreated())
                 {
-                    DestroyTexture(target);
+                    TryDestroyTexture(target);
                     error = "capture-target-not-created";
                     return false;
                 }
@@ -227,7 +233,7 @@ namespace ADOFAI.Renderist.Export
                 TryAssignTargetTexture(bgStaticCamera, oldBgStaticTarget, "Bgcamstatic");
                 TryAssignTargetTexture(bgCamera, oldBgTarget, "BGcam");
                 TryAssignTargetTexture(mainCamera, oldMainTarget, "camobj");
-                DestroyTexture(target);
+                TryDestroyTexture(target);
                 error = "capture-source-assign-failed:" + ex.Message;
                 return false;
             }
@@ -271,7 +277,8 @@ namespace ADOFAI.Renderist.Export
 
         /// <summary>
         /// 停止并释放 host / coroutine / 复用纹理，并精确恢复 Render Source ownership。幂等。
-        /// generation 先失效；只有同步 Shutdown 成功后才丢弃静态 host 引用。
+        /// generation 先失效；Shutdown / capture source restore / host Destroy 各自独立收敛。
+        /// host / behaviour 引用只有在 Destroy(host) 返回成功后才清空；失败时保留供下次 Stop 重试。
         /// </summary>
         public static bool Stop()
         {
@@ -295,9 +302,6 @@ namespace ADOFAI.Renderist.Export
                 }
             }
 
-            _host = null;
-            _behaviour = null;
-
             // Render Source ownership 必须在 host Destroy 之前精确恢复。
             bool sourceRestored;
             try
@@ -310,6 +314,7 @@ namespace ADOFAI.Renderist.Export
                 Log.Exception("FrameCaptureDriver: 释放 capture source 异常", ex);
             }
 
+            bool hostDestroyed = true;
             if (host != null)
             {
                 try
@@ -318,14 +323,20 @@ namespace ADOFAI.Renderist.Export
                 }
                 catch (Exception ex)
                 {
-                    // host / behaviour 已经失效且 callback 不再可达；保留 false
-                    // 让 scheduler 本轮报告异常，下一次 Stop 可幂等收敛。
-                    Log.Exception("FrameCaptureDriver: 销毁 host 失败", ex);
-                    return false;
+                    hostDestroyed = false;
+                    // 保留静态引用：Shutdown 已幂等失效 behaviour，下一次 Stop 可以再次尝试 Destroy。
+                    Log.Exception("FrameCaptureDriver: 销毁 host 失败，保留 ownership 供重试", ex);
                 }
             }
 
-            return sourceRestored && !IsRunning && _activeGeneration == 0;
+            if (hostDestroyed)
+            {
+                if (ReferenceEquals(_host, host)) _host = null;
+                if (ReferenceEquals(_behaviour, behaviour)) _behaviour = null;
+            }
+
+            return sourceRestored && hostDestroyed && !IsRunning &&
+                   !HasOwnedCaptureTarget && _activeGeneration == 0;
         }
 
         // ================================================================
@@ -345,8 +356,9 @@ namespace ADOFAI.Renderist.Export
         ///
         /// 逐 Camera 处理结束后再确认是否仍有 live Camera 精确引用 captureTarget：
         ///   * 有 → restoration 未完成，保留 ownership 与 captureTarget 供下次 retry，
-        ///          返回 false（绝不 Release / Destroy 仍被引用的 RT）。
-        ///   * 无 → Release + Destroy captureTarget 并清空全部引用与冻结尺寸。
+        ///          返回 false（绝不 Release / Destroy 仍被引用的 RenderTexture）。
+        ///   * 无 → 尝试 Release + Destroy；两步都成功返回后才清空 captureTarget、Camera
+        ///          与冻结尺寸。任一步异常都保留 target 引用并返回 false，供下一次 Stop 重试。
         /// </summary>
         private static bool RestoreCameraSource()
         {
@@ -376,8 +388,14 @@ namespace ADOFAI.Renderist.Export
             }
 
             RenderTexture target = _captureTarget;
-            _captureTarget = null;
-            DestroyTexture(target);
+            if (!TryDestroyTexture(target))
+            {
+                // target 仍保留在 _captureTarget；下次 Stop 只重试资源销毁，不会重写 Camera。
+                return false;
+            }
+
+            if (ReferenceEquals(_captureTarget, target))
+                _captureTarget = null;
 
             _bgStaticCamera = null;
             _bgCamera = null;
@@ -473,11 +491,34 @@ namespace ADOFAI.Renderist.Export
             }
         }
 
-        private static void DestroyTexture(RenderTexture texture)
+        /// <summary>
+        /// 释放并销毁 RenderTexture。异常不得吞掉：调用方只有在返回 true 后才可丢弃 ownership。
+        /// Release 成功但 Destroy 失败时保留同一引用；下一次 cleanup 重试 Release + Destroy 是幂等的。
+        /// </summary>
+        private static bool TryDestroyTexture(RenderTexture texture)
         {
-            if (texture == null) return;
-            try { texture.Release(); } catch { }
-            try { UnityEngine.Object.Destroy(texture); } catch { }
+            if (texture == null) return true;
+
+            try
+            {
+                texture.Release();
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("FrameCaptureDriver: Release capture target 失败", ex);
+                return false;
+            }
+
+            try
+            {
+                UnityEngine.Object.Destroy(texture);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("FrameCaptureDriver: Destroy capture target 失败", ex);
+                return false;
+            }
         }
 
         private static string DescribeCamera(string label, Camera camera, RenderTexture oldTarget)

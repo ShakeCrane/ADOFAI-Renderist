@@ -50,7 +50,13 @@ namespace ADOFAI.Renderist.Export
         internal const EndTailUnit DefaultUnit = EndTailUnit.Frames;
 
         private const double MinimumPositiveValue = 0.0001;
-        private const double IntegerSnapRelativeTolerance = 1e-10;
+
+        /// <summary>
+        /// Frames 是离散计数。玩家直接输入 Frames 时只允许固定绝对误差范围内的整数；
+        /// 容差绝不能随数值大小增长，否则大数会把明显的小数误判成整数。
+        /// 该值与 ModEntry 的 GUI 输入语义一致。
+        /// </summary>
+        internal const double FrameIntegerAbsoluteTolerance = 1e-10;
 
         /// <summary>
         /// double → long 转换的可表达边界（2^63）。这是**数据类型结构边界**，不是产品级
@@ -72,7 +78,7 @@ namespace ADOFAI.Renderist.Export
                 error = "end-tail-unit-invalid";
                 return false;
             }
-            if (input.Unit == EndTailUnit.Frames && !IsNearlyInteger(input.Value))
+            if (input.Unit == EndTailUnit.Frames && !IsFrameInputInteger(input.Value))
             {
                 error = "end-tail-frames-must-be-integer";
                 return false;
@@ -132,7 +138,7 @@ namespace ADOFAI.Renderist.Export
                 return false;
             }
 
-            rawFrames = SnapNearInteger(rawFrames);
+            rawFrames = SnapComputedFrameCountNearInteger(rawFrames);
             // 上面的边界检查已保证 Ceiling 结果落在 long 可表达范围内。
             long frameCount = (long)Math.Ceiling(rawFrames);
             // safetyFrameLimit == 0 表示未配置上限（unbounded）：End Tail 不受 safety 限制。
@@ -229,7 +235,7 @@ namespace ADOFAI.Renderist.Export
             switch (targetUnit)
             {
                 case EndTailUnit.Frames:
-                    double rawFrames = SnapNearInteger(seconds * outputFps);
+                    double rawFrames = SnapComputedFrameCountNearInteger(seconds * outputFps);
                     if (!IsFinite(rawFrames) || rawFrames < 0.0 || rawFrames >= LongFrameCountExclusiveLimit)
                     {
                         error = "end-tail-frame-count-overflow";
@@ -264,6 +270,15 @@ namespace ADOFAI.Renderist.Export
             }
         }
 
+        /// <summary>
+        /// 直接 Frames 输入的整数判定。使用固定绝对容差，不随 magnitude 放大。
+        /// </summary>
+        internal static bool IsFrameInputInteger(double value)
+        {
+            return IsFinite(value) && value >= 0.0 &&
+                   Math.Abs(value - Math.Round(value)) <= FrameIntegerAbsoluteTolerance;
+        }
+
         private static bool IsPositiveFinite(double? value)
         {
             return value.HasValue && IsFinite(value.Value) && value.Value > MinimumPositiveValue;
@@ -274,16 +289,28 @@ namespace ADOFAI.Renderist.Export
             return !double.IsNaN(value) && !double.IsInfinity(value);
         }
 
-        private static bool IsNearlyInteger(double value)
-        {
-            return Math.Abs(value - Math.Round(value)) <=
-                   IntegerSnapRelativeTolerance * Math.Max(1.0, Math.Abs(value));
-        }
-
-        private static double SnapNearInteger(double value)
+        /// <summary>
+        /// Seconds / Beats 换算出的 raw frame count 允许吸收**表示误差**，但不能沿用
+        /// magnitude-relative 产品容差。这里最多吸收到最近整数的半个 ULP（并保留原有
+        /// 1e-10 绝对下限以覆盖常见十进制乘法误差）；超过该范围仍交给 Ceiling。
+        /// </summary>
+        private static double SnapComputedFrameCountNearInteger(double value)
         {
             double nearest = Math.Round(value);
-            return IsNearlyInteger(value) ? nearest : value;
+            double tolerance = Math.Max(FrameIntegerAbsoluteTolerance, HalfUlp(nearest));
+            return Math.Abs(value - nearest) <= tolerance ? nearest : value;
+        }
+
+        private static double HalfUlp(double value)
+        {
+            double magnitude = Math.Abs(value);
+            if (!IsFinite(magnitude) || magnitude == 0.0)
+                return 0.0;
+
+            long bits = BitConverter.DoubleToInt64Bits(magnitude);
+            double next = BitConverter.Int64BitsToDouble(bits + 1);
+            double spacing = next - magnitude;
+            return IsFinite(spacing) && spacing > 0.0 ? spacing * 0.5 : 0.0;
         }
     }
 }
