@@ -57,6 +57,18 @@ namespace ADOFAI.Renderist.Export
         private const double FrameProgressWatchdogSeconds = 30.0;
         private const double MinPitch = 0.0001;
 
+        // PreEntryClock 的 deterministic 边界：最后一个 pre-entry commit 之后，
+        // 下一个 grid point 已到达 canonicalStart。从该 frame 起不再输出 pre-entry PNG
+        // （否则会把 chart time 推过 canonicalStart，handoff 只能靠倒回 canonicalStart 造成
+        // rewind，或让 gameplay 迟到造成整段 chart 偏移），而是把 forced time 钉在该 grid
+        // point 上等 native Countdown 边界触发。若 hidden lifecycle 无进展，由既有
+        // capture transaction / no-progress watchdog fail-closed（不设固定帧数窗口）。
+
+        // boundary path 的数值容差上限：一帧（step）的千分之一。
+        // 容差随 step 一起缩小，因此不会在低 FPS（step 大）或高 FPS / 小 pitch（step 极小）
+        // 下变成隐式时间窗口，也不构成任何 Output FPS / pitch 的隐式合法区间。
+        private const double PreEntryBoundaryToleranceStepFraction = 1e-3;
+
         private static SchedulerStatus _status = SchedulerStatus.Idle;
         private static bool _running;
         private static bool _restored;
@@ -134,6 +146,51 @@ namespace ADOFAI.Renderist.Export
         private static MasterTimeline _timeline;
         private static PlaybackLifecycleHandoff _handoff;
 
+        // PreEntry state. outputFrameIndex 始终是全局输出编号；
+        // gameplayStartOutputFrameIndex 只定义 GameplayCapture 的 local frame 0。
+        // PreEntryClock 在 Countdown 首次可安全识别时以原生 clock 的 schedule-origin
+        // 锁定；source 尚未 ready 时冻结在 anchor，实际 PNG commit 才推进 output clock。
+        private static bool _preEntryCapturing;
+        private static bool _preEntryClockLatched;
+        private static bool _preEntrySourceActivationAttempted;
+        private static bool _preEntryCandidateRejectLogged;
+        private static int _preEntryLastCaptureUnityFrame = -1;
+        private static long _preEntryCapturedFrameCount;
+        private static long _preEntryFrameIndex;
+        private static long _preEntryGameplayStartOutputFrameIndex = -1;
+        private static double _preEntryAnchor;
+        private static double _preEntryStep;
+        private static long _preEntryBoundaryOutputFrameIndex = -1L;
+        private static double _preEntryBoundaryForcedTime;
+        private static double _preEntryBoundaryPreviousTime;
+        private static double _preEntryBoundaryCanonicalStart;
+        private static int _preEntryInjectedBeatNumber;
+        private static bool _preEntryLifecycleInjectionArmed;
+
+        // PreEntry lifecycle bridge：scoped beat override 的真实 ownership。
+        // Prefix 建立 ownership（保存 exact conductor instance / exact FieldInfo / 原始 beat），
+        // Postfix、Finalizer 与 cleanup 共用 TryRestorePreEntryBeatOverride 恢复；
+        // **只有恢复成功后才清空**上述状态，失败则保留 ownership 并由 residual gate 阻止下一 session。
+        private static bool _preEntryBeatOverrideOwned;
+        private static object _preEntryBeatOverrideConductor;
+        private static FieldInfo _preEntryBeatOverrideField;
+        private static int _preEntryBeatOverrideOriginalBeat;
+
+        // PreEntry lifecycle bridge：hidden lifecycle-only boundary phase 的
+        // Time.timeScale ownership（唯一表达“是否已接管/原值/是否已写 0/是否已恢复”）。
+        // 只在 frame B-1 的 PNG 已成功写盘并完成 commit 后、同一 Unity frame 结束前建立，
+        // 确保下一 hidden Unity frame 从 frame begin 起 timeScale 已为 0。PlayerControl 被
+        // 观测到后以 canonicalStart - previousBoundaryTime 对应的 partial scale 驱动 G，
+        // 仅在 G 的 PNG 成功 commit 后恢复原值。不修改 Time.fixedDeltaTime。
+        private static bool _preEntryLifecycleTimeScaleOwned;
+        private static float _preEntryLifecycleSavedTimeScale;
+        private static bool _preEntryLifecycleTimeScaleFrozen;
+        private static bool _preEntryLifecycleTimeScaleRestored;
+        private static bool _preEntryLifecyclePartialScaleArmed;
+        private static double _preEntryLifecyclePartialStep;
+        private static double _preEntryLifecyclePartialFraction;
+        private static float _preEntryLifecycleRequestedPartialScale;
+
         // run-owned hook tracking：实际成功注册的 original MethodInfo（精确撤销，不依赖单一 bool）
         private static MethodInfo _patchedConductorUpdate;
         private static MethodInfo _patchedAsyncInputAdjustAngle;
@@ -146,6 +203,13 @@ namespace ADOFAI.Renderist.Export
         // native editor playback teardown observer（scnEditor.SwitchToEditMode Postfix）
         private static MethodInfo _patchedEditorSwitchToEditMode;
         private static bool _editorSwitchToEditModePatched;
+
+        // PreEntry lifecycle boundary 的 run-owned hook tracking。
+        // 安装在 Start（playback 之前），撤销走既有 RestoreAll 精确 Unpatch 路径。
+        private static MethodInfo _patchedControllerCountdownUpdate;
+        private static bool _countdownUpdatePrefixPatched;
+        private static bool _countdownUpdatePostfixPatched;
+        private static bool _countdownUpdateFinalizerPatched;
 
         /// <summary>
         /// Input Guard run-owned hook：记录实际成功 Patch 的 target MethodInfo 与 Prefix 名称，
@@ -319,6 +383,12 @@ namespace ADOFAI.Renderist.Export
                 if (!RegisterCanonicalCompletionHook())
                 {
                     return FailStart("canonical-completion-hook-failed");
+                }
+        // PreEntry lifecycle boundary：必须在 playback 之前安装，
+        // Countdown_Update 首次执行时 hook 就位。
+                if (!RegisterPreEntryLifecycleBridgeHook())
+                {
+                    return FailStart("preentry-lifecycle-bridge-hooks-failed");
                 }
                 if (!EditorVisualClock.RegisterForcedClockHooks())
                 {
@@ -560,6 +630,34 @@ namespace ADOFAI.Renderist.Export
             _captureDeadlineRealtime = 0.0;
             _progressDeadlineRealtime = 0.0;
             _timeline = null;
+            _preEntryCapturing = false;
+            _preEntryClockLatched = false;
+            _preEntrySourceActivationAttempted = false;
+            _preEntryCandidateRejectLogged = false;
+            _preEntryLastCaptureUnityFrame = -1;
+            _preEntryCapturedFrameCount = 0L;
+            _preEntryFrameIndex = 0L;
+            _preEntryGameplayStartOutputFrameIndex = -1L;
+            _preEntryAnchor = 0.0;
+            _preEntryStep = 0.0;
+            _preEntryBoundaryOutputFrameIndex = -1L;
+            _preEntryBoundaryForcedTime = 0.0;
+            _preEntryBoundaryCanonicalStart = 0.0;
+            _preEntryBoundaryPreviousTime = 0.0;
+            _preEntryInjectedBeatNumber = 0;
+            _preEntryLifecycleInjectionArmed = false;
+            _preEntryBeatOverrideOwned = false;
+            _preEntryBeatOverrideConductor = null;
+            _preEntryBeatOverrideField = null;
+            _preEntryBeatOverrideOriginalBeat = 0;
+            _preEntryLifecycleTimeScaleOwned = false;
+            _preEntryLifecycleSavedTimeScale = 0f;
+            _preEntryLifecycleTimeScaleFrozen = false;
+            _preEntryLifecycleTimeScaleRestored = false;
+            _preEntryLifecyclePartialScaleArmed = false;
+            _preEntryLifecyclePartialStep = 0.0;
+            _preEntryLifecyclePartialFraction = 0.0;
+            _preEntryLifecycleRequestedPartialScale = 0f;
         }
 
         private static bool HasResidualOwnership()
@@ -571,7 +669,12 @@ namespace ADOFAI.Renderist.Export
                    EditorVisualClock.HasTrackedHooks ||
                    _patchedConductorUpdate != null || _patchedAsyncInputAdjustAngle != null ||
                    _patchedControllerOnLandOnPortal != null ||
+                   _patchedControllerCountdownUpdate != null ||
+                   _preEntryBeatOverrideOwned ||
                    _patchedEditorSwitchToEditMode != null ||
+        // PreEntry lifecycle bridge：timeScale ownership 也是 residual ownership，
+        // session 结束后绝不允许遗留。
+                   _preEntryLifecycleTimeScaleOwned ||
                    _savedRdcAuto.HasValue || _savedSelectedFloorSeqs.Count > 0;
         }
 
@@ -718,12 +821,18 @@ namespace ADOFAI.Renderist.Export
                 return;
             }
 
-            if (Time.realtimeSinceStartupAsDouble > _initializationDeadlineRealtime)
+            if (!PreEntryCaptureWatchdogActive() &&
+                Time.realtimeSinceStartupAsDouble > _initializationDeadlineRealtime)
             {
                 Log.Warn("MasterTimeline InitializationHold readiness timeout: state=" + ToState(state) + " handoff=" + (_handoff == null ? "null" : _handoff.MarkerStatus) + " " + BuildRuntimeSnapshot());
                 RequestStop("playback-ready-timeout", "playback-ready-timeout");
                 return;
             }
+
+            // deterministic pre-entry 已正式进入 capture transaction 之后，initialization
+            // readiness deadline 不再适用（否则合法但较慢的同步 PNG 编码/写盘会被误判）；
+            // 改由与 Capturing 完全相同的已 armed watchdog 保护。
+            if (PreEntryCaptureWatchdogActive() && CheckArmedCaptureWatchdogs()) return;
 
             string early = CheckEarlyTermination();
             if (early != null)
@@ -732,7 +841,72 @@ namespace ADOFAI.Renderist.Export
                 return;
             }
 
+            // 只在 native Countdown 已完整可识别、且尚未越过第一个 beat 时锁定。
+            // 这不是重启或回放：已错过该安全点即 fail-closed，绝不把已推进的
+            // gameplay 状态倒回去。source 尚未 ready 时仍由该 anchor 冻结视觉 clock。
+            if (!_preEntryClockLatched &&
+                string.Equals(ToState(state), "Countdown", StringComparison.Ordinal))
+            {
+                if (!TryLatchPreEntryClock(out string latchDetail))
+                {
+                    if (latchDetail != null &&
+                        !string.Equals(latchDetail, "lifecycle-incomplete", StringComparison.Ordinal))
+                    {
+                        Log.Warn("PreEntry clock latch failed: " +
+                                 latchDetail + "");
+                        RequestStop("preentry-clock-latch-failed", latchDetail);
+                        return;
+                    }
+                }
+            }
+
+            if (_preEntryClockLatched &&
+                !_preEntryCapturing && !_preEntrySourceActivationAttempted &&
+                string.Equals(ToState(state), "Countdown", StringComparison.Ordinal))
+            {
+                if (!IsPreEntryCaptureCandidate(state, out string preEntryCandidate))
+                {
+                    if (!_preEntryCandidateRejectLogged)
+                    {
+                        _preEntryCandidateRejectLogged = true;
+                        Log.Info("PreEntry Countdown not capture-ready: " +
+                                 preEntryCandidate + "");
+                    }
+                }
+                else
+                {
+                    _preEntrySourceActivationAttempted = true;
+                    Log.Info("PreEntry source activation candidate: " +
+                             preEntryCandidate + "");
+
+                    if (!FrameCaptureDriver.TryActivateCameraSource(
+                            _captureGeneration, out string earlyCameraSourceError))
+                    {
+                        Log.Warn("PreEntry source activation failed: " +
+                                 (earlyCameraSourceError ?? "unknown") + "");
+                        RequestStop("capture-source-failed",
+                            "preentry-capture-source-unavailable:" +
+                            (earlyCameraSourceError ?? "unknown"));
+                        return;
+                    }
+
+                    _captureSource = FrameCaptureDriver.CameraSourceLabel;
+                    _captureWidth = FrameCaptureDriver.CaptureWidth;
+                    _captureHeight = FrameCaptureDriver.CaptureHeight;
+                    _preEntryCapturing = true;
+                    _preEntryLastCaptureUnityFrame = -1;
+                    Log.Info("PreEntry source active: first successful PNG " +
+                             "commit after this point defines absolute output frame 0; ");
+                }
+            }
+
             if (!IsPlaybackReady(state)) return;
+
+            // Never switch to the canonical gameplay clock while the last native
+            // pre-entry PNG transaction is unresolved. Its successful commit owns
+            // the preceding absolute output index.
+            if (_preEntryCapturing && _pendingCapture)
+                return;
 
             object lifecycleSongPositionValue = ReadUnforcedSongPositionValue();
             string lifecycleSongPosition = ToValue(lifecycleSongPositionValue);
@@ -752,35 +926,132 @@ namespace ADOFAI.Renderist.Export
             }
 
             double? observedSongPosition = ToDouble(lifecycleSongPositionValue);
-            if (!observedSongPosition.HasValue ||
-                Math.Abs(observedSongPosition.Value - gameplayStart) > GameplayAnchorConsistencyToleranceSeconds)
+            string observedSongPositionSource = "unforced-conductor-songposition";
+            bool boundaryInvariant = false;
+            if (_preEntryClockLatched)
             {
+        // PreEntry：handoff 判据迁移到 deterministic boundary phase。
+        // raw backing field（ReadUnforcedSongPositionValue）在本 probe 下不再是稳定的
+        // native 证据：Conductor 对 songposition_minusi 的写回是否经过被 Harmony patch
+        // 的 setter 会随 session 变化，因此改用 deterministic forced pre-entry clock 取值。
+        // 判据本身也不再是「observed ≈ canonicalStart」这种时间窗口比较（那会隐含一个
+        // 与 Output FPS 相关的窗口：step = pitch / OutputFps 在低 FPS 下可以远大于 0.05 s），
+        // 而是「native 边界被观测时 forced time 仍停在 boundary grid point」，
+        // 只吸收浮点表示/运算误差（见 PreEntryBoundaryNumericalTolerance）。
+                observedSongPosition = _forcedSongPosition;
+                observedSongPositionSource = "deterministic-forced-preentry-clock";
+                boundaryInvariant = true;
+            }
+
+            bool anchorConsistent;
+            if (boundaryInvariant)
+            {
+        // lifecycle-only 语义：隐藏 transition 期间 visual clock 必须**始终**停在
+        // previousBoundaryTime；绝不能出现被推进到 boundaryForcedTime 的取值。
+        // 判据只吸收 ULP 级数值误差，tolerance 不变。
+                anchorConsistent = observedSongPosition.HasValue &&
+                    Math.Abs(observedSongPosition.Value - _preEntryBoundaryPreviousTime) <=
+                    PreEntryBoundaryNumericalTolerance(observedSongPosition.Value,
+                        _preEntryBoundaryPreviousTime, _preEntryStep);
+            }
+            else
+            {
+                anchorConsistent = observedSongPosition.HasValue &&
+                    Math.Abs(observedSongPosition.Value - gameplayStart) <=
+                    GameplayAnchorConsistencyToleranceSeconds;
+            }
+
+            if (!anchorConsistent)
+            {
+                if (boundaryInvariant)
+                {
+                    Log.Warn("PreEntry lifecycle-only transition clock mismatch: " +
+                             "boundaryOutputFrameIndex=" +
+                             _preEntryBoundaryOutputFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                             " expectedPreviousBoundaryTime=" +
+                             _preEntryBoundaryPreviousTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                             " boundaryForcedTime=" +
+                             _preEntryBoundaryForcedTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                             " observedSongPosition=" + ToValue(observedSongPosition) +
+                             " canonicalStart=" + gameplayStart.ToString("0.######", CultureInfo.InvariantCulture) +
+                             " controllerState=" + ToState(state) +
+                             " lifecycleSongPosition=" + lifecycleSongPosition);
+                    RequestStop("preentry-lifecycle-transition-clock-mismatch",
+                        "native-playercontrol-visual-clock-not-at-previous-boundary-time");
+                    return;
+                }
+
                 Log.Warn("MasterTimeline lifecycle anchor mismatch: floor0EntryTime=" +
                          _floor0EntryTime.ToString("0.######", CultureInfo.InvariantCulture) +
                          " countdownOffset=" + gameplayStartOffset.ToString("0.######", CultureInfo.InvariantCulture) +
                          " deterministicGameplayStart=" + gameplayStart.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " observedSongPosition=" + ToValue(observedSongPosition) +
+                         " observedSource=" + observedSongPositionSource +
                          " lifecycleSongPosition=" + lifecycleSongPosition);
                 RequestStop("canonical-start-mismatch", "native-gameplay-anchor-mismatch");
                 return;
             }
 
+            // TEMP Trail-aging probe：PlayerControl 与 anchor invariant 已通过。G 的 chart
+            // time 是 canonicalStart，但上一帧仍是 previousBoundaryTime，因此本次 Unity
+            // timestep 只应推进两者的差值。ownership 保留到 G 成功 commit，避免 PNG
+            // 编码 wall time 或完整 1/FPS timestep 额外缩短 Trail history。
+            if (_preEntryLifecycleTimeScaleOwned)
+            {
+                if (!TryArmGameplayBoundaryPartialStep(gameplayStart, out string partialScaleError))
+                {
+                    Log.Warn("PreEntry partial timeScale arm failed before gameplay handoff: " +
+                             (partialScaleError ?? "unknown"));
+                    RequestStop("preentry-lifecycle-partial-time-scale-failed",
+                        partialScaleError ?? "partial-time-scale-arm-failed");
+                    return;
+                }
+            }
+
             _canonicalStartTime = gameplayStart;
             _forcedSongPosition = gameplayStart;
             _timeline = new MasterTimeline(_outputFps, _canonicalStartTime, _pitch);
+            {
+                _preEntryGameplayStartOutputFrameIndex = _outputFrameIndex;
+                _preEntryCapturing = false;
+                _preEntryLifecycleInjectionArmed = false;
+                Log.Info("PreEntry GameplayCapture handoff: " +
+                         "gameplayStartOutputFrameIndex=" +
+                         _preEntryGameplayStartOutputFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                         " capturedPreEntryFrameCount=" +
+                         _preEntryCapturedFrameCount.ToString(CultureInfo.InvariantCulture) +
+                         " boundaryOutputFrameIndex=" +
+                         _preEntryBoundaryOutputFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                         " previousBoundaryTime=" +
+                         _preEntryBoundaryPreviousTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " boundaryForcedTime=" +
+                         _preEntryBoundaryForcedTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " observedDeterministicBoundaryTime=" + ToValue(observedSongPosition) +
+                         " observedSource=" + observedSongPositionSource +
+                         " injectedBeatNumber=" + _preEntryInjectedBeatNumber.ToString(CultureInfo.InvariantCulture) +
+                         " controllerState=" + ToState(state) +
+                         " lifecycleSongPosition=" + lifecycleSongPosition +
+                         " canonicalStart=" + _canonicalStartTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " timeScale=" + Time.timeScale.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " timeScaleOwned=" + _preEntryLifecycleTimeScaleOwned +
+                         " timeScaleRestored=" + _preEntryLifecycleTimeScaleRestored);
+            }
             Log.Info("MasterTimeline lifecycle-ready: lifecycleReadySongPosition=" + lifecycleSongPosition +
                      " floor0EntryTime=" + _floor0EntryTime.ToString("0.######", CultureInfo.InvariantCulture) +
                      " countdownOffset=" + gameplayStartOffset.ToString("0.######", CultureInfo.InvariantCulture) +
                      " gameplayStart=" + _canonicalStartTime.ToString("0.######", CultureInfo.InvariantCulture) +
                      " forcedSongPosition=" + _canonicalStartTime.ToString("0.######", CultureInfo.InvariantCulture) +
-                     " frameIndex=0 " + BuildRuntimeSnapshot());
+                     " absoluteOutputFrameIndex=" + _outputFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                     " " + BuildRuntimeSnapshot());
 
             EditorVisualClock.SetForcedSongPosition(_canonicalStartTime);
             EditorVisualClock.SetActive(true);
 
-            // Render Source 激活点：playback ready 且 canonical visual clock ready 之后、
-            // 进入 Capturing / 请求 frame 0 之前。Start 阶段不得提前接管摄像机。
-            // 失败即 Fail，绝不回退到 Screen framebuffer。
-            if (!FrameCaptureDriver.TryActivateCameraSource(
+            // 正式基线在 gameplay readiness 接管 source。PreEntry 若已经在经
+            // Countdown + native visual readiness 检查后接管，则复用同一 ownership，
+            // 不重复写 Camera targetTexture。
+            if (!FrameCaptureDriver.HasActiveCameraSource &&
+                !FrameCaptureDriver.TryActivateCameraSource(
                     _captureGeneration, out string cameraSourceError))
             {
                 Log.Warn("DeterministicFrameScheduler: capture source activation failed: " +
@@ -804,6 +1075,45 @@ namespace ADOFAI.Renderist.Export
                 _pitch.ToString("0.######", CultureInfo.InvariantCulture)));
         }
 
+        /// <summary>
+        /// deterministic pre-entry 是否已经进入正式 capture transaction：PreEntryClock 已 latch、
+        /// capture source 已激活（<c>_preEntryCapturing</c>），且 progress deadline 已被第一笔
+        /// pre-entry capture request armed。满足后 initialization readiness deadline 不再适用。
+        /// </summary>
+        private static bool PreEntryCaptureWatchdogActive()
+        {
+            return _preEntryClockLatched && _preEntryCapturing && _progressDeadlineRealtime > 0.0;
+        }
+
+        /// <summary>
+        /// 检查已 armed 的 capture transaction / no-progress watchdog。
+        ///
+        /// 正式 Capturing 与 deterministic pre-entry（仍运行于 InitializationHold）**共用同一套**
+        /// 失败保护语义，不复制第二套 timeout 语义。
+        ///
+        /// 只基于最近一次真实 progress（capture request 或成功 commit）刷新过的 deadline 判定，
+        /// 因此：不限制总导出时长、不限制总帧数、不从 Output FPS 推导 timeout、不限制 pitch，
+        /// 也不会因为导出参数合法但较慢而主动拒绝——单纯耗时较长的同步 PNG 编码/写盘会在
+        /// CommitFrame 成功写盘后刷新 progress deadline。
+        /// </summary>
+        private static bool CheckArmedCaptureWatchdogs()
+        {
+            if (_pendingCapture && Time.realtimeSinceStartupAsDouble > _captureDeadlineRealtime)
+            {
+                RequestStop("capture-timeout", "capture-timeout");
+                return true;
+            }
+
+            if (_progressDeadlineRealtime > 0.0 &&
+                Time.realtimeSinceStartupAsDouble > _progressDeadlineRealtime)
+            {
+                RequestStop("watchdog-timeout", "frame-progress-watchdog-timeout");
+                return true;
+            }
+
+            return false;
+        }
+
         private static void TickCapturing()
         {
             object state = EditorGameReflection.ReadControllerState();
@@ -813,18 +1123,7 @@ namespace ADOFAI.Renderist.Export
                 return;
             }
 
-            // capture transaction watchdog：EOF callback 未如约返回时失败收尾。
-            if (_pendingCapture && Time.realtimeSinceStartupAsDouble > _captureDeadlineRealtime)
-            {
-                RequestStop("capture-timeout", "capture-timeout");
-                return;
-            }
-
-            if (Time.realtimeSinceStartupAsDouble > _progressDeadlineRealtime)
-            {
-                RequestStop("watchdog-timeout", "frame-progress-watchdog-timeout");
-                return;
-            }
+            if (CheckArmedCaptureWatchdogs()) return;
 
             ObserveCanonicalCompletion("tick");
 
@@ -848,6 +1147,50 @@ namespace ADOFAI.Renderist.Export
 
             if (_status == SchedulerStatus.InitializationHold)
             {
+                // TEMP advancing PreEntryClock：Countdown 可识别后先冻结在 schedule
+                // anchor；capture source ready 后仅由已提交 output frame 的下一个 index
+                // 推进。raw DSP 与 PNG encode/write wall time 都不能影响 forced time。
+                if (_preEntryClockLatched)
+                {
+                    int preEntryUnityFrame = Time.frameCount;
+                    if (preEntryUnityFrame != _preEntryLastCaptureUnityFrame)
+                    {
+                        _preEntryLastCaptureUnityFrame = preEntryUnityFrame;
+                        string preEntryState = ToState(EditorGameReflection.ReadControllerState());
+                        if (_preEntryCapturing &&
+                            string.Equals(preEntryState, "Countdown", StringComparison.Ordinal))
+                        {
+        // 已到 deterministic 边界就不再输出 pre-entry frame：见
+        // HoldPreEntryBoundary / _preEntryBoundaryOutputFrameIndex。
+                            if (_preEntryBoundaryOutputFrameIndex >= 0 &&
+                                _outputFrameIndex >= _preEntryBoundaryOutputFrameIndex)
+                            {
+                                HoldPreEntryBoundary();
+                            }
+                            else
+                            {
+                                PreparePreEntryFrame();
+                            }
+                        }
+                        else
+                        {
+                            // source-ready 之前冻结在 anchor；若 native 已在上一事务
+                            // 转入 PlayerControl，则保留上一笔 forced value，交给下一次
+                            // scheduler Tick 完成 canonical handoff，绝不回跳到 anchor。
+                            if (!_preEntryCapturing)
+                            {
+                                _forcedSongPosition = _preEntryAnchor;
+                                EditorVisualClock.SetForcedSongPosition(_forcedSongPosition);
+                                EditorVisualClock.SetActive(true);
+                            }
+                            else
+                            {
+                            }
+                        }
+                    }
+                    return;
+                }
+
                 EditorVisualClock.SetForcedSongPosition(_canonicalStartTime);
                 return;
             }
@@ -882,6 +1225,16 @@ namespace ADOFAI.Renderist.Export
 
         private static void ConductorUpdatePostfix()
         {
+            if (_running && _pendingStopReason == null &&
+                _status == SchedulerStatus.InitializationHold &&
+                _preEntryClockLatched)
+            {
+                if (_preEntryCapturing)
+                {
+                }
+                return;
+            }
+
             if (!_running || _pendingStopReason != null || _status != SchedulerStatus.Capturing || !_clockActive)
                 return;
 
@@ -945,8 +1298,11 @@ namespace ADOFAI.Renderist.Export
 
             long index = _outputFrameIndex;
             LogFrame0Stage(index, "BEGIN");
-            MasterTimeline.FrameSample sample = _timeline.Prepare(index);
-            _outputTime = sample.OutputTime;
+            long gameplayFrameIndex = GetGameplayFrameIndex(index);
+            MasterTimeline.FrameSample sample = _timeline.Prepare(gameplayFrameIndex);
+            // outputTime 始终属于全视频的 absolute output timeline；只有 chartTime
+            // 在 GameplayCapture 使用 gameplay-local index。
+            _outputTime = index / (double)_outputFps;
             _forcedSongPosition = sample.ChartTime;
             _hitsThisFrame = 0;
 
@@ -959,6 +1315,39 @@ namespace ADOFAI.Renderist.Export
                          " chartTime=" +
                          _forcedSongPosition.ToString("0.######", CultureInfo.InvariantCulture) +
                          " " + BuildRuntimeSnapshot());
+            }
+            else if (gameplayFrameIndex == 0 || gameplayFrameIndex == 1)
+            {
+        // gameplay frame 0 / 1 PRE 取证：证明 capture request 之前 forced chart time 已经
+        // 是 canonicalStart（frame 0）/ canonicalStart + step（frame 1），且 getter 读回的
+        // effectiveSongposition 与之相同 —— 即 native visual state 会在本帧重新求值于
+        // canonicalStart，而不是停留在 boundary hold 的 forced time。
+        // 日志只读：每层最多读一次，null-safe，不产生 gameplay side effect。
+                object gameplayController = EditorGameReflection.Controller();
+                object gameplayPlayer = ReadInstanceMember(gameplayController, "playerOne");
+                object gameplaySystem = ReadInstanceMember(gameplayPlayer, "planetarySystem");
+                object gameplayPlanet = ReadInstanceMember(gameplaySystem, "chosenPlanet");
+                object gameplayPlanetAngle = gameplayPlanet == null
+                    ? null
+                    : ReadInstanceMember(gameplayPlanet, "angle");
+                Log.Info("PreEntry GameplayCapture frame " +
+                         gameplayFrameIndex.ToString(CultureInfo.InvariantCulture) + " prepared: " +
+                         "absoluteOutputFrameIndex=" + index.ToString(CultureInfo.InvariantCulture) +
+                         " gameplayFrameIndex=" + gameplayFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                         " outputTime=" + _outputTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " forcedChartTime=" + _forcedSongPosition.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " canonicalStart=" +
+                         _canonicalStartTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " effectiveSongposition=" +
+                         ToValue(EditorGameReflection.ReadConductorSongPosition()) +
+                         " controllerState=" + ToState(EditorGameReflection.ReadControllerState()) +
+                         " chosenPlanetAngle=" + ToValue(gameplayPlanetAngle) +
+                         " timeScale=" + Time.timeScale.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " deltaTime=" + Time.deltaTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " unscaledDeltaTime=" +
+                         Time.unscaledDeltaTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " timeScaleOwned=" + _preEntryLifecycleTimeScaleOwned +
+                         "");
             }
 
             _captureRequestCount++;
@@ -984,6 +1373,417 @@ namespace ADOFAI.Renderist.Export
                           " forcedSongPosition=" + forcedText +
                           " unityFrame=" + Time.frameCount.ToString(CultureInfo.InvariantCulture));
             }
+        }
+
+        /// <summary>
+        /// TEMP lifecycle-only boundary phase：最后一个 pre-entry frame（B-1）已 commit。
+        ///
+        /// 与上一版的区别：**不再把 forced visual clock 推到 boundaryForcedTime**。
+        /// visual/effective songposition 在整个隐藏 transition 期间保持
+        /// previousBoundaryTime = anchor + (B-1)*step，因此 scrPlanet / TrailRenderer 等
+        /// stateful visual 组件看不到任何“未来”chart time。Countdown 到 PlayerControl 改由
+        /// Countdown_Update 作用域内的 threshold beat 注入触发（见 CountdownUpdatePrefix）。
+        ///
+        /// boundaryForcedTime 仍然保留其数学意义（B grid 定义 / 日志 / bracket invariant /
+        /// 诊断），只是不再作为 visual clock 取值。PlayerControl 出现后由既有 handoff 以
+        /// 由既有 capture transaction / no-progress watchdog fail-closed。
+        /// </summary>
+        private static void HoldPreEntryBoundary()
+        {
+            if (!_preEntryLifecycleInjectionArmed)
+            {
+        // ownership 必须已经在 CommitFrame(B-1) 成功 commit 后建立；
+        // hidden frame Prefix 只验证，绝不在本帧首次写 timeScale，否则本帧
+        // deltaTime 已预先计算，仍会泄漏一个完整 output step 的 scaled aging。
+                if (!TryVerifyPreEntryBoundaryTime(out string initialTimeScaleError))
+                {
+                    Log.Warn("PreEntry lifecycle timeScale not ready at boundary entry: " +
+                             (initialTimeScaleError ?? "unknown") +
+                             " unityFrame=" + Time.frameCount.ToString(CultureInfo.InvariantCulture));
+                    RequestStop("preentry-time-scale-not-ready",
+                        initialTimeScaleError ?? "time-scale-not-ready-before-hidden-frame");
+                    return;
+                }
+
+                _preEntryLifecycleInjectionArmed = true;
+                Log.Info("PreEntry lifecycle-only boundary phase begin: " +
+                         "boundaryOutputFrameIndex=" +
+                         _preEntryBoundaryOutputFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                         " lastPreEntryOutputFrameIndex=" +
+                         (_preEntryBoundaryOutputFrameIndex - 1).ToString(CultureInfo.InvariantCulture) +
+                         " previousBoundaryTime=" +
+                         _preEntryBoundaryPreviousTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " canonicalStart=" +
+                         _preEntryBoundaryCanonicalStart.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " boundaryForcedTime=" +
+                         _preEntryBoundaryForcedTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " step=" + _preEntryStep.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " forcedClockAtPhaseBegin=" +
+                         _forcedSongPosition.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " absoluteOutputFrameIndex=" + _outputFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                         " controllerState=" + ToState(EditorGameReflection.ReadControllerState()) +
+                         " injectedBeatNumber=" + _preEntryInjectedBeatNumber.ToString(CultureInfo.InvariantCulture) +
+                         " adjustedCountdownTicks=" +
+                         ToValue(ReadInstanceMember(EditorGameReflection.Conductor(), "adjustedCountdownTicks")) +
+                         " capturedPreEntryFrameCount=" +
+                         _preEntryCapturedFrameCount.ToString(CultureInfo.InvariantCulture) +
+                         "");
+            }
+
+            // hidden phase 每 Unity frame 校验 timeScale 仍为 0：被外部改动时不静默覆盖，
+            // 记录异常并 fail-closed，避免与其他系统争夺 ownership。
+            if (!TryVerifyPreEntryBoundaryTime(out string timeScaleError))
+            {
+                Log.Warn("PreEntry lifecycle timeScale ownership violated: " +
+                         (timeScaleError ?? "unknown") +
+                         " unityFrame=" + Time.frameCount.ToString(CultureInfo.InvariantCulture) +
+                         " originalTimeScale=" +
+                         _preEntryLifecycleSavedTimeScale.ToString("0.######", CultureInfo.InvariantCulture));
+                RequestStop("preentry-time-scale-ownership-lost",
+                    timeScaleError ?? "time-scale-ownership-lost");
+                return;
+            }
+
+
+            // 关键：visual clock 保持 previousBoundaryTime，绝不前进到 boundaryForcedTime。
+            _forcedSongPosition = _preEntryBoundaryPreviousTime;
+            EditorVisualClock.SetForcedSongPosition(_forcedSongPosition);
+            EditorVisualClock.SetActive(true);
+        }
+
+        // ================================================================
+        // PreEntry lifecycle bridge：hidden boundary phase 的 Time.timeScale ownership
+        // ================================================================
+        //
+        // 目的：判定 hidden lifecycle-only boundary phase 中的 TrailRenderer / native history
+        // aging 是否来自 scaled Unity time。只在 frame B-1 成功 commit 的回调中接管，
+        // PlayerControl 被观测到后让 G 使用 partial scale，G 成功 commit 后恢复。
+        // 不修改 Time.fixedDeltaTime，不碰任何 Trail API。
+
+        /// <summary>
+        /// 建立 timeScale ownership 并写 0。失败即 fail-closed，且**保留 ownership 标记**
+        /// （不静默清空），以便后续 cleanup 重试恢复。
+        /// </summary>
+        private static bool TryFreezePreEntryBoundaryTime(long committedFrameIndex, out string error)
+        {
+            error = null;
+
+            if (!_preEntryLifecycleTimeScaleOwned)
+            {
+                float original = Time.timeScale;
+                if (float.IsNaN(original) || float.IsInfinity(original))
+                {
+                    error = "time-scale-not-finite:" + original.ToString("0.######", CultureInfo.InvariantCulture);
+                    return false;
+                }
+
+                _preEntryLifecycleSavedTimeScale = original;
+                _preEntryLifecycleTimeScaleOwned = true;
+                _preEntryLifecycleTimeScaleRestored = false;
+            }
+
+            try
+            {
+                Time.timeScale = 0f;
+            }
+            catch (Exception)
+            {
+                error = "time-scale-write-failed";
+                return false;
+            }
+
+            float observed = Time.timeScale;
+            if (observed != 0f)
+            {
+                error = "time-scale-readback-not-zero:" + observed.ToString("0.######", CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            _preEntryLifecycleTimeScaleFrozen = true;
+            Log.Info("PreEntry lifecycle-time-freeze begin: " +
+                     "unityFrame=" + Time.frameCount.ToString(CultureInfo.InvariantCulture) +
+                     " lastCommittedFrameIndex=" +
+                     committedFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                     " nextAbsoluteOutputFrameIndex=" +
+                     _outputFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                     " originalTimeScale=" +
+                     _preEntryLifecycleSavedTimeScale.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " requestedTimeScale=0" +
+                     " observedTimeScale=" + observed.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " deltaTime=" + Time.deltaTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " unscaledDeltaTime=" + Time.unscaledDeltaTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " forcedSongPosition=" +
+                     _forcedSongPosition.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " controllerState=" + ToState(EditorGameReflection.ReadControllerState()));
+            return true;
+        }
+
+        /// <summary>
+        /// hidden phase 每 Unity frame 校验 timeScale 仍为 0。若被外部改动则不静默覆盖，
+        /// 记录异常并 fail-closed，避免与其他系统争夺 ownership。
+        /// </summary>
+        private static bool TryVerifyPreEntryBoundaryTime(out string error)
+        {
+            error = null;
+            if (!_preEntryLifecycleTimeScaleOwned)
+            {
+                error = "time-scale-ownership-not-acquired";
+                return false;
+            }
+            if (!_preEntryLifecycleTimeScaleFrozen)
+            {
+                error = "time-scale-freeze-not-established";
+                return false;
+            }
+
+            float observed = Time.timeScale;
+            if (observed != 0f)
+            {
+                error = "time-scale-changed-during-ownership:" +
+                        observed.ToString("0.######", CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// PlayerControl handoff 后，把 timeScale 从 0 改为仅覆盖
+        /// previousBoundaryTime 到 canonicalStart 的 partial timestep。所有范围判定只复用
+        /// deterministic boundary 的 ULP-based tolerance；写入后必须精确读回。
+        /// </summary>
+        private static bool TryArmGameplayBoundaryPartialStep(double canonicalStart, out string error)
+        {
+            error = null;
+            if (!_preEntryLifecycleTimeScaleOwned)
+            {
+                error = "time-scale-ownership-not-acquired";
+                return false;
+            }
+            if (!_preEntryLifecycleTimeScaleFrozen)
+            {
+                error = "time-scale-freeze-not-established";
+                return false;
+            }
+            if (_preEntryLifecyclePartialScaleArmed)
+            {
+                error = "partial-time-scale-already-armed";
+                return false;
+            }
+
+            double step = _preEntryStep;
+            double partialStep = canonicalStart - _preEntryBoundaryPreviousTime;
+            double tolerance = PreEntryBoundaryNumericalTolerance(
+                canonicalStart, _preEntryBoundaryPreviousTime, step);
+            if (double.IsNaN(step) || double.IsInfinity(step) || step <= 0.0 ||
+                double.IsNaN(_preEntryBoundaryForcedTime) ||
+                double.IsInfinity(_preEntryBoundaryForcedTime) ||
+                double.IsNaN(partialStep) || double.IsInfinity(partialStep) ||
+                partialStep <= 0.0 || partialStep > step + tolerance ||
+                canonicalStart > _preEntryBoundaryForcedTime + tolerance)
+            {
+                error = "partial-step-out-of-range:partialStep=" +
+                        partialStep.ToString("R", CultureInfo.InvariantCulture) +
+                        ",step=" + step.ToString("R", CultureInfo.InvariantCulture) +
+                        ",boundaryForcedTime=" +
+                        _preEntryBoundaryForcedTime.ToString("R", CultureInfo.InvariantCulture) +
+                        ",canonicalStart=" + canonicalStart.ToString("R", CultureInfo.InvariantCulture) +
+                        ",tolerance=" + tolerance.ToString("R", CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            double partialFraction = partialStep / step;
+            double fractionTolerance = tolerance / step;
+            if (double.IsNaN(partialFraction) || double.IsInfinity(partialFraction) ||
+                partialFraction <= 0.0 || partialFraction > 1.0 + fractionTolerance)
+            {
+                error = "partial-fraction-out-of-range:" +
+                        partialFraction.ToString("R", CultureInfo.InvariantCulture);
+                return false;
+            }
+            if (partialFraction > 1.0)
+                partialFraction = 1.0;
+
+            if (float.IsNaN(_preEntryLifecycleSavedTimeScale) ||
+                float.IsInfinity(_preEntryLifecycleSavedTimeScale) ||
+                _preEntryLifecycleSavedTimeScale <= 0f)
+            {
+                error = "saved-time-scale-not-positive-finite:" +
+                        _preEntryLifecycleSavedTimeScale.ToString("R", CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            double requestedDouble = _preEntryLifecycleSavedTimeScale * partialFraction;
+            float requested = (float)requestedDouble;
+            if (float.IsNaN(requested) || float.IsInfinity(requested) || requested <= 0f ||
+                requested > _preEntryLifecycleSavedTimeScale)
+            {
+                error = "requested-partial-time-scale-out-of-range:" +
+                        requested.ToString("R", CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            try
+            {
+                Time.timeScale = requested;
+            }
+            catch (Exception)
+            {
+                error = "partial-time-scale-write-failed";
+                return false;
+            }
+
+            float observed = Time.timeScale;
+            if (observed != requested)
+            {
+                error = "partial-time-scale-readback-mismatch:expected=" +
+                        requested.ToString("R", CultureInfo.InvariantCulture) +
+                        ",observed=" + observed.ToString("R", CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            _preEntryLifecycleTimeScaleFrozen = false;
+            _preEntryLifecyclePartialScaleArmed = true;
+            _preEntryLifecyclePartialStep = partialStep;
+            _preEntryLifecyclePartialFraction = partialFraction;
+            _preEntryLifecycleRequestedPartialScale = requested;
+
+            Log.Info("PreEntry partial timeScale armed for gameplay frame G: " +
+                     "unityFrame=" + Time.frameCount.ToString(CultureInfo.InvariantCulture) +
+                     " gameplayStartOutputFrameIndex=" +
+                     _outputFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                     " previousBoundaryTime=" +
+                     _preEntryBoundaryPreviousTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " canonicalStart=" + canonicalStart.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " step=" + step.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " partialStep=" + partialStep.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " partialFraction=" + partialFraction.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " originalTimeScale=" +
+                     _preEntryLifecycleSavedTimeScale.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " requestedPartialTimeScale=" + requested.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " observedTimeScale=" + observed.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " deltaTime=" + Time.deltaTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " unscaledDeltaTime=" +
+                     Time.unscaledDeltaTime.ToString("0.######", CultureInfo.InvariantCulture));
+            return true;
+        }
+
+        /// <summary>
+        /// 恢复**实际保存的**原始 timeScale（不假设为 1）并读回验证，成功后释放 ownership。
+        /// 失败时保留 ownership，由 cleanup 路径重试。
+        /// </summary>
+        private static bool TryRestorePreEntryTimeScale(string phase, out string error)
+        {
+            error = null;
+            if (!_preEntryLifecycleTimeScaleOwned)
+                return true;
+
+            float observedBeforeRestore = Time.timeScale;
+            try
+            {
+                Time.timeScale = _preEntryLifecycleSavedTimeScale;
+            }
+            catch (Exception)
+            {
+                error = "time-scale-restore-write-failed";
+                return false;
+            }
+
+            float restored = Time.timeScale;
+            if (Math.Abs(restored - _preEntryLifecycleSavedTimeScale) > 1e-6f)
+            {
+                error = "time-scale-restore-readback-mismatch:expected=" +
+                        _preEntryLifecycleSavedTimeScale.ToString("0.######", CultureInfo.InvariantCulture) +
+                        ",observed=" + restored.ToString("0.######", CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            _preEntryLifecycleTimeScaleOwned = false;
+            _preEntryLifecycleTimeScaleFrozen = false;
+            _preEntryLifecycleTimeScaleRestored = true;
+            _preEntryLifecyclePartialScaleArmed = false;
+
+            Log.Info("PreEntry " + phase + ": " +
+                     "unityFrame=" + Time.frameCount.ToString(CultureInfo.InvariantCulture) +
+                     " absoluteOutputFrameIndex=" + _outputFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                     " originalTimeScale=" +
+                     _preEntryLifecycleSavedTimeScale.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " observedTimeScaleBeforeRestore=" +
+                     observedBeforeRestore.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " restoredTimeScale=" + restored.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " partialStep=" +
+                     _preEntryLifecyclePartialStep.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " partialFraction=" +
+                     _preEntryLifecyclePartialFraction.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " requestedPartialTimeScale=" +
+                     _preEntryLifecycleRequestedPartialScale.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " deltaTime=" + Time.deltaTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " unscaledDeltaTime=" + Time.unscaledDeltaTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " controllerState=" + ToState(EditorGameReflection.ReadControllerState()) +
+                     " forcedSongPosition=" +
+                     _forcedSongPosition.ToString("0.######", CultureInfo.InvariantCulture));
+            return true;
+        }
+
+        /// <summary>
+        /// TEMP advancing PreEntryClock：source 已在经过严格候选检查的 Countdown 中
+        /// 激活后，只以成功 commit 的 output index 推进 songposition。该临时调查不得
+        /// 触碰 DSP / AudioSource / countdown 的 native state，也不进入 autoplay。
+        /// </summary>
+        private static void PreparePreEntryFrame()
+        {
+            if (_pendingCapture)
+            {
+                RequestStop("capture-failed", "previous-preentry-capture-unresolved");
+                return;
+            }
+
+            if (_outputFrameIndex == long.MaxValue)
+            {
+                RequestStop("frame-index-exhausted", "output-frame-index-exceeds-long-range");
+                return;
+            }
+
+            if (SafetyFrameLimitPolicy.IsFrameLimitReached(_safetyFrameLimit, _outputFrameIndex))
+            {
+                RequestStop("safety-limit", "safety-frame-limit-during-native-preentry");
+                return;
+            }
+
+            long index = _outputFrameIndex;
+            if (_preEntryFrameIndex != _preEntryCapturedFrameCount)
+            {
+                RequestStop("capture-failed", "preentry-frame-index-commit-mismatch");
+                return;
+            }
+
+            double forcedPreEntryTime = _preEntryAnchor +
+                                         _preEntryFrameIndex * _preEntryStep;
+            if (double.IsNaN(forcedPreEntryTime) || double.IsInfinity(forcedPreEntryTime) ||
+                Math.Abs(forcedPreEntryTime) > AnchorInvalidThresholdSeconds)
+            {
+                RequestStop("preentry-clock-invalid", "forced-preentry-time-out-of-range");
+                return;
+            }
+
+            _outputTime = index / (double)_outputFps;
+            _hitsThisFrame = 0;
+            _forcedSongPosition = forcedPreEntryTime;
+            EditorVisualClock.SetForcedSongPosition(_forcedSongPosition);
+            EditorVisualClock.SetActive(true);
+
+
+            _captureRequestCount++;
+            if (!FrameCaptureDriver.RequestCapture(_captureGeneration, index))
+            {
+                RequestStop("capture-failed", "preentry-capture-request-rejected");
+                return;
+            }
+
+            _pendingCapture = true;
+            _pendingCaptureIndex = index;
+            _captureDeadlineRealtime = Time.realtimeSinceStartupAsDouble + CaptureTimeoutSeconds;
+            _progressDeadlineRealtime = Time.realtimeSinceStartupAsDouble + FrameProgressWatchdogSeconds;
         }
 
         // ================================================================
@@ -1020,7 +1820,7 @@ namespace ADOFAI.Renderist.Export
             {
                 Log.Debug("MasterTimeline FrameBoundary: frameIndex=" + frameIndex.ToString(CultureInfo.InvariantCulture) +
                           " outputTime=" + (frameIndex / (double)_outputFps).ToString("0.######", CultureInfo.InvariantCulture) +
-                          " expectedChartTime=" + (_canonicalStartTime + frameIndex / (double)_outputFps * _pitch).ToString("0.######", CultureInfo.InvariantCulture) +
+                          " timeline=" + DescribeFrameTimeline(frameIndex) +
                           " hitsThisFrame=" + _hitsThisFrame.ToString(CultureInfo.InvariantCulture) +
                           " " + BuildRuntimeSnapshot());
             }
@@ -1059,6 +1859,49 @@ namespace ADOFAI.Renderist.Export
             // 且 _outputFrameIndex 全局受 long.MaxValue 边界守卫，因此它们同样不可能回绕。
             _capturedFrameCount++;
             _outputFrameIndex++;
+
+            if (_preEntryCapturing)
+            {
+                _preEntryCapturedFrameCount++;
+                _preEntryFrameIndex++;
+            }
+
+            // TEMP Trail-aging probe：只在 B-1 的 PNG 已成功 ReadPixels / Encode / Write，
+            // 且上一 commit counters 已推进后，才在同一 Unity frame 结束前接管 timeScale。
+            // 因此写盘失败绝不会 freeze；下一 hidden Unity frame 从 frame begin 起就应看到
+            // timeScale=0 / deltaTime=0，而已完成的 B-1 视觉事务不受影响。
+            if (_preEntryClockLatched &&
+                _preEntryCapturing && _preEntryBoundaryOutputFrameIndex > 0 &&
+                frameIndex == _preEntryBoundaryOutputFrameIndex - 1)
+            {
+                if (!TryFreezePreEntryBoundaryTime(frameIndex, out string freezeError))
+                {
+                    Log.Warn("PreEntry lifecycle-time-freeze failed after B-1 commit: " +
+                             (freezeError ?? "unknown"));
+                    RequestStop("preentry-lifecycle-time-freeze-failed",
+                        freezeError ?? "time-scale-freeze-failed-after-b-minus-one-commit");
+                    return;
+                }
+            }
+
+            // G 的 PNG 已成功 ReadPixels / Encode / Write 且 commit counters 已推进；现在
+            // 才恢复 session 开始时保存的原始 timeScale，使 G+1 从完整 timestep 开始。
+            // G 写盘失败、取消或异常均不会走到这里，而由统一 cleanup 恢复。
+            if (_preEntryLifecyclePartialScaleArmed &&
+                _preEntryGameplayStartOutputFrameIndex >= 0 &&
+                frameIndex == _preEntryGameplayStartOutputFrameIndex)
+            {
+                if (!TryRestorePreEntryTimeScale(
+                        "partial timeScale restored after gameplay frame G commit",
+                        out string partialRestoreError))
+                {
+                    Log.Warn("PreEntry partial timeScale restore failed after G commit: " +
+                             (partialRestoreError ?? "unknown"));
+                    RequestStop("preentry-time-scale-restore-failed",
+                        partialRestoreError ?? "time-scale-restore-failed-after-g-commit");
+                    return;
+                }
+            }
 
             _progressDeadlineRealtime = Time.realtimeSinceStartupAsDouble + FrameProgressWatchdogSeconds;
 
@@ -1423,6 +2266,24 @@ namespace ADOFAI.Renderist.Export
             var failures = new List<string>();
             try
             {
+        // 优先恢复 transient ownership（scoped beat override 与 pre-entry timeScale），
+        // 再做 Hook / 捕获后端 / native playback teardown。
+                if (!TryRestorePreEntryBeatOverride(out string beatOverrideCleanupError))
+                    failures.Add("preentry-beat-override-restore:" + (beatOverrideCleanupError ?? "unknown"));
+                _preEntryLifecycleInjectionArmed = false;
+
+                if (_preEntryLifecycleTimeScaleOwned)
+                {
+                    if (!TryRestorePreEntryTimeScale("timeScale restore (cleanup)", out string timeScaleCleanupError))
+                    {
+                        failures.Add("preentry-time-scale-restore:" + (timeScaleCleanupError ?? "unknown"));
+                        Log.Warn("PreEntry timeScale restore failed during cleanup: " +
+                                 (timeScaleCleanupError ?? "unknown") +
+                                 " originalTimeScale=" +
+                                 _preEntryLifecycleSavedTimeScale.ToString("0.######", CultureInfo.InvariantCulture));
+                    }
+                }
+
                 // 先撤 Hook 与捕获后端，再恢复 RDC.auto 与 Editor 播放状态，最后恢复 Unity 时间。
                 bool captureStopped;
                 try { captureStopped = FrameCaptureDriver.Stop(); }
@@ -1497,6 +2358,19 @@ namespace ADOFAI.Renderist.Export
                 {
                     failures.Add("canonical-completion-unpatch-exception");
                     Log.Exception("DeterministicFrameScheduler: canonical completion hook 清理异常", ex);
+                }
+        // PreEntry lifecycle boundary hooks：注入标记必须先失效，
+        // 再精确 Unpatch Countdown_Update。
+                _preEntryLifecycleInjectionArmed = false;
+                try
+                {
+                    if (!UnregisterPreEntryLifecycleBridgeHook())
+                        failures.Add("lifecycle-boundary-probe-unpatch");
+                }
+                catch (Exception ex)
+                {
+                    failures.Add("lifecycle-boundary-probe-unpatch-exception");
+                    Log.Exception("DeterministicFrameScheduler: lifecycle boundary probe hooks 清理异常", ex);
                 }
                 try
                 {
@@ -1573,6 +2447,28 @@ namespace ADOFAI.Renderist.Export
                         _ownsUnityTiming = false;
                     else
                         failures.Add("unity-timing-restore");
+                }
+
+                // PreEntry lifecycle bridge：任何离开 session 的路径（normal completion /
+        // user cancel / failure / exception / mod disable）都必须尝试恢复**实际保存的**
+        // 原始 timeScale。恢复失败时保留 ownership 并计入 cleanup failure，
+        // 绝不静默清空。
+                if (_preEntryLifecycleTimeScaleOwned)
+                {
+                    _preEntryLifecycleInjectionArmed = false;
+                    if (TryRestorePreEntryTimeScale("timeScale restore (cleanup)", out string timeScaleCleanupError))
+                    {
+                        _preEntryLifecycleTimeScaleRestored = true;
+                    }
+                    else
+                    {
+                        failures.Add("preentry-time-scale-restore:" +
+                                     (timeScaleCleanupError ?? "unknown"));
+                        Log.Warn("PreEntry timeScale restore failed during cleanup: " +
+                                 (timeScaleCleanupError ?? "unknown") +
+                                 " originalTimeScale=" +
+                                 _preEntryLifecycleSavedTimeScale.ToString("0.######", CultureInfo.InvariantCulture));
+                    }
                 }
 
                 _clockActive = false;
@@ -2058,6 +2954,111 @@ namespace ADOFAI.Renderist.Export
         }
 
         // ================================================================
+        // PreEntry lifecycle boundary hooks（0.3.6.3）。
+        // ================================================================
+        //
+        // 目的：让 Countdown_Update **单独**看到满足进入 PlayerControl 的 beat 条件，而
+        // visual clock 仍停在 previousBoundaryTime，从而避免任何 stateful visual 组件
+        // （TrailRenderer 等）看到“未来”chart time。
+        //
+        // patch 在 Start（playback 之前）安装，覆盖整个 session；但行为在 boundary phase
+        // 之外完全惰性（Prefix/Postfix 首行即返回），不改变正式渲染流程。
+
+        private static bool RegisterPreEntryLifecycleBridgeHook()
+        {
+            if (!UnregisterPreEntryLifecycleBridgeHook())
+                return false;
+
+            try
+            {
+                Harmony harmony = ModEntry.Harmony;
+                MethodInfo countdownUpdate = EditorGameReflection.ControllerCountdownUpdateMethod;
+                if (harmony == null || countdownUpdate == null)
+                {
+                    Log.Warn("PreEntry lifecycle bridge unavailable: countdownUpdate=" +
+                             (countdownUpdate == null ? "null" : "ok"));
+                    return false;
+                }
+
+                MethodInfo countdownPrefix = AccessTools.Method(typeof(DeterministicFrameScheduler),
+                    nameof(CountdownUpdatePrefix));
+                MethodInfo countdownPostfix = AccessTools.Method(typeof(DeterministicFrameScheduler),
+                    nameof(CountdownUpdatePostfix));
+                MethodInfo countdownFinalizer = AccessTools.Method(typeof(DeterministicFrameScheduler),
+                    nameof(CountdownUpdateFinalizer));
+                if (countdownPrefix == null || countdownPostfix == null || countdownFinalizer == null)
+                {
+                    Log.Warn("PreEntry lifecycle bridge hook bodies missing");
+                    return false;
+                }
+
+                _patchedControllerCountdownUpdate = countdownUpdate;
+                _countdownUpdatePrefixPatched = true;
+                harmony.Patch(countdownUpdate, prefix: new HarmonyMethod(countdownPrefix));
+
+                _countdownUpdatePostfixPatched = true;
+                harmony.Patch(countdownUpdate, postfix: new HarmonyMethod(countdownPostfix));
+
+                _countdownUpdateFinalizerPatched = true;
+                harmony.Patch(countdownUpdate, finalizer: new HarmonyMethod(countdownFinalizer));
+
+                Log.Info("PreEntry lifecycle bridge installed: " +
+                         "scrController.Countdown_Update(prefix+postfix+finalizer)");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("PreEntry: 注册 lifecycle boundary hooks 失败", ex);
+                UnregisterPreEntryLifecycleBridgeHook();
+                return false;
+            }
+        }
+
+        private static bool UnregisterPreEntryLifecycleBridgeHook()
+        {
+            Harmony harmony = ModEntry.Harmony;
+            bool success = true;
+
+            if (_patchedControllerCountdownUpdate != null && harmony != null)
+            {
+                try
+                {
+                    if (_countdownUpdatePrefixPatched)
+                    {
+                        MethodInfo prefix = AccessTools.Method(typeof(DeterministicFrameScheduler),
+                            nameof(CountdownUpdatePrefix));
+                        if (prefix != null) harmony.Unpatch(_patchedControllerCountdownUpdate, prefix);
+                        _countdownUpdatePrefixPatched = false;
+                    }
+                    if (_countdownUpdatePostfixPatched)
+                    {
+                        MethodInfo postfix = AccessTools.Method(typeof(DeterministicFrameScheduler),
+                            nameof(CountdownUpdatePostfix));
+                        if (postfix != null) harmony.Unpatch(_patchedControllerCountdownUpdate, postfix);
+                        _countdownUpdatePostfixPatched = false;
+                    }
+                    if (_countdownUpdateFinalizerPatched)
+                    {
+                        MethodInfo finalizer = AccessTools.Method(typeof(DeterministicFrameScheduler),
+                            nameof(CountdownUpdateFinalizer));
+                        if (finalizer != null) harmony.Unpatch(_patchedControllerCountdownUpdate, finalizer);
+                        _countdownUpdateFinalizerPatched = false;
+                    }
+                    if (!_countdownUpdatePrefixPatched && !_countdownUpdatePostfixPatched &&
+                        !_countdownUpdateFinalizerPatched)
+                        _patchedControllerCountdownUpdate = null;
+                }
+                catch (Exception ex)
+                {
+                    Log.Exception("PreEntry: 撤销 Countdown_Update hook 失败", ex);
+                    success = false;
+                }
+            }
+
+            return success && _patchedControllerCountdownUpdate == null;
+        }
+
+        // ================================================================
         // native editor playback teardown observer
         // ================================================================
         //
@@ -2194,7 +3195,7 @@ namespace ADOFAI.Renderist.Export
                 }
                 catch (Exception ex)
                 {
-                    Log.Exception("DeterministicFrameScheduler: 注册 conductor.Update Postfix 失败，撤销已注册 Prefix", ex);
+                    Log.Exception("DeterministicFrameScheduler: 注册 conductor.Update Postfix 失败，撤销已注册的 Prefix", ex);
                     UnregisterConductorUpdateHook();
                     return false;
                 }
@@ -2352,11 +3353,551 @@ namespace ADOFAI.Renderist.Export
             catch { return null; }
         }
 
+        private static object ReadStaticMember(Type type, string name)
+        {
+            if (type == null) return null;
+            try
+            {
+                PropertyInfo property = type.GetProperty(name,
+                    BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                if (property != null) return property.GetValue(null, null);
+                FieldInfo field = type.GetField(name,
+                    BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                return field?.GetValue(null);
+            }
+            catch { return null; }
+        }
+
         private static bool ReadBool(object value)
         {
             if (value == null) return false;
             try { return Convert.ToBoolean(value, CultureInfo.InvariantCulture); }
             catch { return false; }
+        }
+
+        // ================================================================
+        // PreEntry helpers
+        // ================================================================
+
+        /// <summary>
+        /// 将原生 songposition 公式在 dspTime == dspTimeSong 的原点固定下来：
+        /// -(calibration_i * pitch) - addoffset。这个值不依赖本次 callback 到达的
+        /// wall time，且与 scrConductor.Update 的当前公式一致。若 Countdown 已跨越第
+        /// 一个 beat，则拒绝锁定，避免把已推进的 native state 倒回去。
+        /// </summary>
+        private static bool TryLatchPreEntryClock(out string detail)
+        {
+            detail = "lifecycle-incomplete";
+            if (_handoff == null || !_handoff.PlayRequested || !_handoff.PlayReturned ||
+                !_handoff.SawStart || !_handoff.SawMusicScheduled || !_handoff.SawCountdown)
+                return false;
+
+            if (_outputFps <= 0 || _pitchUnavailable || _pitch < MinPitch)
+            {
+                detail = "output-fps-or-pitch-unavailable";
+                return false;
+            }
+
+            object conductor = EditorGameReflection.Conductor();
+            if (conductor == null)
+            {
+                detail = "conductor-unavailable";
+                return false;
+            }
+
+            double? calibrationI = ToDouble(ReadStaticMember(conductor.GetType(), "calibration_i"));
+            double? addOffset = ToDouble(ReadInstanceMember(conductor, "addoffset"));
+            double? beatNumber = ToDouble(ReadInstanceMember(conductor, "beatNumber"));
+            object rawSongPosition = ReadUnforcedSongPositionValue();
+            double? rawSongPositionNumber = ToDouble(rawSongPosition);
+            if (!calibrationI.HasValue || !addOffset.HasValue || !beatNumber.HasValue ||
+                !rawSongPositionNumber.HasValue)
+            {
+                detail = "native-clock-fields-unavailable";
+                return false;
+            }
+
+            if (beatNumber.Value > 0.0 || rawSongPositionNumber.Value >= 0.0)
+            {
+                detail = "countdown-latch-too-late:beatNumber=" +
+                         beatNumber.Value.ToString("0.######", CultureInfo.InvariantCulture) +
+                         ",rawSongposition=" +
+                         rawSongPositionNumber.Value.ToString("0.######", CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            double anchor = -(calibrationI.Value * _pitch) - addOffset.Value;
+            double step = _pitch / _outputFps;
+            if (double.IsNaN(anchor) || double.IsInfinity(anchor) ||
+                Math.Abs(anchor) > AnchorInvalidThresholdSeconds ||
+                double.IsNaN(step) || double.IsInfinity(step) || step <= 0.0)
+            {
+                detail = "preentry-anchor-or-step-invalid";
+                return false;
+            }
+
+            // deterministic 边界：B = 第一个 forced time >= canonicalStart 的绝对 output frame。
+            // frame [0, B-1] 是 deterministic pre-entry；frame B 起必须交给 GameplayCapture，
+            // chart time 才会正好落在 canonicalStart（floor entry time 与 autoplay 的对齐基准）。
+            if (!EditorGameReflection.TryReadGameplayStartOffset(
+                    out double boundaryOffset, out string boundaryError))
+            {
+                detail = "preentry-boundary-unavailable:" + (boundaryError ?? "unknown");
+                return false;
+            }
+            double boundaryStart = _floor0EntryTime + boundaryOffset;
+            double boundaryFramesExact = (boundaryStart - anchor) / step;
+            if (double.IsNaN(boundaryStart) || double.IsInfinity(boundaryStart) ||
+                Math.Abs(boundaryStart) > AnchorInvalidThresholdSeconds ||
+                double.IsNaN(boundaryFramesExact) || double.IsInfinity(boundaryFramesExact) ||
+                boundaryFramesExact > 9.0e15 || boundaryFramesExact < -9.0e15)
+            {
+                detail = "preentry-boundary-invalid";
+                return false;
+            }
+            // near-integer 数值稳定化：x 在数学上恰好落在 grid point 时，FP 可能算出 x = m ± few ULP；
+            // 落在 m 上方会让 ceil 多出一帧，而该帧 chart time 与 gameplay frame 0 相同。这里只在
+            // 「half-ULP 量级」与「一帧的千分之一」的较小者内吸附，数学语义仍是 B = ceil(x)；
+            // 吸附后果由下面的 grid bracket invariant 兜底（吸错 → bracket 不成立 → fail-closed）。
+            double snapTolerance = Math.Min(
+                PreEntryBoundaryHalfUlp(boundaryFramesExact) * 8.0,
+                PreEntryBoundaryToleranceStepFraction);
+            double nearestGridFrames = Math.Round(boundaryFramesExact);
+            double stableFramesExact = Math.Abs(boundaryFramesExact - nearestGridFrames) <= snapTolerance
+                ? nearestGridFrames
+                : boundaryFramesExact;
+            long boundaryFrameIndex = stableFramesExact <= 0.0
+                ? 0L
+                : (long)Math.Ceiling(stableFramesExact);
+
+            // deterministic grid bracket invariant（TEMP probe）：
+            // previousBoundaryTime < canonicalStart <= boundaryForcedTime。
+            // 只吸收 floating-point 表示/运算误差（ULP based，并封顶在 step 的千分之一），
+            // 不使用固定秒数窗口：step = pitch / OutputFps 在合法参数下可以从远大于 0.05 s
+            // （1 FPS → step = 1 s）一直小到远小于 1e-9 s，任何绝对窗口或绝对下限都会在
+            // 某一端失去正确性，并对 Output FPS / pitch 形成隐式限制。
+            double boundaryForcedTime = anchor + boundaryFrameIndex * step;
+            double previousBoundaryTime = anchor + (boundaryFrameIndex - 1) * step;
+            double bracketTolerance = PreEntryBoundaryNumericalTolerance(boundaryStart, boundaryForcedTime, step);
+            if (!(previousBoundaryTime < boundaryStart - bracketTolerance) ||
+                !(boundaryStart <= boundaryForcedTime + bracketTolerance))
+            {
+                detail = "preentry-grid-bracket-invalid:previousBoundaryTime=" +
+                         previousBoundaryTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                         ",canonicalStart=" + boundaryStart.ToString("0.######", CultureInfo.InvariantCulture) +
+                         ",boundaryForcedTime=" +
+                         boundaryForcedTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                         ",step=" + step.ToString("0.######", CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            // lifecycle-only boundary probe 需要的注入值：满足 native
+            // `beatNumber >= adjustedCountdownTicks` 的**最小**整数，不取更大经验值。
+            double? adjustedCountdownTicks = ToDouble(ReadInstanceMember(conductor, "adjustedCountdownTicks"));
+            if (!adjustedCountdownTicks.HasValue ||
+                double.IsNaN(adjustedCountdownTicks.Value) || double.IsInfinity(adjustedCountdownTicks.Value) ||
+                adjustedCountdownTicks.Value > int.MaxValue - 1.0)
+            {
+                detail = "countdown-threshold-unavailable";
+                return false;
+            }
+            int injectedBeatNumber = (int)Math.Ceiling(adjustedCountdownTicks.Value);
+
+            _preEntryAnchor = anchor;
+            _preEntryStep = step;
+            _preEntryBoundaryOutputFrameIndex = boundaryFrameIndex;
+            _preEntryBoundaryForcedTime = boundaryForcedTime;
+            _preEntryBoundaryPreviousTime = previousBoundaryTime;
+            _preEntryBoundaryCanonicalStart = boundaryStart;
+            _preEntryInjectedBeatNumber = injectedBeatNumber;
+            _preEntryFrameIndex = 0L;
+            _forcedSongPosition = anchor;
+            EditorVisualClock.SetForcedSongPosition(anchor);
+            EditorVisualClock.SetActive(true);
+            _preEntryClockLatched = true;
+
+            detail = null;
+            Log.Info("PreEntry clock latched: " +
+                     "rawSongpositionBeforeForce=" + ToValue(rawSongPosition) +
+                     " beatNumberBeforeForce=" + ToValue(beatNumber) +
+                     " calibrationI=" + ToValue(calibrationI) +
+                     " addoffset=" + ToValue(addOffset) +
+                     " anchor=" + anchor.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " step=" + step.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " boundaryOutputFrameIndex=" + boundaryFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                     " previousBoundaryTime=" +
+                     previousBoundaryTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " boundaryForcedTime=" +
+                     boundaryForcedTime.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " canonicalStart=" + boundaryStart.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " adjustedCountdownTicks=" + ToValue(adjustedCountdownTicks) +
+                     " injectedBeatNumber=" + injectedBeatNumber.ToString(CultureInfo.InvariantCulture) +
+                     " sourceWaiting=true ");
+            return true;
+        }
+
+        // ================================================================
+        // PreEntry lifecycle boundary：Countdown_Update beat 注入 + 顺序取证
+        // ================================================================
+
+        /// <summary>
+        /// scrController.Countdown_Update 的 Harmony Prefix。
+        ///
+        /// 只在 lifecycle-only boundary phase 生效：保存 conductor.beatNumber 原值，然后在
+        /// 本方法作用域内临时注入满足 native `beatNumber >= adjustedCountdownTicks` 的最小值，
+        /// 让 Countdown_Update 自己判定“该进入 PlayerControl”。visual clock、songposition、
+        /// nextBeatTime、Planet angle、Trail、currentFloor 与 outputFrameIndex 都不修改。
+        ///
+        /// 资源生命周期采用静态保存（Unity 主线程单线程调用同一次 Prefix/Postfix 配对），
+        /// 不为异常恢复引入额外基础设施；beatNumber 每帧都会被 native conductor 重算，
+        /// 即使恢复失败也不会残留到下一帧。
+        /// </summary>
+        private static void CountdownUpdatePrefix()
+        {
+            if (!ShouldRunLifecycleBeatInjection()) return;
+
+            object conductor = EditorGameReflection.Conductor();
+            if (conductor == null)
+            {
+                RequestStop("preentry-beat-injection-failed", "conductor-unavailable");
+                return;
+            }
+
+            FieldInfo beatField = conductor.GetType().GetField("beatNumber",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (beatField == null || beatField.FieldType != typeof(int))
+            {
+                RequestStop("preentry-beat-injection-failed", "beat-number-field-unavailable");
+                return;
+            }
+
+            int originalBeat;
+            try { originalBeat = Convert.ToInt32(beatField.GetValue(conductor), CultureInfo.InvariantCulture); }
+            catch (Exception ex)
+            {
+                RequestStop("preentry-beat-injection-failed", "beat-number-read-failed:" + ex.Message);
+                return;
+            }
+
+            // 注入值现场读取并校验（finite / > 0 / ceil 后落在 Int32 范围），
+            // 不复用 latch 时的规划值。
+            double? ticks = ToDouble(ReadInstanceMember(conductor, "adjustedCountdownTicks"));
+            if (!ticks.HasValue || double.IsNaN(ticks.Value) || double.IsInfinity(ticks.Value) ||
+                ticks.Value <= 0.0 || ticks.Value > int.MaxValue - 1.0)
+            {
+                RequestStop("preentry-beat-injection-failed",
+                    "adjusted-countdown-ticks-invalid:" + ToValue(ticks));
+                return;
+            }
+
+            int injectedBeat = (int)Math.Ceiling(ticks.Value);
+            if (injectedBeat <= originalBeat)
+                return; // 已经满足 native 阈值，无需注入
+
+            // 建立 ownership：保存 exact conductor instance / exact FieldInfo / 原始 beat。
+            _preEntryBeatOverrideConductor = conductor;
+            _preEntryBeatOverrideField = beatField;
+            _preEntryBeatOverrideOriginalBeat = originalBeat;
+            _preEntryBeatOverrideOwned = true;
+            _preEntryInjectedBeatNumber = injectedBeat;
+
+            try { beatField.SetValue(conductor, injectedBeat); }
+            catch (Exception ex)
+            {
+                Log.Exception("PreEntry lifecycle bridge: beat 注入失败", ex);
+                RequestStop("preentry-beat-injection-failed", "countdown-beat-injection-failed");
+            }
+        }
+
+        /// <summary>
+        /// scrController.Countdown_Update 的 Harmony Postfix。使用 Prefix 保存的**同一个**
+        /// conductor instance 与**同一个** FieldInfo 立即恢复 original beat；绝不重新全局查找。
+        /// </summary>
+        private static void CountdownUpdatePostfix()
+        {
+            if (!_preEntryBeatOverrideOwned) return;
+            if (!TryRestorePreEntryBeatOverride(out string restoreError))
+                RequestStop("preentry-beat-restore-failed", restoreError ?? "beat-override-restore-failed");
+        }
+
+        /// <summary>
+        /// Harmony Finalizer：original method 抛异常时 Postfix 不会执行（Harmony 语义），
+        /// 因此这里只调用与 Postfix 完全相同的恢复 helper，保证 scoped beat override
+        /// 绝不逃出本次 Countdown_Update 调用。已恢复时 no-op；不吞掉原始异常
+        /// （不声明 Exception 参数，异常照常向外传播）。
+        /// </summary>
+        private static void CountdownUpdateFinalizer()
+        {
+            if (!_preEntryBeatOverrideOwned) return;
+            if (!TryRestorePreEntryBeatOverride(out string restoreError))
+            {
+                Log.Warn("PreEntry lifecycle bridge: beat override 异常路径恢复失败: " +
+                         (restoreError ?? "unknown"));
+                RequestStop("preentry-beat-restore-failed", restoreError ?? "beat-override-restore-failed");
+            }
+        }
+
+        /// <summary>
+        /// beat override 的唯一共享恢复入口（Postfix / Finalizer / cleanup 共用）。
+        /// 只有写入并读回验证成功后才清空 ownership 状态；失败保留 ownership，
+        /// 由 cleanup failure 与 residual ownership gate 处理。
+        /// </summary>
+        private static bool TryRestorePreEntryBeatOverride(out string error)
+        {
+            error = null;
+            if (!_preEntryBeatOverrideOwned) return true;
+
+            object conductor = _preEntryBeatOverrideConductor;
+            FieldInfo beatField = _preEntryBeatOverrideField;
+            if (conductor == null || beatField == null)
+            {
+                error = "beat-override-ownership-incomplete";
+                return false;
+            }
+
+            int originalBeat = _preEntryBeatOverrideOriginalBeat;
+            try { beatField.SetValue(conductor, originalBeat); }
+            catch (Exception ex)
+            {
+                error = "beat-override-restore-write-failed:" + ex.Message;
+                return false;
+            }
+
+            try
+            {
+                int observed = Convert.ToInt32(beatField.GetValue(conductor), CultureInfo.InvariantCulture);
+                if (observed != originalBeat)
+                {
+                    error = "beat-override-restore-readback-mismatch:expected=" +
+                            originalBeat.ToString(CultureInfo.InvariantCulture) +
+                            ",observed=" + observed.ToString(CultureInfo.InvariantCulture);
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                error = "beat-override-restore-verify-failed:" + ex.Message;
+                return false;
+            }
+
+            _preEntryBeatOverrideOwned = false;
+            _preEntryBeatOverrideConductor = null;
+            _preEntryBeatOverrideField = null;
+            _preEntryBeatOverrideOriginalBeat = 0;
+            return true;
+        }
+
+        /// <summary>
+        /// 注入条件（严格最小）：scheduler 运行中、PreEntry 已 latch、处于 lifecycle-only
+        /// boundary phase、command output index 仍是 B、当前 controller state 仍是 Countdown、
+        /// 且 lifecycle 尚未观测到 PlayerControl。
+        /// </summary>
+        private static bool ShouldRunLifecycleBeatInjection()
+        {
+            if (!_running || _pendingStopReason != null)
+                return false;
+            if (!_preEntryClockLatched || !_preEntryLifecycleInjectionArmed) return false;
+            if (_preEntryBoundaryOutputFrameIndex < 0) return false;
+            if (_outputFrameIndex != _preEntryBoundaryOutputFrameIndex) return false;
+            if (_handoff != null && _handoff.SawPlayerControl) return false;
+
+            string state = ToState(EditorGameReflection.ReadControllerState());
+            return string.Equals(state, "Countdown", StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// 明确不是“Camera != null”即 ready：候选至少要求本次 editor.Play 已返回、
+        /// Start / OnMusicScheduled / Countdown 全部被 handoff 观测，当前提交状态仍是
+        /// Countdown，原生三相机皆 active/enabled、有有效 viewport，且起始 player /
+        /// planet / floor 已生成。真正接管仍由 FrameCaptureDriver 的 ownership transaction
+        /// 决定，任一失败立即 fail-closed。
+        /// </summary>
+        private static bool IsPreEntryCaptureCandidate(object state, out string detail)
+        {
+            detail = null;
+            if (_handoff == null)
+            {
+                detail = "lifecycle-handoff-unavailable";
+                return false;
+            }
+            if (!_handoff.PlayRequested || !_handoff.PlayReturned || !_handoff.SawStart ||
+                !_handoff.SawMusicScheduled || !_handoff.SawCountdown)
+            {
+                detail = "native-countdown-lifecycle-incomplete:" + _handoff.MarkerStatus;
+                return false;
+            }
+            if (!string.Equals(ToState(state), "Countdown", StringComparison.Ordinal))
+            {
+                detail = "controller-not-countdown:" + ToState(state);
+                return false;
+            }
+
+            if (!EditorGameReflection.TryReadChartCameraChain(
+                    out Camera bgStaticCamera, out Camera bgCamera, out Camera mainCamera,
+                    out string chainError))
+            {
+                detail = "camera-chain-unavailable:" + (chainError ?? "unknown");
+                return false;
+            }
+            bool bgStaticReady = IsPreEntryCameraReady(
+                bgStaticCamera, "Bgcamstatic", out string bgStaticError);
+            bool bgReady = IsPreEntryCameraReady(bgCamera, "BGcam", out string bgError);
+            bool mainReady = IsPreEntryCameraReady(mainCamera, "camobj", out string mainError);
+            if (!bgStaticReady || !bgReady || !mainReady)
+            {
+                detail = "camera-not-visually-ready:" + (bgStaticError ?? bgError ?? mainError ?? "unknown");
+                return false;
+            }
+
+            object controller = EditorGameReflection.Controller();
+            object player = ReadInstanceMember(controller, "playerOne");
+            object currentFloor = ReadInstanceMember(player, "currFloor");
+            object planetarySystem = ReadInstanceMember(player, "planetarySystem");
+            object chosenPlanet = ReadInstanceMember(planetarySystem, "chosenPlanet");
+            if (player == null || currentFloor == null || chosenPlanet == null)
+            {
+                detail = "native-player-visuals-incomplete:" +
+                         "player=" + (player != null) +
+                         ",currentFloor=" + (currentFloor != null) +
+                         ",chosenPlanet=" + (chosenPlanet != null);
+                return false;
+            }
+
+            detail = "state=Countdown,cameraChain=active-enabled-viewport-valid," +
+                     "playerPlanetFloor=ready";
+            return true;
+        }
+
+        private static bool IsPreEntryCameraReady(Camera camera, string label, out string error)
+        {
+            error = null;
+            try
+            {
+                if (camera == null)
+                {
+                    error = label + "-destroyed";
+                    return false;
+                }
+                if (!camera.isActiveAndEnabled || !camera.gameObject.activeInHierarchy)
+                {
+                    error = label + "-inactive";
+                    return false;
+                }
+                if (camera.pixelWidth <= 0 || camera.pixelHeight <= 0)
+                {
+                    error = label + "-viewport-invalid:" +
+                            camera.pixelWidth.ToString(CultureInfo.InvariantCulture) + "x" +
+                            camera.pixelHeight.ToString(CultureInfo.InvariantCulture);
+                    return false;
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = label + "-inspection-failed:" + ex.Message;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// PreEntry 的数值容差：只吸收 double 表示误差与少量乘加误差（ULP based），
+        /// 并硬性封顶在 step 的极小比例内。
+        ///
+        /// 关键点（避免隐式参数限制）：**不使用固定绝对秒数下限**。旧的 `max(1e-9, halfUlp*4)`
+        /// 在 step 很小时（高 Output FPS / 小 pitch 下 step &lt; 1e-9 是合法可达的）会变成
+        /// 比一帧还大的隐式时间窗口。这里容差与 step 同阶缩小：tolerance &lt;= step * 1e-3，
+        /// 即永远不足一帧的千分之一，因此不可能等价于一帧 / 半帧 / 0.05 s / 0.1 s 这类
+        /// 产品级时间窗口，也不会对任何 Output FPS / pitch 形成隐式合法区间。
+        /// </summary>
+        private static double PreEntryBoundaryNumericalTolerance(double first, double second, double step)
+        {
+            if (double.IsNaN(step) || double.IsInfinity(step) || step <= 0.0)
+                return 0.0;
+
+            double magnitude = Math.Max(Math.Abs(first), Math.Abs(second));
+            if (double.IsNaN(magnitude) || double.IsInfinity(magnitude))
+                return 0.0;
+
+            // 纯表示/算术误差量级：anchor + B * step 这类乘加链路的累计误差远小于 8 ULP。
+            double representationSlack = PreEntryBoundaryHalfUlp(magnitude) * 8.0;
+            double stepCap = step * PreEntryBoundaryToleranceStepFraction;
+            return Math.Min(representationSlack, stepCap);
+        }
+
+        /// <summary>相邻 double 间距的一半（表示误差量级）；非有限或 0 时返回 0。</summary>
+        private static double PreEntryBoundaryHalfUlp(double value)
+        {
+            double magnitude = Math.Abs(value);
+            if (double.IsNaN(magnitude) || double.IsInfinity(magnitude) || magnitude == 0.0)
+                return 0.0;
+
+            long bits = BitConverter.DoubleToInt64Bits(magnitude);
+            double next = BitConverter.Int64BitsToDouble(bits + 1);
+            double spacing = next - magnitude;
+            return (!double.IsNaN(spacing) && !double.IsInfinity(spacing) && spacing > 0.0)
+                ? spacing * 0.5
+                : 0.0;
+        }
+
+        private static long GetGameplayFrameIndex(long outputFrameIndex)
+        {
+            if (_preEntryGameplayStartOutputFrameIndex >= 0)
+            {
+                return outputFrameIndex - _preEntryGameplayStartOutputFrameIndex;
+            }
+            return outputFrameIndex;
+        }
+
+        private static string DescribeFrameTimeline(long outputFrameIndex)
+        {
+            if (_preEntryGameplayStartOutputFrameIndex < 0 ||
+                outputFrameIndex < _preEntryGameplayStartOutputFrameIndex)
+            {
+                return "native-preentry";
+            }
+
+            long gameplayFrameIndex = GetGameplayFrameIndex(outputFrameIndex);
+            double chartTime = _canonicalStartTime +
+                               gameplayFrameIndex / (double)_outputFps * _pitch;
+            return "gameplayFrameIndex=" + gameplayFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                   ",expectedChartTime=" + chartTime.ToString("0.######", CultureInfo.InvariantCulture);
+        }
+
+        private static double? TryProjectNativeSongPosition(object conductorDspTime,
+            object dspTimeSong, object calibrationI, object addOffset, double pitch)
+        {
+            double? currentDspTime = ToDouble(conductorDspTime);
+            double? songDspTime = ToDouble(dspTimeSong);
+            double? calibration = ToDouble(calibrationI);
+            double? offset = ToDouble(addOffset);
+            if (!currentDspTime.HasValue || !songDspTime.HasValue ||
+                !calibration.HasValue || !offset.HasValue || pitch < MinPitch)
+                return null;
+
+            return ((currentDspTime.Value - songDspTime.Value - calibration.Value) * pitch) -
+                   offset.Value;
+        }
+
+        // AudioModule 不是当前 csproj 的静态编译引用；probe 仅在运行时按需读取
+        // UnityEngine.AudioSettings.dspTime，避免为了诊断扩大正式 DLL 依赖。
+        private static object ReadRuntimeStaticMember(string typeFullName, string memberName)
+        {
+            try
+            {
+                foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    Type type = assembly.GetType(typeFullName, false);
+                    if (type == null) continue;
+                    PropertyInfo property = type.GetProperty(memberName,
+                        BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (property != null) return property.GetValue(null, null);
+                    FieldInfo field = type.GetField(memberName,
+                        BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                    return field?.GetValue(null);
+                }
+            }
+            catch { }
+            return null;
         }
 
         private static void LogFrame0Stage(long frameIndex, string stage)

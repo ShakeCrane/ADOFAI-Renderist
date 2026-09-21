@@ -56,6 +56,10 @@ namespace ADOFAI.Renderist.Export
         private static MethodInfo _mAsyncInputAdjustAngle;
         private static MethodInfo _mControllerChangeToStartState;
         private static MethodInfo _mControllerOnLandOnPortal;
+        // TEMP lifecycle-only boundary probe：Countdown → PlayerControl 的判定入口与
+        // Planet visual authority 的执行入口。只暴露 MethodInfo 供临时 probe 观察 / 注入，
+        // 不改变正式渲染流程。
+        private static MethodInfo _mControllerCountdownUpdate;
         private static MethodInfo _mEditorPlay;
         private static MethodInfo _mEditorSelectFloor;
         private static MethodInfo _mEditorSwitchToEditMode;
@@ -146,6 +150,10 @@ namespace ADOFAI.Renderist.Export
                         BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
                         null, new[] { _tPlanet, _tPortal, typeof(string) }, null);
                 }
+                // Countdown → PlayerControl 判定入口（void, 无参）。
+                _mControllerCountdownUpdate = _tController.GetMethod("Countdown_Update",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                    null, Type.EmptyTypes, null);
             }
 
             if (_tEditor != null)
@@ -296,6 +304,19 @@ namespace ADOFAI.Renderist.Export
             {
                 EnsureTypes();
                 return _mControllerOnLandOnPortal;
+            }
+        }
+
+        /// <summary>
+        /// TEMP probe：scrController.Countdown_Update（void, 无参）。Countdown → PlayerControl
+        /// 的判定入口；probe 只在该方法作用域内临时注入 threshold beat，随后立即恢复。
+        /// </summary>
+        public static MethodInfo ControllerCountdownUpdateMethod
+        {
+            get
+            {
+                EnsureTypes();
+                return _mControllerCountdownUpdate;
             }
         }
 
