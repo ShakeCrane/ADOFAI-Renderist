@@ -40,8 +40,8 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 | --- | --- |
 | 产品版本 | `0.3.6.3` |
 | Phase | `Phase 3.6.0 Render Time Determinism` |
-| 版本定位 | `0.3.6.2` = **correctness hardening revision**（cleanup / activation ownership + End Tail numerical correctness）；无新功能 |
-| 稳定实机基线 | 30 FPS（0.3.6.1 与 0.3.6.2 各一次）与 1000 FPS 完整导出通过（2026-09-15，见 §9.1） |
+| 版本定位 | `0.3.6.3` = **native deterministic pre-entry / count-in capture 正式化 + persisted End Tail 语义修正**（见 §11 第 5 项与 §5.2） |
+| 稳定实机基线 | `0.3.6.3`：当前基准谱面连续双跑 + 第二组 30 FPS / 100 BPM 谱面通过；历史 `0.3.6.1` / `0.3.6.2` 的 30 FPS 与 1000 FPS 基线见 §9.1 |
 | 当前开发方向 | `0.3.6.3` 的 native deterministic pre-entry / count-in capture 正式化与 persisted End Tail 语义修正均已实施并**通过用户实机验证**；`0.3.6.4` 才是 log-only / image-output-disabled 候选，尚未实现。 |
 
 `0.3.6.2` 相对 `0.3.6.1` 的四个 hardening 点（功能语义不变，只收敛异常路径与输入判定）：
@@ -52,6 +52,11 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 4. **End Tail numerical hardening**：直接 Frames 输入使用**固定绝对容差 `1e-10`**（不再使用 magnitude-relative tolerance）；Seconds / Beats computed frame count 只用 `max(1e-10, half-ULP)` 吸收浮点表示误差；不引入任何 FPS / frame / duration 人为产品上限。
 
 对应实现提交：`8bceeef`（cleanup ownership + End Tail validation）与 `1af1205`（activation ownership）。
+
+`0.3.6.3` 的两个闭环（提交 `c9dc977` native pre-entry 正式化、`c34558b` persisted End Tail 语义修正，`f9dd15a` 发布）：
+
+1. **native deterministic pre-entry / count-in capture 正式化**：删除 TEMP 总开关与全部调查 instrumentation，pre-entry 成为正式产品路径（PreEntryClock / grid bracket / scoped `Countdown_Update` lifecycle bridge / hidden zero-scaled-time phase / G partial timestep / 共享 capture·progress watchdog）；`FrameCaptureDriver` 恢复纯捕获职责。
+2. **persisted End Tail 语义修正（方案 A）**：GUI 初始化不再 sanitize 或写回 persisted 值；非法值保持非法并 fail-closed，直到用户显式输入合法值（见 §5.2）。
 
 版本同步事实：
 
@@ -149,7 +154,7 @@ Esc 不经过 `TogglePauseGame`，因此 guard 不阻断 Esc cancellation。
 统一原则：cleanup 必须 ownership-aware、幂等、partial-safe、retry-safe；session terminal 不等于 scheduler 已无 ownership。
 
 - Harmony hook 保存实际成功注册的 original `MethodInfo`，正常 cleanup 精确 `Unpatch(original, prefix/postfix)`；不以 `UnpatchAll` 作为正常流程。
-- `HasResidualOwnership()` 覆盖 playback、Unity timing、lifecycle handoff、`_captureGeneration`、capture host/source/target、input guard、forced clock、Conductor/AsyncInput/completion/native-stop hooks、`RDC.auto` 与 editor selection。
+- `HasResidualOwnership()` 覆盖 playback、Unity timing、lifecycle handoff、`_captureGeneration`、capture host/source/target、input guard、forced clock、Conductor/AsyncInput/completion/native-stop hooks、`RDC.auto` 与 editor selection；以及 pre-entry lifecycle bridge 的 `Countdown_Update` patch 与 transient ownership（scoped beat override、pre-entry timeScale freeze / partial）。
 - Camera `targetTexture` 只在当前值仍 `ReferenceEquals(captureTarget)` 时恢复 saved old target；native 已先接管/置空则不覆盖。
 - live Camera 仍引用 captureTarget 时绝不 Release/Destroy RT。
 - **capture host ownership**：`CaptureHostBehaviour.Shutdown()` 先同步失效 coroutine/callback；`_host/_behaviour` 只有在 `Destroy(host)` 返回成功后才清空。Destroy 抛异常时保留引用，下一次 `Stop()` 可重试。
@@ -298,7 +303,7 @@ metadata 记录：版本/phase、state/detail/reason/kind、completion signal/in
 
 ## 9. Runtime / 静态验证基线
 
-### 9.1 实机（0.3.6.1 / 0.3.6.2）
+### 9.1 实机（0.3.6.1 / 0.3.6.2 / 0.3.6.3）
 
 **0.3.6.1 30 FPS**：
 
@@ -310,7 +315,7 @@ metadata 记录：版本/phase、state/detail/reason/kind、completion signal/in
 - `frame_000000.png .. frame_000113.png` 连续。
 - 最终 Completed。
 
-**0.3.6.1 1000 FPS session `editor_20260915_095106`**：
+**0.3.6.1 1000 FPS**：
 
 - `state=Completed`
 - `stopReason=canonical-completion-tail-drained`
@@ -322,13 +327,20 @@ metadata 记录：版本/phase、state/detail/reason/kind、completion signal/in
 - capture 3072×1920
 - 未出现 controller-paused、hit-state、RDC restore、safety-limit、frame-index-exhausted 或 watchdog failure。
 
-**0.3.6.2 30 FPS smoke session `editor_20260915_115023`**（activation ownership hardening 的正常 Player 路径）：
+**0.3.6.2 30 FPS smoke**（activation ownership hardening 的正常 Player 路径）：
 
 - `state=Completed`，`stopReason=canonical-completion-tail-drained`，`terminationKind=canonical-completion`
 - `completionFrameIndex=101`；`resolvedTailFrames=12`，`tailFramesCaptured=12`
 - `captureRequestCount=capturedFrameCount=114`，frames `0..113` 连续（PNG 与 scheduler commit 均 114 次、无缺号）
 - `captureSource=scrCamera-rendertexture`，3072×1920
 - 未出现 `capture-source-failed`、`capture-target-*`、`cleanup-failed`、`capture-stop`、`tick-exception`、host destroy / RT Release / RT Destroy failure、restore incomplete 或 residual retry warning
+
+**0.3.6.3 native pre-entry 正式化后的实机验证**（逐帧数值集中在 §11 第 5 项，不在此重复）：
+
+- 当前基准谱面（Output FPS=30、pitch=1）**连续双跑 PASS**：`B=G=44`，frame 43 为最后一个 pre-entry，frame 44 = gameplay frame 0（partial timestep），frame 45 恢复完整 timestep；Planet / Trail boundary continuity PASS；两次均 `Completed` / `canonical-completion-tail-drained` / 12 帧 End Tail。
+- 第二组谱面（Output FPS=30、BPM=100、pitch=1）**PASS**：`B=G=60`、`partialFraction=0.1`，frame 59 / 60 / 61 归属正确，Planet / Trail continuity 正常，timeScale 于 G commit 后恢复，`Completed` / 12 帧 End Tail。
+- **persisted End Tail 方案 A 实机 PASS**：非法 persisted 值（`-5`、`12.5` Frames、`NaN`）保持非法且未被 sanitize 或 ceil，显式改为合法 `12 Frames` 后导出恢复。
+- 上述通过只对应 `0.3.6.3` 正式化后的实现与该两组谱面 / 设置；早期版本的通过结果仍按各自版本记录，不视为对最新版本的覆盖。
 
 ### 9.2 已验证的历史事实（仍影响当前设计）
 
@@ -356,7 +368,7 @@ metadata 记录：版本/phase、state/detail/reason/kind、completion signal/in
 | cross-module 回归（Output FPS / safety / long frame / End Tail） | 119 / 0 |
 | cleanup 静态证明 | 36 / 0 |
 | Release Rebuild / package / verify | 0 error / success / PASS 11–0 |
-| 30 FPS Unity smoke（`editor_20260915_115023`） | 通过（见 §9.1） |
+| 30 FPS Unity smoke | 通过（见 §9.1） |
 
 ---
 
@@ -397,28 +409,16 @@ metadata 记录：版本/phase、state/detail/reason/kind、completion signal/in
 
 返回 edit mode 的 `SwitchToEditMode → ResetScene → TogglePauseGame` 会重新 pause。因此 paused 的正确 gate 在 playback readiness，而不是 Start 前。
 
-### 10.5 Native pre-entry / count-in 时间 authority（当前 DLL 与 probe 证据）
+### 10.5 Native pre-entry / count-in 时间 authority（当前 DLL 与正式实现基线）
 
-- `scrConductor.Update` 每帧以 `AudioSettings.dspTime` 更新 `dspTime`，再按 `((dspTime - dspTimeSong - calibration_i) * song.pitch) - addoffset` 写入 `songposition_minusi`；它不是 output-frame clock。`beatNumber` 每次最多跨一个 beat，且 Countdown 边界条件 `beatNumber >= adjustedCountdownTicks` 使用的是 **1-based** 计数，因此 native 边界等同于地图时间 `floor0EntryTime + (adjustedCountdownTicks - 1) × crotchetAtStart × pitch`（实机与 `canonicalStart` 完全一致）。
-- 实际 30 FPS native pre-entry probe 已安全在 Countdown 激活 Camera source，并从 absolute output frame 0 写出正常 PNG（含 blue planet、pre-entry rotation 与 trail），无 pre-entry autoplay hit，`RDC.auto=false`。
-- latch 之前（raw DSP 驱动，仅作对照）：相邻 output frame 的 raw DSP / songposition 实际前进约 `0.11–0.12 s`（而非 `captureDeltaTime = 1/30 s`），chosen planet angle 曾约 `0.899 rad`（约 `51.5°`）/frame，轨迹为 chord / polygon。
-- deterministic PreEntryClock 接管后（30 FPS / 140 BPM / pitch 1，实机）：相邻 committed output frame 的 chosenPlanetAngle 增量恒为 `+0.244346 rad`，即 `π × (BPM / 60) × pitch / OutputFps`；轨迹已回到接近连续圆弧，长度不再随 PNG encode/write wall time 变化。即 planet motion 与 trail aging 已由同一个 output-frame clock 驱动。
-- `scrPlanet.Update_RefreshAngles` 直接由 `songposition_minusi`、`lastHit`、`crotchetAtStart`、speed/direction 计算 angle，因此上述数值关系成立。验收仍需同时检查数值步长、相邻 angle、圆弧平滑度、trail 相对长度与 Countdown → PlayerControl 连续性；songposition 数值正确但轨迹仍为 polygon 或 trail 过长仍为 FAIL。
-- `scrController.Countdown_Update` 使用 `beatNumber >= adjustedCountdownTicks` 切入 PlayerControl，不直接读 DSP。pre-entry anchor 取 native 公式在 `dspTime == dspTimeSong` 的原点：`-(calibration_i * pitch) - addoffset`，step 为 `pitch / OutputFps`；锁定必须发生在 Countdown 且尚未跨第一个 beat，错过即 fail-closed，不能重启或倒回 native gameplay state。
-- forced clock 生效时 `beatNumber` 由被强制后的 `songposition_minusi` 驱动（native Countdown 边界因此跟随 deterministic step），但状态机读到的是**上一帧** conductor 写入的 beat 计数，所以 `Countdown → PlayerControl` 切换比「forced clock 跨过边界」晚 1 个 Unity frame。pre-entry 段若一路输出到 native 切换那一帧，最后一个 pre-entry frame 的 forced time 就会越过 `canonicalStart`，handoff 只能二选一：倒回 `canonicalStart`（边界处画面 rewind）或让 gameplay 从更晚的 chart time 开始（整段与 floor entry time 错位）。
-- 最新实机已验证 deterministic boundary route：`B = ceil((canonicalStart - anchor) / step)`，`[0,B-1]` 为 pre-entry，`G=B` 且 gameplay frame 0 在 `canonicalStart`；本谱面 `B=G=42`。frame 41 → 42 Planet 只前进约 `0.051662 rad`，frame 42 → 43 恢复完整正常 step `0.244346 rad`，证明 gameplay frame 0 会在 canonicalStart 重新求值，Planet boundary continuity PASS。该 session 以 completion frame 143、12 帧 End Tail、156 次 request/commit 正常 Completed。
-- lifecycle-only scoped beat injection 已连续两次实机通过：`Countdown_Update` 作用域内把 beat 从 3 临时注入为 4，Postfix 立即恢复为 3；hidden phase 的 forced/effective songposition 始终为 `previousBoundaryTime=1.278667`，Planet angle 始终为 `-1.622458`，从未消费 `boundaryForcedTime=1.312`。两次均保持 `B=G=42`、completion frame 143、156 次 request/commit 与 12 帧 End Tail。
-- 旧 frame 42 的 future Trail blob / forward protrusion / backward kink 已在两次运行中消失，强力支持“全世界消费 future boundary time 会污染 stateful visual history”。但 Trail continuity 仍未 PASS：frame 41 的正常长圆弧在 frame 42 明显骤缩，frame 43 才重新增长。最符合现有证据的解释是约 2 个 hidden Unity frame 仍让 history aging 前进；具体是否为 TrailRenderer scaled-time lifetime 机制仍未确认。
-- 状态机最小链已由 IL 确认：Unity 调用 `StateEngine.Update` → 当前 state mapping 的 `Update` delegate → `scrController.Countdown_Update` → 比较 `conductor.beatNumber >= conductor.adjustedCountdownTicks` → `StateBehaviour.ChangeState(PlayerControl)` → `StateEngine.ChangeState(..., Safe)` coroutine。`Countdown_Update` 本身不调用 Planet 或 Trail；它在判定后只继续更新 camera follow target。Countdown 的默认 Exit 是非 null 的 `DoNothingCoroutine`，所以状态切换天然至少跨一个 coroutine scheduler turn；`PlayerControl_Enter` 是同步 void。
-- IL 补充已确认（0.4.3.0，决定 hook 位置）：`scrController.Countdown_Update` 是 `void Countdown_Update()`（无参，IL 仅约 123 字节），阈值比较与 `ChangeState` **都在该方法体内**（`ldfld scrConductor.beatNumber` → `callvirt get_adjustedCountdownTicks` → `callvirt ChangeState`）；状态分发入口 `scrController.Update` 完全不引用 `beatNumber` / `adjustedCountdownTicks` / `ChangeState`，因此不存在“调用方先判定再调用”的形态——在该方法上装 TEMP Prefix/Postfix 即可单独门控这次 transition。`scrConductor.beatNumber` 是 **Int32 字段**，`adjustedCountdownTicks` 是**只读 float 属性**，故注入只能写字段，且满足 native 条件的最小值为 `ceil(adjustedCountdownTicks)`。`scrPlanet.Update` 的 IL 调用 `Update_RefreshAngles`。
-- runtime stage probe 已证明当前真实顺序：某 Unity frame 的 Countdown_Update Prefix/Postfix 返回后 controller 仍为 Countdown，随后同帧运行多个 Planet.Update；下一 Unity frame 仍有 Planet.Update 且仍为 Countdown；再下一 Unity frame StateEngine 才观察到 PlayerControl，之后 canonicalStart 生效并让 Planet 从 `-1.622458` 重求值到 `-1.570796`。状态切换确实跨 coroutine scheduler turn。
-- `StateEngine.ChangeState(..., Safe)` 启动 `ChangeToNewStateRoutine`；Countdown 没有自定义 Exit，因此先 `yield return StartCoroutine(DoNothingCoroutine())`，外层实际 yield 类型是 `UnityEngine.Coroutine`。子 coroutine 立即完成；随后设置 current state、同步执行 void `PlayerControl_Enter`，且无第二次 yield。该路径没有 WaitForSeconds / WaitForEndOfFrame / WaitForSecondsRealtime，也不读取 deltaTime/timeScale；实机已确认 timeScale=0 时仍可跨 scheduler turn进入 PlayerControl。
-- timeScale ownership / restore 与 B-1 commit 后前移接管已实机通过：frame 41 成功 commit 后同一 Unity frame 写入 0，随后两个 hidden frame 从 frame begin 起均为 `timeScale=0 / deltaTime=0`，visual clock 与 Planet angle 稳定；PlayerControl handoff 前恢复原始值也通过。future Trail blob 继续消失，frame 41 → 42 的 Trail 骤缩由旧 probe 的大幅异常收敛到约 `8–14°`，与 `previousBoundaryTime≈1.278667 → canonicalStart≈1.285714` 的理论 partial motion（约 `11°`）同量级。这是 Trail/history aging 受 scaled time 影响的强运行时因果证据，但不是对 Unity 内部 Trail 实现的反编译确认。
-- 剩余 boundary mismatch 已明确：上述 probe 在 handoff 时把 `timeScale` 直接恢复为原值，使 gameplay frame G 的 Unity `deltaTime` 仍为完整 `1/30 s`，但 Planet chart-time 只推进 `partialStep≈0.007047619 s`（`partialFraction≈0.211428571`）。因此 G 的 Planet motion 与 Trail aging 仍未使用同一个 timestep。当前 TEMP probe 改为 handoff 时写入 `savedOriginalTimeScale × partialFraction`，G 成功 commit 后才恢复实际保存的原值；等待实机验证 G delta、Trail 长度与 G+1 完整步长。
-- Unity 6 API 只说明 TrailRenderer point lifetime 以秒计，没有公开其使用 scaled 还是 unscaled clock；因此文档中的结论限于上述 runtime causal evidence，不宣称已静态确认原生内部实现。
-- `songposition_minusi` 的存储字段是否被 forced 值写回，取决于 conductor 的写回是否经过被 Harmony patch 的 setter：同一进程内先后两次实机 session 分别观测到「始终为 raw DSP 值」与「从第 1 帧起为上一帧 forced 值」。因此 `ReadUnforcedSongPositionValue()` / `backingSongposition` 在 probe 下不是稳定的 native 证据，不能作为 handoff anchor 判据；所有 reader 走 getter，forced 值仍是权威视觉时间。
-- `scrCountdown` 文本 / count-in SFX 仍直接依赖 DSP schedule；audio 不应被 Renderist 篡改。其与受控 visual clock 的一致性仍待实机验证，不能仅凭静态结论宣称完整通过。
-
+- `scrConductor.Update` 每帧以 `AudioSettings.dspTime` 更新 `dspTime`，再按 `((dspTime - dspTimeSong - calibration_i) * song.pitch) - addoffset` 写入 `songposition_minusi`；它不是 output-frame clock。`beatNumber` 每次最多跨一个 beat；Countdown 边界条件 `beatNumber >= adjustedCountdownTicks` 使用 **1-based** 计数，因此 native 边界等同于地图时间 `floor0EntryTime + (adjustedCountdownTicks - 1) × crotchetAtStart × pitch`（实机与 `canonicalStart` 一致）。
+- 原生 Countdown 的原始 authority 是 **DSP / 实时时间**：raw DSP 驱动的早期实机中相邻 output frame 的 songposition 前进约 `0.11–0.12 s`（而非 `1/30 s`），chosen planet angle 曾约 `0.899 rad`/frame（轨迹呈 chord / polygon）。这是 `Time.captureFramerate` 单独不足、必须由 Renderist 接管 chart time 的原因。
+- 当前正式实现（见 §11 第 5 项）由 `EditorVisualClock` 对 `songposition_minusi` 的 getter/setter patch 提供 forced chart time，`scrPlanet.Update_RefreshAngles` 直接消费该值：接管后相邻 committed output frame 的 chosenPlanetAngle 增量恒为 `π × (BPM / 60) × pitch / OutputFps`（30 FPS / 140 BPM / pitch 1 时为 `0.244346 rad`），planet motion 与 trail aging 由同一个 output-frame clock 驱动。
+- IL 已确认（`Assembly-CSharp` 0.4.3.0）：`scrController.Countdown_Update` 是 `void Countdown_Update()`（无参，IL 约 123 字节），阈值比较与 `ChangeState` **都在方法体内**（`ldfld scrConductor.beatNumber` → `callvirt get_adjustedCountdownTicks` → `callvirt ChangeState`）；状态分发入口 `scrController.Update` 不引用这三者，因此不存在“调用方先判定再调用”的形态——scoped Prefix/Postfix 可直接门控这次 transition。`scrConductor.beatNumber` 是 **Int32 字段**，`adjustedCountdownTicks` 是**只读 float 属性**，故注入只能写该字段，最小满足值为 `ceil(adjustedCountdownTicks)`。`scrPlanet.Update` 的 IL 调用 `Update_RefreshAngles`。
+- 状态机链与跨 turn 行为：`StateEngine.Update` → 当前 state 的 `Update` delegate → `Countdown_Update` → `ChangeState(PlayerControl)` → `ChangeToNewStateRoutine`；Countdown 无自定义 Exit，先 `yield return StartCoroutine(DoNothingCoroutine())`，随后设置 current state 并同步执行 void `PlayerControl_Enter`。该路径没有 `WaitForSeconds` / `WaitForEndOfFrame` / `WaitForSecondsRealtime`，也不读 `deltaTime` / `timeScale`；实机确认 `timeScale = 0` 时仍可跨 scheduler turn 进入 PlayerControl。forced clock 生效时 `beatNumber` 由被强制的 `songposition_minusi` 驱动、而状态机读到的是**上一帧**写入的 beat，因此 `Countdown → PlayerControl` 比 forced clock 跨过边界晚 1 个 Unity frame——这正是需要 partial-timestep 边界处理与独立 lifecycle bridge 的原因。
+- Trail / stateful history：`TrailRenderer` point lifetime 以秒计，但 Unity 6 API **没有**公开它使用 scaled 还是 unscaled clock，故不得声称已静态确认其内部实现。实机因果证据：hidden phase 让 native 世界消费过 future chart time 时，frame G 出现 future Trail blob / kink；改为「hidden phase `timeScale = 0` + G partial timestep」后该现象消失（数值与验收见 §9.1 与 §11 第 5 项）。
+- 遗留风险：`songposition_minusi` 的存储字段是否被 forced 值写回，取决于 conductor 的写回是否经过被 patch 的 setter（同一进程先后两次实机 session 分别观测到「始终为 raw DSP 值」与「从第 1 帧起为上一帧 forced 值」）。因此 `ReadUnforcedSongPositionValue()` / `backingSongposition` 不是稳定的 native 证据，不得作为 handoff anchor 判据；所有 reader 走 getter，forced 值仍是权威视觉时间。
+- `scrCountdown` 文本 / count-in SFX 仍直接依赖 DSP schedule；audio 不应被 Renderist 篡改。其与受控 visual clock 的一致性、以及 `lifecycleSongPosition` 的非权威差异仍待调查，不得仅凭静态结论宣称完整通过。
 ---
 
 ## 11. 未解决问题 / 风险 / 下一步
