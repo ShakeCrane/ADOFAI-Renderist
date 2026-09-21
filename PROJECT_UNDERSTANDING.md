@@ -38,11 +38,11 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 产品版本 | `0.3.6.3` |
+| 产品版本 | `0.3.6.4` |
 | Phase | `Phase 3.6.0 Render Time Determinism` |
-| 版本定位 | `0.3.6.3` = **native deterministic pre-entry / count-in capture 正式化 + persisted End Tail 语义修正**（见 §11 第 5 项与 §5.2） |
-| 稳定实机基线 | `0.3.6.3`：当前基准谱面连续双跑 + 第二组 30 FPS / 100 BPM 谱面通过；历史 `0.3.6.1` / `0.3.6.2` 的 30 FPS 与 1000 FPS 基线见 §9.1 |
-| 当前开发方向 | `0.3.6.3` 的 native deterministic pre-entry / count-in capture 正式化与 persisted End Tail 语义修正均已实施并**通过用户实机验证**；`0.3.6.4` 才是 log-only / image-output-disabled 候选，尚未实现。 |
+| 版本定位 | `0.3.6.4` = **Log-only Frame Transactions（image output disabled）**；建立在 `0.3.6.3` = **native deterministic pre-entry / count-in capture 正式化 + persisted End Tail 语义修正** 之上（见 §11 第 5 / 9 项与 §5.2） |
+| 稳定实机基线 | `0.3.6.4`：同一基准谱面的 PNG 与 Log-only 均已完整跑通（见 §9.1）；历史 `0.3.6.1` / `0.3.6.2` / `0.3.6.3` 基线见 §9.1 |
+| 当前开发方向 | `0.3.6.4` 的 log-only / image-output-disabled 最小闭环已实现、已构建打包，并**通过用户实机验收**（PNG 与 Log-only 均正常完成，逻辑计数与 completion 一致）。三个取消场景未直接覆盖，保留为未验证项（见 §11 第 9 项）。 |
 
 `0.3.6.2` 相对 `0.3.6.1` 的四个 hardening 点（功能语义不变，只收敛异常路径与输入判定）：
 
@@ -57,6 +57,13 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 1. **native deterministic pre-entry / count-in capture 正式化**：删除 TEMP 总开关与全部调查 instrumentation，pre-entry 成为正式产品路径（PreEntryClock / grid bracket / scoped `Countdown_Update` lifecycle bridge / hidden zero-scaled-time phase / G partial timestep / 共享 capture·progress watchdog）；`FrameCaptureDriver` 恢复纯捕获职责。
 2. **persisted End Tail 语义修正（方案 A）**：GUI 初始化不再 sanitize 或写回 persisted 值；非法值保持非法并 fail-closed，直到用户显式输入合法值（见 §5.2）。
+
+`0.3.6.4` 的闭环 —— **Log-only Frame Transactions**：
+
+1. **输出模式**：`Settings.EditorImageOutputEnabled`（默认 `true` = 既有 PNG 序列行为）在 **session 开始时一次性冻结**；GUI 提供「输出 PNG 图像」开关与关闭说明；与 `VerboseLogging` 无关（见 §8.1）。
+2. **单一帧事务**：两种模式共用同一 scheduler、同一 `WaitForEndOfFrame` coroutine、同一结果回调与**唯一** `CommitFrame`；log-only 只跳过图像读回 / 编码 / 写盘，并以 `imageWritten=false` 返回成功帧末结果。帧事务本身（Camera source / RenderTexture 接管、source·generation·pending-index 校验、cleanup）**两个模式完全相同**。
+3. **计数拆分**：逻辑 authority（`logicalFrameCount` / `frameTransactionRequestCount` / `tailFramesCommitted`）与 PNG 计数（`captureRequestCount` / `writtenPngFrameCount` / `capturedFrameCount` / `tailFramesCaptured`）分离；completion / End Tail / safety limit / progress watchdog 只使用逻辑 authority（见 §8.1）。
+4. **未新增 Harmony Patch、未引入新的 ADOFAI 内部 API、未新建第二套 scheduler / driver**。
 
 版本同步事实：
 
@@ -96,9 +103,11 @@ FrameIndex N (long)
 → scrConductor.Update Postfix：RenderistAutoPlay 消费所有 due floor → 官方 scrPlayer.Hit(true)
 → 原生视觉渲染到 CaptureTarget
 → WaitForEndOfFrame
-→ ReadPixels → EncodeToPNG → File.WriteAllBytes
-→ 仅写盘成功后 commit N
-→ completion 后按成功 commit 的 output frame 计 End Tail
+→ 按 session 开始时冻结的输出模式分支（同一捕获后端、同一结果回调、同一 CommitFrame）：
+     PNG：ReadPixels → EncodeToPNG → File.WriteAllBytes → imageWritten = true
+     Log-only：跳过读回 / 编码 / 写盘，也不构造 PNG 路径 → imageWritten = false, filePath = null
+→ 仅成功的帧末事务才 commit N
+→ completion 后按成功 commit 的**逻辑** output frame 计 End Tail
 ```
 
 关键不变量：**Frame N 未成功完成 capture transaction，就不 commit N，也不开始 N+1。**
@@ -273,7 +282,7 @@ Seconds / Beats 换算得到的 raw frame count 属于计算结果，不等同�
 - `PlaybackLifecycleHandoff`：关联本次 Renderist-owned `editor.Play()`；ready 需要 Start + OnMusicScheduled + Countdown + PlayerControl + playerAlive + !paused。
 - `EditorVisualClock`：强制视觉 songposition，并精确撤销 hooks。
 - `RenderistAutoPlay`：due-floor helper，复用官方 Hit。
-- `FrameCaptureDriver`：generation 隔离、两阶段 Camera source activation（创建 target → 登记 ownership → 逐 Camera 接管）、同步 PNG、ownership-aware cleanup（activation 窗口内也不丢 ownership）。
+- `FrameCaptureDriver`：generation 隔离、两阶段 Camera source activation（创建 target → 登记 ownership → 逐 Camera 接管）、同步帧末事务（PNG 写盘 / log-only 仅校验并以 `imageWritten=false` 成功返回）、ownership-aware cleanup（activation 窗口内也不丢 ownership）。模式由 `Start` 一次性冻结（`_imageOutputEnabled`），session 期间不再读 Settings。
 - `EndTailPolicy`：Frames / Seconds / Beats 校验与 output-frame 解析。
 - `OutputFpsPolicy`：正整数 Output FPS 与 targetFrameRate 安全派生。
 - `SafetyFrameLimitPolicy`：unbounded / explicit frame limit 的唯一 policy。
@@ -292,12 +301,38 @@ Seconds / Beats 换算得到的 raw frame count 属于计算结果，不等同�
 | Cancelled | Stop / Esc / leave editor / mod disabled | `user-cancel` |
 | Failed | 显式 safety frame limit | `safety-limit` |
 | Failed | initialization/capture/progress watchdog | `watchdog` |
-| Failed | PNG 请求/写盘/transaction | `capture-failure` |
+| Failed | 帧末事务 / PNG 请求 / 写盘 | `capture-failure` |
 | Failed | API/lifecycle/cleanup | `lifecycle-failure` |
 
 取消时允许 `captureRequestCount = capturedFrameCount + 1`：一个已请求但未 commit 的事务可以被取消，不能为了计数相等而伪 commit。
 
-metadata 记录：版本/phase、state/detail/reason/kind、completion signal/index、output FPS、pitch、End Tail 输入与解析结果、safety policy、capture source/尺寸、request/captured counts。
+### 8.1 输出模式与计数语义（log-only 最小闭环，代码已实施）
+
+`Settings.EditorImageOutputEnabled`（默认 `true` = 既有 PNG 序列行为）在 **session 开始时一次性冻结**为 scheduler 的 `_imageOutputEnabled`；session 期间不再读 Settings，运行中修改 GUI 不影响当前 session（GUI 在忙碌时禁用编辑，与 Output FPS / End Tail 一致）。该开关与 `VerboseLogging` 无关。
+
+两种模式共用**同一个** scheduler、同一条帧事务入口（`FrameCaptureDriver.RequestCapture`）、同一个 EOF coroutine、同一个结果回调与**唯一** `CommitFrame`：
+
+- Log-only 仍接管 Camera source / RenderTexture、仍走 `WaitForEndOfFrame`、仍做 source / generation / pending-index 校验，只是跳过 `EnsureTexture` / `Texture2D` 创建 / `ReadPixels` / `Apply` / `EncodeToPNG` / `File.WriteAllBytes`，并**不构造 PNG 文件路径**。
+- 帧末结果用显式 `imageWritten` 标志区分；`imageWritten != _imageOutputEnabled` 时 fail-closed（`frame-transaction-mode-mismatch`）。
+
+计数拆分（避免用 PNG 成功数冒充逻辑推进）：
+
+| 字段 | 语义 | log-only |
+| --- | --- | --- |
+| `frameTransactionRequestCount` | 请求过的逻辑帧事务数 | `= logicalFrameCount` |
+| `captureRequestCount` | PNG 图像请求数 | `0` |
+| `logicalFrameCount` | 成功提交的逻辑输出帧数（派生自 `_outputFrameIndex`，不重复维护计数器） | 正常递增 |
+| `writtenPngFrameCount` / `capturedFrameCount` | 成功写盘 PNG 帧数（同一个计数） | `0` |
+| `tailFramesCommitted` | 成功提交的逻辑尾帧数 | 正常递增 |
+| `tailFramesCaptured` | 成功写盘的 PNG 尾帧数 | `0` |
+
+- PNG 完成会话：`frameTransactionRequestCount = captureRequestCount = logicalFrameCount = writtenPngFrameCount = capturedFrameCount`。
+- Log-only 完成会话：`frameTransactionRequestCount = logicalFrameCount`，其余 PNG 计数为 `0`。
+- completion / End Tail / safety limit / progress watchdog 全部使用**逻辑** authority（`_outputFrameIndex` / `_tailFramesCommitted`）；pre-entry 内部成功计数同样按逻辑 commit。PNG 模式仍保持“只有成功写盘后才 commit”。
+- PNG 模式的写盘失败原因不变（`write-png-failed`）；log-only 的帧末事务失败为 `frame-transaction-failed`，不会被误报为 `write-png-failed`。
+- metadata 的 `mode`：PNG 为 `editor-export-png-sequence`（既有值不变），log-only 为 `editor-export-log-only`；新增 `imageOutputEnabled`。旧字段全部保留。
+
+metadata 记录：版本/phase/mode/imageOutputEnabled、state/detail/reason/kind、completion signal/index、output FPS、pitch、End Tail 输入与解析结果、safety policy、capture source/尺寸、上述全部逻辑与 PNG 计数。
 
 ---
 
@@ -342,6 +377,19 @@ metadata 记录：版本/phase、state/detail/reason/kind、completion signal/in
 - **persisted End Tail 方案 A 实机 PASS**：非法 persisted 值（`-5`、`12.5` Frames、`NaN`）保持非法且未被 sanitize 或 ceil，显式改为合法 `12 Frames` 后导出恢复。
 - 上述通过只对应 `0.3.6.3` 正式化后的实现与该两组谱面 / 设置；早期版本的通过结果仍按各自版本记录，不视为对最新版本的覆盖。
 
+**0.3.6.4 Log-only Frame Transactions 实机验收**（结果由用户提供；同一基准谱面，Output FPS / pitch 沿用当前基准设置）：
+
+- PNG 与 Log-only 两种模式**均正常完成**。
+- 两模式均提交 **251 个连续逻辑帧**（`logicalFrameCount=251`）。
+- `completionFrameIndex = 238`；`tailFramesCommitted = 12`（两模式一致）。
+- Pre-entry **`B = G = 57`**，`partialFraction = 0.64`。
+- 两模式的 **Hit frame index 一致**。
+- **PNG → Log-only → PNG 切换正常**。
+- `cachedAngle` 的首次运行差异可在 **PNG → PNG** 中复现，因此**不属于 Log-only 独有差异**。
+- Log-only gameplay 中途取消两次：分别为 **90 成功提交帧 / 91 事务请求**、**183 / 184**；取消**没有伪提交 pending frame**；取消后 Log-only 再次完整导出成功。
+- 用户已确认 Log-only 的实际输出目录**无 PNG**。
+- 适用范围限定：上述通过只对应 `0.3.6.4` 的实现与该基准谱面 / 设置。**未直接覆盖**的场景见 §11 第 9 项（pre-entry 阶段取消 / End Tail 阶段取消 / 取消后切换 PNG），不得记为已通过。
+
 ### 9.2 已验证的历史事实（仍影响当前设计）
 
 - RenderTexture source isolation 已实机验证：PNG 不含 Editor/UMM/Renderist UI；测试谱面视觉内容正常。
@@ -369,6 +417,38 @@ metadata 记录：版本/phase、state/detail/reason/kind、completion signal/in
 | cleanup 静态证明 | 36 / 0 |
 | Release Rebuild / package / verify | 0 error / success / PASS 11–0 |
 | 30 FPS Unity smoke | 通过（见 §9.1） |
+
+### 9.4 log-only 最小闭环（0.3.6.4）验证状态
+
+**最终审查 + 发布收敛（0.3.6.4）实测结果**：
+
+| 验证 | 方式 | 结果 |
+| --- | --- | --- |
+| 最终代码审查 | 75 项结构断言（覆盖下方 10 项审查重点 + 取消路径 + 范围控制） | 75 PASS / 0 FAIL；**未发现阻塞性问题** |
+| Release Rebuild | `dotnet build -c Release -t:Rebuild` | 0 error / 0 warning；内嵌 `FileVersion=0.3.6.4` |
+| package + verify | `scripts/package-release.ps1 -Configuration Release -Version 0.3.6.4 -Force` | 打包成功；verify **PASS 11 checks / 0 failures** |
+| 发布包内容 | 独立解包复核 | 仅 3 个顶层文件（`Info.json` / `ADOFAI.Renderist.dll` / `LICENSE`），无目录、无 banned 内容；包内 DLL 与 `bin\Release` 逐字节一致 |
+| metadata 计数与序列化 | **临时 harness（生产 `EditorExportSession.cs` + 最小 stub，已删除）** | 20 PASS / 0 FAIL：PNG 251 计数等式、Log-only `ftr=lf=251` 且 PNG 计数为 0、取消形态（`lf=90` / `ftr=91`）无伪提交、`mode` 取值、29 个字段齐全、JSON 严格可解析、无重复键、转义往返 |
+| Settings.xml 向后兼容 | 同 harness（XmlSerializer + 生产 `Settings.cs` 声明比对） | PASS：旧 Settings.xml 缺字段时 `EditorImageOutputEnabled=true`；显式 `false` 可读回/写出；不绑定 `VerboseLogging` |
+
+审查覆盖的 10 项重点及结论（均为静态/结构证据）：
+
+1. Log-only 与 PNG 共用同一个 EOF 帧事务 —— PASS（`Observe()` / `new WaitForEndOfFrame()` 各 1 处且不按模式分支）。
+2. `CommitFrame` 仍是唯一逻辑推进点 —— PASS（唯 1 调用点、`_outputFrameIndex++` 唯 1 处）。
+3. 模式在 session 开始时冻结 —— PASS（controller 只读一次 Settings；scheduler 不读 Settings；`_imageOutputEnabled` 仅在 `TryStart` 赋值）。
+4. Pre-entry 与 End Tail 依赖逻辑 commit —— PASS（3 处 completion/End Tail 判定全部使用 `_tailFramesCommitted`；`_tailFramesCaptured` 不参与任何判定）。
+5. 取消正确废弃 pending transaction —— PASS（`ProcessStop` 先置 `_running=false`，`OnCaptureResult` 首行 `if (!_running) return;`；`FrameCaptureDriver.Stop()` 先失效 generation 再 `Shutdown()`；驱动 `Shutdown()` 清 pending / callback 并停 coroutine）。
+6. 迟到 callback 受 generation 与 pending-index 防护 —— PASS（`_pendingStopReason` → `_captureGeneration` → `_pendingCaptureIndex` 顺序不变）。
+7. cleanup 无模式相关遗漏 —— PASS（`RestoreAll` 内 `_imageOutputEnabled` 命中为 **0**；pre-entry timeScale / scoped beat override 恢复与模式无关）。
+8. PNG 模式保持"写盘成功后才 commit" —— PASS（`File.WriteAllBytes` 先于成功回调；失败仍为 `write-png-failed`）。
+9. metadata 新旧字段兼容 —— PASS（新增 9 个字段；既有字段全部保留；PNG `mode` 值不变）。
+10. Settings 默认 `true` 保持旧用户 PNG 行为 —— PASS（实际用户 Settings.xml 不含该字段，按默认 `true` 加载）。
+
+**未覆盖场景的针对性静态审查结论**（取消路径在代码上可达，但未取得实机结果）：
+
+- Esc 观察者 `OnEditorSwitchToEditModePostfix` 接受 `InitializationHold` 与 `Capturing`，且 `_ownsPlayback` 在 `TrySelectFloor0`（TryStart 第 1 步）即置 true，早于 observer 注册 —— 因此 **pre-entry 取消与 End Tail 取消在代码上可达**，只是 Log-only 导出极快、难以稳定命中时机。
+- 取消路径本身**不含任何模式相关分支**（Esc 请求路径与 `RestoreAll` 均无 `_imageOutputEnabled`），因此"取消后切换 PNG"不共享任何模式状态；下一 session 的模式仍由 `Settings` 在 `TryStart` 重新冻结，且 residual gate 在创建 session 目录前 fail-closed。
+- 这三项**不得记为实机通过**：pre-entry 阶段取消、End Tail 阶段取消、取消后切换 PNG。
 
 ---
 
@@ -443,15 +523,25 @@ metadata 记录：版本/phase、state/detail/reason/kind、completion signal/in
 6. **更广泛谱面覆盖**：BPM change、Twirl、Midspin、event-heavy、特殊 startup、长时大规模导出。
 7. **native Esc teardown 警告**：曾见 Unity `Coroutine couldn't be started ... Conductor is inactive`，静态证据更像 native teardown；未做 disable-mod A/B。
 8. custom resolution / supersampling、audio、FFmpeg、replay、Preview Bridge 均未实现。
-9. **log-only / image-output-disabled 诊断模式（0.3.6.4 候选）**：不属于 `0.3.6.3`，尚未实现，不应与 VerboseLogging 永久绑定。未来设计必须先明确 logical commit、capture request、captured/written frame count 和 metadata 语义，再决定是否仍需激活 RT/Camera source；不得静默改变 completion / End Tail 计数。
+9. **log-only / image-output-disabled（`0.3.6.4` Log-only Frame Transactions）：已实现、已发布收敛、并已通过用户实机验收。**
+   - 已实施：`Settings.EditorImageOutputEnabled`（默认 `true`）+ GUI「输出 PNG 图像」开关与关闭说明；模式在 session 开始时冻结；帧末结果改用显式 `imageWritten` 标志区分；逻辑帧计数与 PNG 计数拆分；completion / End Tail / safety / watchdog 全部改用逻辑 authority；metadata 增加 `imageOutputEnabled` / `mode` / `frameTransactionRequestCount` / `logicalFrameCount` / `writtenPngFrameCount` / `tailFramesCommitted`（旧字段保留）；log-only 不写 PNG、但仍写 metadata。详见 §3.2、§7、§8.1。
+   - 设计确定项：**保留** Camera source / RenderTexture 接管与 `WaitForEndOfFrame`（两种模式只在图像读回/编码/写盘处分支）；不新增 Harmony Patch、不引入新的 ADOFAI 内部 API、不新建第二套 scheduler / driver；`captureRequestCount` 在 log-only 下为 `0`，逻辑事务计数由 `frameTransactionRequestCount` 承担。
+   - **实机验收结果（用户提供，见 §9.1）**：PNG 与 Log-only 均正常完成；两模式均提交 251 个连续逻辑帧，`completionFrameIndex=238`、`tailFramesCommitted=12` 一致；`B=G=57`、`partialFraction=0.64`；两模式 Hit frame index 一致；PNG → Log-only → PNG 切换正常；`cachedAngle` 首次运行差异可在 PNG → PNG 复现（非 Log-only 独有）；Log-only gameplay 取消两次（90/91、183/184），无伪提交，取消后可再次完整导出；Log-only 输出目录确认无 PNG。
+   - **未覆盖（不得记为已通过）**：pre-entry 阶段取消、End Tail 阶段取消、取消后切换 PNG。原因是 Log-only 导出极快、难以稳定命中时机；不为此人为减慢导出或加入临时测试功能。针对这三项的**静态审查**结论见 §9.4：取消路径不含任何模式相关分支，Esc 观察者在 `InitializationHold` / `Capturing` 均可用，因此不具备模式特异性风险，但缺少实机证据。
+   - 已完成的非实机验证（最终审查 75/0、Release Rebuild、package/verify 11–0、序列化 harness 20/0）见 §9.4。
+   - 残留观察项：log-only 的 `captureRequestCount = 0` 与 PNG 模式下取消时 `captureRequestCount = capturedFrameCount + 1` 语义不同源（两者都已实机确认无伪提交）；`image-output-mode-mismatch` 守卫为保计数等式的 fail-closed 新增失败点，正常路径不触发。
 10. `set-version.ps1` phase 同步范围说明可在后续 tooling 清理时收紧，当前不阻塞产品一致性。
 
 ---
 
 ## 12. 发布与部署
 
-- 当前产品版本为 `0.3.6.3`（native deterministic pre-entry / count-in capture 正式化 + persisted End Tail 语义修正）。前三位 `0.3.6` 与 Phase `Phase 3.6.0 Render Time Determinism` 均不变。
-- 历史：`0.3.6.1`（Output FPS 无上限、safety 默认 unbounded、long frame chain、autoplay fail-closed、paused 阶段修正）→ `8bceeef` + `1af1205` hardening → `0.3.6.2` → native pre-entry 正式化 + persisted End Tail semantic fix → `0.3.6.3`。
+- 当前产品版本为 `0.3.6.4`（**Log-only Frame Transactions**）；其上的 `0.3.6.3` 为 native deterministic pre-entry / count-in capture 正式化 + persisted End Tail 语义修正。前三位 `0.3.6` 与 Phase `Phase 3.6.0 Render Time Determinism` 均不变（`set-version.ps1` 未改 phase 文案，因此启动日志与 metadata 的 `phase` 保持一致）。
+- 本轮（0.3.6.4 发布收敛）实际同步的版本点：`mod/Info.json Version`、csproj `<Version>`、`ModEntry.ModVersion` 与 `ModEntry` 启动日志。**`EditorExportSession.PhaseLabel` 与 `FrameCaptureDriver` 类注释中的 phase 文案不属于 `set-version.ps1` 的同步范围**，本轮 phase 未变因此无需人工改动。
+- log-only 最小闭环比基线 `9a57ba9` 的改动：`Settings.cs`、`UiText.cs`、`ModEntry.cs`、`EditorExportController.cs`、`EditorExportSession.cs`、`DeterministicFrameScheduler.cs`、`FrameCaptureDriver.cs`（其余文件与受保护文件未改）。
+- 发布包：`Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` ignored。本轮 `package-release.ps1 -Configuration Release -Version 0.3.6.4 -Force` 产出 `dist/ADOFAI.Renderist.zip`（zip SHA256 `B8E81DBF…`），`verify-release-package.ps1` 结果 **PASS 11 checks / 0 failures**，包内仅有 3 个顶层文件。
+- 发布包内 DLL 的 `ProductVersion` 形如 `0.3.6.4+<HEAD 短哈希>`：该 `+hash` 是 SourceLink/InformationalVersion 在构建时记录的 **HEAD 提交**，而非工作区改动。由于打包发生在发布提交之前，包内 `+hash` 指向基线 `9a57ba9`；`FileVersion` 为 `0.3.6.4`。`verify-release-package.ps1` 会比较时剥离该 `+hash` 后缀，因此不影响校验。
+- 历史：`0.3.6.1`（Output FPS 无上限、safety 默认 unbounded、long frame chain、autoplay fail-closed、paused 阶段修正）→ `8bceeef` + `1af1205` hardening → `0.3.6.2` → native pre-entry 正式化 + persisted End Tail semantic fix → `0.3.6.3` → Log-only Frame Transactions → `0.3.6.4`。
 - 发布包：`Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` ignored。
 - 自动验证链：
   `dotnet build src/ADOFAI.Renderist/ADOFAI.Renderist.csproj -c Release -t:Rebuild`
