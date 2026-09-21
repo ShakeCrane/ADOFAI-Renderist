@@ -38,11 +38,11 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 产品版本 | `0.3.6.2` |
+| 产品版本 | `0.3.6.3` |
 | Phase | `Phase 3.6.0 Render Time Determinism` |
 | 版本定位 | `0.3.6.2` = **correctness hardening revision**（cleanup / activation ownership + End Tail numerical correctness）；无新功能 |
 | 稳定实机基线 | 30 FPS（0.3.6.1 与 0.3.6.2 各一次）与 1000 FPS 完整导出通过（2026-09-15，见 §9.1） |
-| 当前开发方向 | correctness hardening 已收敛；log-only / image-output-disabled 顺延为 0.3.6.3 候选，尚未开始 |
+| 当前开发方向 | `0.3.6.3` 的 native deterministic pre-entry / count-in capture 正式化与 persisted End Tail 语义修正均已实施并**通过用户实机验证**；`0.3.6.4` 才是 log-only / image-output-disabled 候选，尚未实现。 |
 
 `0.3.6.2` 相对 `0.3.6.1` 的四个 hardening 点（功能语义不变，只收敛异常路径与输入判定）：
 
@@ -99,6 +99,8 @@ FrameIndex N (long)
 关键不变量：**Frame N 未成功完成 capture transaction，就不 commit N，也不开始 N+1。**
 
 `MasterTimeline.FrameIndex` 是 export / chart timeline authority；wall clock 与 audible audio 都不推进它。`Time.captureFramerate` 负责 Unity engine timestep，不等于 MasterTimeline 拥有全部 Unity state。
+
+`0.3.6.2` 的正式 capture 从 PlayerControl / canonical start 开始。对于后续 pre-entry，必须在同一 export transaction 中增加独立的 `PreEntryClock`：Countdown 可安全识别后锁定确定性 anchor，frame 0 起按 `pitch / OutputFps` 推进，成功 commit 才允许下一逻辑帧推进；PlayerControl 边界再切入既有 MasterTimeline。不得把 source activation、PNG 写盘 wall time 或 raw DSP 推进误作 pre-entry chart-time authority。
 
 ### 3.3 Completion 与取消
 
@@ -230,25 +232,16 @@ Frame index：
 
 Seconds / Beats 换算得到的 raw frame count 属于计算结果，不等同于用户 Frames 输入：仅允许用 `max(1e-10, half-ULP(nearestInteger))` 吸收浮点表示误差，然后再 `Ceiling`。half-ULP 是数值表示边界，不是参数上限。
 
-### 5.2 Persisted End Tail 的未决治理冲突
+### 5.2 Persisted End Tail 语义（已确定采用方案 A，代码已实施）
 
-当前 `ModEntry.Load → ResetEndTailGuiState()` 会在 preflight 之前对已持久化的非法设置做静默 sanitize，并写回内存 Settings：
+`Settings.EditorEndTailValue` / `EditorEndTailUnit` 是唯一 persisted authority；GUI 字段（`_endTailValueText` / `_endTailDisplayedUnit` / `_endTailInputValid` / `_endTailInputError`）只是 view / edit state。
 
-- 非法 unit →默认 Frames；
-- NaN / Infinity →默认值 12；
-- 负数 → 0；
-- fractional Frames → `ceil`。
-
-因此“`EndTailPolicy.TryValidateInput` 对传入非法值 fail-closed”是真的，但“任何持久化非法 End Tail 都会在启动前原样 fail-closed”**不是真的**：部分值在到达 policy 前已被 GUI state reset 修复。
-
-这是产品行为选择，不在 correctness hardening 中擅自改变。后续需用户选择：
-
-A. **保留非法 persisted value + fail-closed**：不静默改用户配置，GUI 明确显示错误，用户手工修正后才能启动。
-
-B. **显式 migration/sanitize**：继续自动修复，但要把它定义成正式 migration 行为，明确哪些值如何迁移、是否写回磁盘、是否提示用户，并与 preflight 文案一致。
-
-在用户确认前不得把任一方案写成既定产品语义。
-
+- `ModEntry.ResetEndTailGuiState()` 只重建 view：**不 sanitize、不写回 Settings**（无默认值替换、无 clamp 到 0、无 fractional Frames 的 `ceil`、无非法 unit 替换），展示使用无损格式化（NaN / Infinity / 负数 / 小数如实显示）。
+- 非法 persisted 值保持非法并 fail-closed；export 由既有链路阻断：`EditorExportPreflight → EndTailPolicy.TryResolve → InvalidEndTail → EditorExportController.Start 拒绝`（未新增第二套校验）。
+- 唯一写回路径是用户显式编辑 `ApplyEndTailTextInput`（parse 成功且 `EndTailPolicy.TryValidateInput` 通过才写 Settings）；`SwitchEndTailUnit` 在非法状态下不写 Settings、不做 default laundering；合法值的单位换算行为不变。
+- 可达范围（XmlSerializer 实测）：`EditorEndTailValue` 为 NaN / ±Infinity / 负数 / 小数（含 `1e308`）都能成功 Load → 属本语义负责范围；`EditorEndTailUnit` 为未定义枚举值，或数值溢出（如 `1E+309`）会在 `ModSettings.Load` 阶段抛异常 → 属 malformed `Settings.xml`，**不在**本语义范围（不为此扩展 Settings loader）。
+- 合法 persisted 值（Frames / Seconds / Beats）行为不变；`EndTailPolicy` 未修改（`end-tail-frame-count-overflow` 仍是 long 表示边界而非产品上限）。
+- 代码语义已实施（静态 / 逻辑验证 25/25）并已**通过用户实机验证**：`-5` / `12.5` / `NaN` 均保持非法且未被 sanitize 或 ceil，显式改为合法值 `12 Frames` 后导出恢复；**PERSISTED END TAIL RUNTIME PASS**。
 ---
 
 ## 6. Deterministic autoplay
@@ -404,27 +397,61 @@ metadata 记录：版本/phase、state/detail/reason/kind、completion signal/in
 
 返回 edit mode 的 `SwitchToEditMode → ResetScene → TogglePauseGame` 会重新 pause。因此 paused 的正确 gate 在 playback readiness，而不是 Start 前。
 
+### 10.5 Native pre-entry / count-in 时间 authority（当前 DLL 与 probe 证据）
+
+- `scrConductor.Update` 每帧以 `AudioSettings.dspTime` 更新 `dspTime`，再按 `((dspTime - dspTimeSong - calibration_i) * song.pitch) - addoffset` 写入 `songposition_minusi`；它不是 output-frame clock。`beatNumber` 每次最多跨一个 beat，且 Countdown 边界条件 `beatNumber >= adjustedCountdownTicks` 使用的是 **1-based** 计数，因此 native 边界等同于地图时间 `floor0EntryTime + (adjustedCountdownTicks - 1) × crotchetAtStart × pitch`（实机与 `canonicalStart` 完全一致）。
+- 实际 30 FPS native pre-entry probe 已安全在 Countdown 激活 Camera source，并从 absolute output frame 0 写出正常 PNG（含 blue planet、pre-entry rotation 与 trail），无 pre-entry autoplay hit，`RDC.auto=false`。
+- latch 之前（raw DSP 驱动，仅作对照）：相邻 output frame 的 raw DSP / songposition 实际前进约 `0.11–0.12 s`（而非 `captureDeltaTime = 1/30 s`），chosen planet angle 曾约 `0.899 rad`（约 `51.5°`）/frame，轨迹为 chord / polygon。
+- deterministic PreEntryClock 接管后（30 FPS / 140 BPM / pitch 1，实机）：相邻 committed output frame 的 chosenPlanetAngle 增量恒为 `+0.244346 rad`，即 `π × (BPM / 60) × pitch / OutputFps`；轨迹已回到接近连续圆弧，长度不再随 PNG encode/write wall time 变化。即 planet motion 与 trail aging 已由同一个 output-frame clock 驱动。
+- `scrPlanet.Update_RefreshAngles` 直接由 `songposition_minusi`、`lastHit`、`crotchetAtStart`、speed/direction 计算 angle，因此上述数值关系成立。验收仍需同时检查数值步长、相邻 angle、圆弧平滑度、trail 相对长度与 Countdown → PlayerControl 连续性；songposition 数值正确但轨迹仍为 polygon 或 trail 过长仍为 FAIL。
+- `scrController.Countdown_Update` 使用 `beatNumber >= adjustedCountdownTicks` 切入 PlayerControl，不直接读 DSP。pre-entry anchor 取 native 公式在 `dspTime == dspTimeSong` 的原点：`-(calibration_i * pitch) - addoffset`，step 为 `pitch / OutputFps`；锁定必须发生在 Countdown 且尚未跨第一个 beat，错过即 fail-closed，不能重启或倒回 native gameplay state。
+- forced clock 生效时 `beatNumber` 由被强制后的 `songposition_minusi` 驱动（native Countdown 边界因此跟随 deterministic step），但状态机读到的是**上一帧** conductor 写入的 beat 计数，所以 `Countdown → PlayerControl` 切换比「forced clock 跨过边界」晚 1 个 Unity frame。pre-entry 段若一路输出到 native 切换那一帧，最后一个 pre-entry frame 的 forced time 就会越过 `canonicalStart`，handoff 只能二选一：倒回 `canonicalStart`（边界处画面 rewind）或让 gameplay 从更晚的 chart time 开始（整段与 floor entry time 错位）。
+- 最新实机已验证 deterministic boundary route：`B = ceil((canonicalStart - anchor) / step)`，`[0,B-1]` 为 pre-entry，`G=B` 且 gameplay frame 0 在 `canonicalStart`；本谱面 `B=G=42`。frame 41 → 42 Planet 只前进约 `0.051662 rad`，frame 42 → 43 恢复完整正常 step `0.244346 rad`，证明 gameplay frame 0 会在 canonicalStart 重新求值，Planet boundary continuity PASS。该 session 以 completion frame 143、12 帧 End Tail、156 次 request/commit 正常 Completed。
+- lifecycle-only scoped beat injection 已连续两次实机通过：`Countdown_Update` 作用域内把 beat 从 3 临时注入为 4，Postfix 立即恢复为 3；hidden phase 的 forced/effective songposition 始终为 `previousBoundaryTime=1.278667`，Planet angle 始终为 `-1.622458`，从未消费 `boundaryForcedTime=1.312`。两次均保持 `B=G=42`、completion frame 143、156 次 request/commit 与 12 帧 End Tail。
+- 旧 frame 42 的 future Trail blob / forward protrusion / backward kink 已在两次运行中消失，强力支持“全世界消费 future boundary time 会污染 stateful visual history”。但 Trail continuity 仍未 PASS：frame 41 的正常长圆弧在 frame 42 明显骤缩，frame 43 才重新增长。最符合现有证据的解释是约 2 个 hidden Unity frame 仍让 history aging 前进；具体是否为 TrailRenderer scaled-time lifetime 机制仍未确认。
+- 状态机最小链已由 IL 确认：Unity 调用 `StateEngine.Update` → 当前 state mapping 的 `Update` delegate → `scrController.Countdown_Update` → 比较 `conductor.beatNumber >= conductor.adjustedCountdownTicks` → `StateBehaviour.ChangeState(PlayerControl)` → `StateEngine.ChangeState(..., Safe)` coroutine。`Countdown_Update` 本身不调用 Planet 或 Trail；它在判定后只继续更新 camera follow target。Countdown 的默认 Exit 是非 null 的 `DoNothingCoroutine`，所以状态切换天然至少跨一个 coroutine scheduler turn；`PlayerControl_Enter` 是同步 void。
+- IL 补充已确认（0.4.3.0，决定 hook 位置）：`scrController.Countdown_Update` 是 `void Countdown_Update()`（无参，IL 仅约 123 字节），阈值比较与 `ChangeState` **都在该方法体内**（`ldfld scrConductor.beatNumber` → `callvirt get_adjustedCountdownTicks` → `callvirt ChangeState`）；状态分发入口 `scrController.Update` 完全不引用 `beatNumber` / `adjustedCountdownTicks` / `ChangeState`，因此不存在“调用方先判定再调用”的形态——在该方法上装 TEMP Prefix/Postfix 即可单独门控这次 transition。`scrConductor.beatNumber` 是 **Int32 字段**，`adjustedCountdownTicks` 是**只读 float 属性**，故注入只能写字段，且满足 native 条件的最小值为 `ceil(adjustedCountdownTicks)`。`scrPlanet.Update` 的 IL 调用 `Update_RefreshAngles`。
+- runtime stage probe 已证明当前真实顺序：某 Unity frame 的 Countdown_Update Prefix/Postfix 返回后 controller 仍为 Countdown，随后同帧运行多个 Planet.Update；下一 Unity frame 仍有 Planet.Update 且仍为 Countdown；再下一 Unity frame StateEngine 才观察到 PlayerControl，之后 canonicalStart 生效并让 Planet 从 `-1.622458` 重求值到 `-1.570796`。状态切换确实跨 coroutine scheduler turn。
+- `StateEngine.ChangeState(..., Safe)` 启动 `ChangeToNewStateRoutine`；Countdown 没有自定义 Exit，因此先 `yield return StartCoroutine(DoNothingCoroutine())`，外层实际 yield 类型是 `UnityEngine.Coroutine`。子 coroutine 立即完成；随后设置 current state、同步执行 void `PlayerControl_Enter`，且无第二次 yield。该路径没有 WaitForSeconds / WaitForEndOfFrame / WaitForSecondsRealtime，也不读取 deltaTime/timeScale；实机已确认 timeScale=0 时仍可跨 scheduler turn进入 PlayerControl。
+- timeScale ownership / restore 与 B-1 commit 后前移接管已实机通过：frame 41 成功 commit 后同一 Unity frame 写入 0，随后两个 hidden frame 从 frame begin 起均为 `timeScale=0 / deltaTime=0`，visual clock 与 Planet angle 稳定；PlayerControl handoff 前恢复原始值也通过。future Trail blob 继续消失，frame 41 → 42 的 Trail 骤缩由旧 probe 的大幅异常收敛到约 `8–14°`，与 `previousBoundaryTime≈1.278667 → canonicalStart≈1.285714` 的理论 partial motion（约 `11°`）同量级。这是 Trail/history aging 受 scaled time 影响的强运行时因果证据，但不是对 Unity 内部 Trail 实现的反编译确认。
+- 剩余 boundary mismatch 已明确：上述 probe 在 handoff 时把 `timeScale` 直接恢复为原值，使 gameplay frame G 的 Unity `deltaTime` 仍为完整 `1/30 s`，但 Planet chart-time 只推进 `partialStep≈0.007047619 s`（`partialFraction≈0.211428571`）。因此 G 的 Planet motion 与 Trail aging 仍未使用同一个 timestep。当前 TEMP probe 改为 handoff 时写入 `savedOriginalTimeScale × partialFraction`，G 成功 commit 后才恢复实际保存的原值；等待实机验证 G delta、Trail 长度与 G+1 完整步长。
+- Unity 6 API 只说明 TrailRenderer point lifetime 以秒计，没有公开其使用 scaled 还是 unscaled clock；因此文档中的结论限于上述 runtime causal evidence，不宣称已静态确认原生内部实现。
+- `songposition_minusi` 的存储字段是否被 forced 值写回，取决于 conductor 的写回是否经过被 Harmony patch 的 setter：同一进程内先后两次实机 session 分别观测到「始终为 raw DSP 值」与「从第 1 帧起为上一帧 forced 值」。因此 `ReadUnforcedSongPositionValue()` / `backingSongposition` 在 probe 下不是稳定的 native 证据，不能作为 handoff anchor 判据；所有 reader 走 getter，forced 值仍是权威视觉时间。
+- `scrCountdown` 文本 / count-in SFX 仍直接依赖 DSP schedule；audio 不应被 Renderist 篡改。其与受控 visual clock 的一致性仍待实机验证，不能仅凭静态结论宣称完整通过。
+
 ---
 
 ## 11. 未解决问题 / 风险 / 下一步
 
-1. **Persisted End Tail 政策待用户选择**：保留非法值 fail-closed vs 显式 migration/sanitize（见 §5.2）。
+1. **Persisted End Tail 语义已确定为方案 A**（保留非法 persisted 值 + fail-closed + 用户显式合法编辑后才写回）并已通过实机验证，见 §5.2；无剩余待选项。
 2. **cleanup / activation 异常注入的真实 Unity 验证**：host Destroy、RT Release/Destroy 与 partial Camera assignment 的异常路径已用 **production source + Unity stub 的确定性 fault injection** 与静态断言验证（含"仍被引用时绝不 Destroy"、"失败后 ownership 保留"、"重试后清空"）；**仍未在真实 Unity Player 内注入 `Object.Destroy` / `RenderTexture.Release` 异常**。正常路径已有历史实机基线。
 3. **显式 safety frame-limit runtime trigger**：目前主要是静态/纯计算证据。
 4. **TryPrepareHitState 故障注入**：正常路径已实机，注入失败路径主要是 IL/control-flow 证据。
-5. **trail / star-trail 待录屏**：用户观察 capture 正式开始前拖尾/星轨轨迹僵硬；尚未调查，不猜根因。需录屏后确认 Initialization Hold → lifecycle-ready → forced clock/source activation → frame 0 是否有状态不连续、是否污染成品帧。
+5. **native pre-entry 正式化（0.3.6.3）已完成并通过用户实机验证**：
+   正式实现基线（Release Rebuild 通过；仓库无 probe/TEMP 残留；`FrameCaptureDriver` 与 HEAD 一致）：
+   - PreEntryClock：`step = pitch / OutputFps`；anchor 取 native clock 的 schedule origin。
+   - deterministic boundary：`B = ceil((canonicalStart - anchor) / step)`，沿用现有浮点稳定化（SnapNearInteger + `Math.Ceiling`）与 grid bracket invariant（`previousBoundaryTime < canonicalStart <= boundaryForcedTime`，ULP-only 容差并封顶 `step × 1e-3`）。
+   - frame mapping：`[0, B-1]` = deterministic native pre-entry；`G = B` = gameplay frame 0，chart time 严格为 `canonicalStart`。
+   - advancement：pre-entry / output index 只在 PNG 成功写盘并 commit 后推进。
+   - hidden lifecycle boundary：visual clock 固定 `previousBoundaryTime`；scaled Unity time 冻结为 0；由 `scrController.Countdown_Update` 的 scoped beat override（Prefix 注入 `ceil(adjustedCountdownTicks)`、Postfix 恢复、Finalizer 覆盖原方法异常）推动 native lifecycle；exact conductor / FieldInfo / original beat ownership + 读回验证 + fail-closed + cleanup 重试 + residual ownership gate。
+   - gameplay boundary：`partialStep = canonicalStart - previousBoundaryTime`，G 使用 partial scaled timestep；G 成功 commit 后才恢复**实际保存的** original timeScale；G+1 使用完整 timestep；exact-grid 时 `partialFraction == 1` 合法。
+   - watchdog：initialization readiness timeout 只覆盖正式 deterministic pre-entry transaction **之前**；deterministic pre-entry 与 hidden phase 使用共享 capture / progress no-progress watchdog（`capture-timeout` / `watchdog-timeout`），无固定 5-frame boundary guard；watchdog 是 stall / no-progress 保护，不是总导出时长或总帧数限制。
+   - 实机证据（适用范围限定：**当前基准谱面、Output FPS=30、pitch=1**；其中 B/G 的绝对数值只对该谱面成立，不是通用常数）：正式化后的 working tree 已**连续双跑 PASS** —— `B=G=44`、`previousBoundaryTime=1.263333`、`canonicalStart=1.285714`、frame 43 为最后一个 pre-entry、frame 44 = gameplay frame 0（`partialFraction=0.671429`、`deltaTime=0.022381`）、frame 45 `deltaTime=0.033333`；43→44 ≈9.40°、44→45 ≈14.00°；Planet boundary continuity PASS、Trail boundary continuity PASS（future blob 与 boundary shrink 未再出现）；两次均 `state=Completed`、`stopReason=canonical-completion-tail-drained`、`completionFrameIndex=145`、`tailFramesCaptured=12`、`captureRequestCount=capturedFrameCount=158`。
+   - `lifecycleSongPosition` 两跑存在非权威差异；它当前不是 deterministic visual/chart authority，不阻塞视觉导出，留待未来 audio / countdown sync 调查。
+   - 补充验证（另一组实机导出：Output FPS=30、BPM=100、pitch=1）：`B=G=60`、`previousBoundaryTime=1.796667`、`canonicalStart=1.8`、`partialFraction=0.1`；frame 59 为最后一个 pre-entry、frame 60 = gameplay frame 0、frame 61 = gameplay frame 1；Planet / Trail continuity 正常，timeScale 在 G commit 后恢复；完整导出 metadata：`state=Completed`、`stopReason=canonical-completion-tail-drained`、`completionFrameIndex=241`、`endTailInputValue=12`、`endTailInputUnit=Frames`、`resolvedTailFrames=12`、`resolvedTailSeconds=0.4`、`tailFramesCaptured=12`、`captureRequestCount=capturedFrameCount=254`。（这些绝对数值同样只对该谱面与设置成立。）
+
 6. **更广泛谱面覆盖**：BPM change、Twirl、Midspin、event-heavy、特殊 startup、长时大规模导出。
 7. **native Esc teardown 警告**：曾见 Unity `Coroutine couldn't be started ... Conductor is inactive`，静态证据更像 native teardown；未做 disable-mod A/B。
 8. custom resolution / supersampling、audio、FFmpeg、replay、Preview Bridge 均未实现。
-9. **log-only / image-output-disabled 诊断模式（0.3.6.3 候选）**：不属于 `0.3.6.2`，尚未实现，不应与 VerboseLogging 永久绑定。未来设计必须先明确 logical commit、capture request、captured/written frame count 和 metadata 语义，再决定是否仍需激活 RT/Camera source；不得静默改变 completion / End Tail 计数。
+9. **log-only / image-output-disabled 诊断模式（0.3.6.4 候选）**：不属于 `0.3.6.3`，尚未实现，不应与 VerboseLogging 永久绑定。未来设计必须先明确 logical commit、capture request、captured/written frame count 和 metadata 语义，再决定是否仍需激活 RT/Camera source；不得静默改变 completion / End Tail 计数。
 10. `set-version.ps1` phase 同步范围说明可在后续 tooling 清理时收紧，当前不阻塞产品一致性。
 
 ---
 
 ## 12. 发布与部署
 
-- 当前产品版本为 `0.3.6.2`（correctness hardening revision：cleanup / activation ownership + End Tail numerical semantics，无新功能）。前三位 `0.3.6` 与 Phase `Phase 3.6.0 Render Time Determinism` 均不变。
-- 历史：`0.3.6.1`（Output FPS 无上限、safety 默认 unbounded、long frame chain、autoplay fail-closed、paused 阶段修正）→ `8bceeef` + `1af1205` hardening → `0.3.6.2`。
+- 当前产品版本为 `0.3.6.3`（native deterministic pre-entry / count-in capture 正式化 + persisted End Tail 语义修正）。前三位 `0.3.6` 与 Phase `Phase 3.6.0 Render Time Determinism` 均不变。
+- 历史：`0.3.6.1`（Output FPS 无上限、safety 默认 unbounded、long frame chain、autoplay fail-closed、paused 阶段修正）→ `8bceeef` + `1af1205` hardening → `0.3.6.2` → native pre-entry 正式化 + persisted End Tail semantic fix → `0.3.6.3`。
 - 发布包：`Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` ignored。
 - 自动验证链：
   `dotnet build src/ADOFAI.Renderist/ADOFAI.Renderist.csproj -c Release -t:Rebuild`
