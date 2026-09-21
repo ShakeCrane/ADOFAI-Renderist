@@ -8,12 +8,22 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 确定性编辑器导出的同步帧末事务后端（Phase 3.6.0 Render Time Determinism）。
+    /// 确定性编辑器导出的同步帧末事务后端（Phase 3.7.0 Custom Resolution &amp; Supersampling）。
     /// 支持两种冻结模式：PNG 序列（image output enabled）与 log-only（image output disabled）。
     ///
     /// Render Source：ADOFAI 原生谱面摄像机链（scrCamera.Bgcamstatic / BGcam / camobj）
     /// 的 targetTexture 在本 session 内被接管到 Renderist-owned RenderTexture。
     /// Unity 仍按正常帧渲染流程渲染这三台 Camera，Screen Space UI 不进入该 RT。
+    ///
+    /// Output geometry：捕获尺寸与统一 Camera aspect 由 scheduler 在 session 开始时冻结后
+    /// 传入 <see cref="TryActivateCameraSource"/>，本类**不再**读取 Screen.width / Screen.height。
+    /// 因此窗口尺寸在 session 中途变化不会造成 RT 尺寸与 aspect ownership 不一致。
+    /// PNG 与 log-only 共用同一尺寸、同一个 RenderTexture 与同一个 aspect。
+    ///
+    /// Camera aspect ownership：三台 Camera 统一使用冻结输出的 aspect，并各自登记 ownership。
+    /// 释放时只在当前值仍等于 Renderist 写入值时才 <c>ResetAspect()</c>（恢复 Unity 自动行为）；
+    /// 已被外部流程改写的值不覆盖。Renderist 不通过“旧 aspect 是否等于屏幕 aspect”来推断
+    /// 自动模式——该推断在 targetTexture 接管后不可靠。
     ///
     /// 捕获点：WaitForEndOfFrame。帧末事务在同一处完成，并按 session 开始时冻结的输出模式分支：
     ///   * PNG（imageOutputEnabled = true）：ReadPixels → EncodeToPNG → File.WriteAllBytes 成功
@@ -38,9 +48,13 @@ namespace ADOFAI.Renderist.Export
     ///   * RenderTexture 一旦创建成功，任何失败路径都必须二选一：Release + Destroy 均成功，
     ///     或把该引用保存在本类可观察、可重试的 ownership 中（`_captureTarget`），
     ///     绝不作为 local reference 丢失。
-    ///   * Camera refs / saved old targets / captureTarget 在**第一次 Camera 写入之前**就登记，
-    ///     因此 partial camera assignment 天然属于 `_sourceActive` 的 ownership transaction，
-    ///     由同一个 `RestoreCameraSource` 收敛（不新增第二套 partial cleanup）。
+    ///   * Camera refs / saved old targets / **saved baseline aspect** / 本次写入的统一 aspect
+    ///     同样在**第一次 Camera 写入之前**就登记，因此 partial camera assignment 天然属于
+    ///     `_sourceActive` 的 ownership transaction，由同一个 `RestoreCameraSource` 收敛
+    ///     （不新增第二套 partial cleanup）。
+    ///   * targetTexture 与 aspect 使用**各自独立**的释放路径（RelinquishTargetTexture /
+    ///     RelinquishAspect），但收敛判定合并到同一个 `_sourceActive`：因此 setter 成功之后
+    ///     读回失败、或 aspect 恢复失败，都不会漏掉 partial assignment，也不会提前清空 ownership。
     ///   * 只有 `IsCaptureTargetStillReferenced() == false` 时才 Release / Destroy RT。
     /// </summary>
     internal static class FrameCaptureDriver
@@ -60,6 +74,13 @@ namespace ADOFAI.Renderist.Export
         public const string CameraSourceLabel = "scrCamera-rendertexture";
 
         private const string CaptureTargetName = "ADOFAI.Renderist.CaptureTarget";
+
+        /// <summary>
+        /// 判定「baseline 三台 aspect 是否互相兼容」以及「当前 aspect 是否仍是 Renderist
+        /// 写入值」的相对容差。只吸收浮点表示 / native 往返误差，不构成任何 aspect 合法区间，
+        /// 也不是对 aspect 取值的限制。
+        /// </summary>
+        private const float AspectTolerance = 1e-4f;
 
         private static GameObject _host;
         private static CaptureHostBehaviour _behaviour;
@@ -85,6 +106,28 @@ namespace ADOFAI.Renderist.Export
         private static RenderTexture _oldBgTarget;
         private static RenderTexture _oldMainTarget;
 
+        // ---- Camera aspect ownership（与 targetTexture 独立登记、合并收敛）----
+        //
+        // _writtenAspect：本次 session 写入三台 Camera 的统一输出 aspect；0 = 未写入。
+        // _oldXxxAspect：**第一次 aspect 写入之前**读到的真实 baseline，同时用于
+        //   (a) 激活前的兼容性 fail-closed 判定记录，(b) residual 诊断。
+        // 这些字段与 _captureTarget / Camera refs 一样在第一次 Camera 写入之前登记，
+        // 因此 setter 成功后读回失败也不会漏掉 partial assignment。
+        private static float _writtenAspect;
+        private static float _oldBgStaticAspect;
+        private static float _oldBgAspect;
+        private static float _oldMainAspect;
+
+        // 已完成 aspect 写入的 Camera 台数（按 Bgcamstatic → BGcam → camobj 顺序）。
+        //
+        // 这是**精确**的“本次到底写过哪几台”的记录：每个 setter 成功后立即递增，
+        // 不依赖任何读回。因此：
+        //   * setter 抛异常 → 该台不计入，cleanup 不会去 ResetAspect 一台没写过的 Camera；
+        //   * 读回失败不影响该值（读回只用于日志）。
+        // 未写入的 Camera 即使在数值上恰好等于目标 aspect（例如 legacy 模式下窗口 aspect
+        // 就等于输出 aspect），也绝不会被 ResetAspect 覆盖。
+        private static int _aspectAssignedCount;
+
         public static bool IsRunning => _host != null && _behaviour != null;
 
         /// <summary>
@@ -100,10 +143,31 @@ namespace ADOFAI.Renderist.Export
         /// </summary>
         public static bool HasOwnedCaptureTarget => _captureTarget != null;
 
+        /// <summary>
+        /// 把本 session capture target 的只读形态（format / graphicsFormat / MSAA / mipmap /
+        /// 冻结尺寸）写入运行时 inventory，供 session metadata 记录。
+        /// 只读：不修改 RenderTexture 的任何属性；target 未激活时为 no-op。
+        /// </summary>
+        public static void CaptureRenderTargetInventory(RenderEnvironmentInventory inventory)
+        {
+            if (inventory == null) return;
+
+            RenderTexture target = _captureTarget;
+            if (target == null) return;
+
+            inventory.CaptureRenderTarget(target, _captureWidth, _captureHeight);
+        }
+
         /// <summary>本 session 冻结的捕获尺寸；未激活时为 0。</summary>
         public static int CaptureWidth => _captureWidth;
 
         public static int CaptureHeight => _captureHeight;
+
+        /// <summary>
+        /// 本 session 写入三台 Camera 的统一输出 aspect（width / height）；
+        /// 未接管 aspect 时为 0。仅供 metadata / 诊断使用。
+        /// </summary>
+        public static float CaptureAspect => _writtenAspect;
 
         public static bool Start(
             string outputDirectory,
@@ -135,6 +199,9 @@ namespace ADOFAI.Renderist.Export
             {
                 generation = ++_generationCounter;
                 _activeGeneration = generation;
+                // 新 generation 从"未写过任何 aspect"开始；上一次 session 的 ownership
+                // 必须先由 Stop() 收敛（Start 不接管未释放的 ownership）。
+                _aspectAssignedCount = 0;
 
                 host = new GameObject("ADOFAI.Renderist.FrameCaptureDriver");
                 host.hideFlags = HideFlags.HideAndDontSave;
@@ -179,15 +246,26 @@ namespace ADOFAI.Renderist.Export
 
         /// <summary>
         /// 激活 Render Source：把当前 session 的 ADOFAI 原生摄像机链
-        /// （Bgcamstatic / BGcam / camobj）的 targetTexture 指向 Renderist-owned RenderTexture。
+        /// （Bgcamstatic / BGcam / camobj）的 targetTexture 指向 Renderist-owned RenderTexture，
+        /// 并把三台 Camera 的 aspect 统一到 session 开始时冻结的输出 aspect。
         ///
         /// Start 不负责这件事；真正接管必须等到 scheduler 的 InitializationHold readiness
         /// 满足、即将进入 Capturing 之前。此时 scrCamera 与三台 Camera 才必然可用。
         ///
+        /// width / height 是 scheduler 在 session 开始时冻结的输出几何（自定义分辨率或
+        /// 冻结的窗口尺寸）；本方法**不读 Screen**，因此 session 中途改变窗口不影响本 session。
+        ///
+        /// 激活前的 aspect baseline 检查（在任何 Camera 写入之前完成，fail-closed）：
+        ///   * 三台 aspect 必须可读、有限且为正；
+        ///   * 三台 baseline 必须互相兼容（同一 session 内它们共用同一个渲染目标 aspect）。
+        /// 任一不满足即拒绝激活，并保持「尚未接触任何 Camera」，绝不写一半再失败。
+        /// 注意：**不**用「baseline 是否与屏幕 aspect 数值相等」来推断自动模式——
+        /// targetTexture 已由游戏接管时该推断不成立，因此不作为判据。
+        ///
         /// 成功后才允许 RequestCapture。失败返回 false + machine-readable error；
         /// 调用方必须让 session 失败，不得回退到 Screen framebuffer。
         /// </summary>
-        public static bool TryActivateCameraSource(long generation, out string error)
+        public static bool TryActivateCameraSource(long generation, int width, int height, out string error)
         {
             error = null;
 
@@ -207,21 +285,19 @@ namespace ADOFAI.Renderist.Export
                 return false;
             }
 
+            // 冻结几何由调用方提供：驱动不存在第二个分辨率来源。
+            if (width <= 0 || height <= 0)
+            {
+                error = "capture-dimensions-invalid";
+                return false;
+            }
+
             // 每次新的 capture ownership 都重新取得当前 session 的对象。
             if (!EditorGameReflection.TryReadChartCameraChain(
                     out Camera bgStaticCamera, out Camera bgCamera, out Camera mainCamera,
                     out string chainError))
             {
                 error = chainError ?? "camera-chain-unavailable";
-                return false;
-            }
-
-            // 本轮只支持当前游戏渲染分辨率；不支持 custom resolution。
-            int width = Screen.width;
-            int height = Screen.height;
-            if (width <= 0 || height <= 0)
-            {
-                error = "capture-dimensions-invalid";
                 return false;
             }
 
@@ -269,17 +345,44 @@ namespace ADOFAI.Renderist.Export
                 return false;
             }
 
+            // ---- 三台 Camera 的 aspect baseline（仍在任何 Camera 写入之前）----
+            // 读取失败 / 非法 / 三台互不兼容都在这里 fail-closed，此时尚未写过任何 Camera。
+            if (!TryReadCameraAspect(bgStaticCamera, "Bgcamstatic", out float oldBgStaticAspect, out string aspectReadError) ||
+                !TryReadCameraAspect(bgCamera, "BGcam", out float oldBgAspect, out aspectReadError) ||
+                !TryReadCameraAspect(mainCamera, "camobj", out float oldMainAspect, out aspectReadError))
+            {
+                DiscardOrRetainUntouchedTarget(target);
+                error = aspectReadError;
+                return false;
+            }
+
+            if (!IsAspectBaselineCompatible(
+                    oldBgStaticAspect, oldBgAspect, oldMainAspect, out string aspectBaselineDetail))
+            {
+                DiscardOrRetainUntouchedTarget(target);
+                error = "capture-aspect-baseline-incompatible:" + aspectBaselineDetail;
+                return false;
+            }
+
+            // 统一输出 aspect：由冻结几何派生，三台 Camera 使用同一个值。
+            float unifiedAspect = (float)((double)width / (double)height);
+
             // 在**第一次 Camera 写入之前**登记 ownership：partial assignment 也必须可见、可重试。
             // 从此 _sourceActive 表示"ownership transaction 已开始（可能 partial）"。
+            // targetTexture 与 aspect 同时登记，因此 setter 成功后读回失败也不会漏掉 partial。
             _captureTarget = target;
             _captureWidth = width;
             _captureHeight = height;
+            _writtenAspect = unifiedAspect;
             _bgStaticCamera = bgStaticCamera;
             _bgCamera = bgCamera;
             _mainCamera = mainCamera;
             _oldBgStaticTarget = oldBgStaticTarget;
             _oldBgTarget = oldBgTarget;
             _oldMainTarget = oldMainTarget;
+            _oldBgStaticAspect = oldBgStaticAspect;
+            _oldBgAspect = oldBgAspect;
+            _oldMainAspect = oldMainAspect;
             _sourceActive = true;
 
             try
@@ -287,19 +390,40 @@ namespace ADOFAI.Renderist.Export
                 bgStaticCamera.targetTexture = target;
                 bgCamera.targetTexture = target;
                 mainCamera.targetTexture = target;
+
+                // aspect ownership：三台统一到冻结输出 aspect。任何一个 setter 抛异常，
+                // 已写入的部分都由同一个 RestoreCameraSource 收敛（不新增第二套 cleanup）。
+                // 每台写入成功后立即记数，因此 cleanup 只会 ResetAspect 真正写过的 Camera。
+                bgStaticCamera.aspect = unifiedAspect;
+                _aspectAssignedCount = 1;
+                bgCamera.aspect = unifiedAspect;
+                _aspectAssignedCount = 2;
+                mainCamera.aspect = unifiedAspect;
+                _aspectAssignedCount = 3;
             }
             catch (Exception ex)
             {
-                Log.Exception("FrameCaptureDriver: 接管 targetTexture 失败，交由统一 ownership cleanup 收敛", ex);
+                Log.Exception("FrameCaptureDriver: 接管 camera source 失败，交由统一 ownership cleanup 收敛", ex);
                 error = "capture-source-assign-failed:" + ex.Message;
                 ConvergeSourceOwnershipAfterFailedAssignment();
                 return false;
             }
 
+            // setter 之后的读回**只用于日志诊断**：ownership 已在写入前登记，
+            // 读回失败绝不改变 ownership，也不会漏掉 partial assignment。
+            VerifyAspectAppliedBestEffort(bgStaticCamera, unifiedAspect, "Bgcamstatic");
+            VerifyAspectAppliedBestEffort(bgCamera, unifiedAspect, "BGcam");
+            VerifyAspectAppliedBestEffort(mainCamera, unifiedAspect, "camobj");
+
             // 只在 source activate 时记录一次完整 inventory；不逐帧刷日志。
             Log.Info("FrameCaptureDriver: capture source active source=" + CameraSourceLabel +
                      " size=" + width.ToString(CultureInfo.InvariantCulture) + "x" +
                      height.ToString(CultureInfo.InvariantCulture) +
+                     " unifiedAspect=" + unifiedAspect.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " baselineAspect={Bgcamstatic=" +
+                     oldBgStaticAspect.ToString("0.######", CultureInfo.InvariantCulture) +
+                     ",BGcam=" + oldBgAspect.ToString("0.######", CultureInfo.InvariantCulture) +
+                     ",camobj=" + oldMainAspect.ToString("0.######", CultureInfo.InvariantCulture) + "}" +
                      " target=" + CaptureTargetName +
                      " " + DescribeCamera("Bgcamstatic", bgStaticCamera, oldBgStaticTarget) +
                      " " + DescribeCamera("BGcam", bgCamera, oldBgTarget) +
@@ -452,6 +576,10 @@ namespace ADOFAI.Renderist.Export
         ///          返回 false（绝不 Release / Destroy 仍被引用的 RenderTexture）。
         ///   * 无 → 尝试 Release + Destroy；两步都成功返回后才清空 captureTarget、Camera
         ///          与冻结尺寸。任一步异常都保留 target 引用并返回 false，供下一次 Stop 重试。
+        ///
+        /// Camera aspect 与 targetTexture **各自独立**释放（RelinquishAspect /
+        /// RelinquishTargetTexture），但收敛判定合并：aspect 恢复失败同样返回 false 并保留
+        /// ownership，因此 residual 不会被提前清空；最后一次成功收敛时才清空 aspect 记录。
         /// </summary>
         private static bool RestoreCameraSource()
         {
@@ -460,13 +588,28 @@ namespace ADOFAI.Renderist.Export
                 bool bgStaticReleased = RelinquishTargetTexture(_bgStaticCamera, _oldBgStaticTarget, "Bgcamstatic");
                 bool bgReleased = RelinquishTargetTexture(_bgCamera, _oldBgTarget, "BGcam");
                 bool mainReleased = RelinquishTargetTexture(_mainCamera, _oldMainTarget, "camobj");
-                bool allHandled = bgStaticReleased & bgReleased & mainReleased;
+
+                // aspect ownership：只在**本次确实写过**、且当前值仍等于 Renderist 写入值时才
+                // ResetAspect()（恢复 Unity 自动行为）；没写过的、或已被外部流程改写的值都不覆盖。
+                bool bgStaticAspectReleased = RelinquishAspect(
+                    _bgStaticCamera, _writtenAspect, _oldBgStaticAspect, "Bgcamstatic", _aspectAssignedCount >= 1);
+                bool bgAspectReleased = RelinquishAspect(
+                    _bgCamera, _writtenAspect, _oldBgAspect, "BGcam", _aspectAssignedCount >= 2);
+                bool mainAspectReleased = RelinquishAspect(
+                    _mainCamera, _writtenAspect, _oldMainAspect, "camobj", _aspectAssignedCount >= 3);
+
+                bool allHandled = bgStaticReleased & bgReleased & mainReleased &
+                                  bgStaticAspectReleased & bgAspectReleased & mainAspectReleased;
 
                 if (!allHandled || IsCaptureTargetStillReferenced())
                 {
                     Log.Warn("FrameCaptureDriver: capture source 释放未完成，" +
                              "保留 captureTarget 与 ownership 供下一次 cleanup 重试" +
                              " (writeFailed=" + (!allHandled ? "true" : "false") +
+                             " targetTextureReleased=" +
+                             ((bgStaticReleased & bgReleased & mainReleased) ? "true" : "false") +
+                             " aspectReleased=" +
+                             ((bgStaticAspectReleased & bgAspectReleased & mainAspectReleased) ? "true" : "false") +
                              " stillReferenced=" + (IsCaptureTargetStillReferenced() ? "true" : "false") + ")");
                     return false;
                 }
@@ -496,6 +639,11 @@ namespace ADOFAI.Renderist.Export
             _oldBgStaticTarget = null;
             _oldBgTarget = null;
             _oldMainTarget = null;
+            _writtenAspect = 0f;
+            _oldBgStaticAspect = 0f;
+            _oldBgAspect = 0f;
+            _oldMainAspect = 0f;
+            _aspectAssignedCount = 0;
             _captureWidth = 0;
             _captureHeight = 0;
             return true;
@@ -558,6 +706,158 @@ namespace ADOFAI.Renderist.Export
                 Log.Exception("FrameCaptureDriver: 写入 " + label + ".targetTexture 失败", ex);
                 return false;
             }
+        }
+
+        // ================================================================
+        // Camera aspect ownership
+        // ================================================================
+
+        /// <summary>
+        /// 读取单台 Camera 的 aspect baseline。已销毁 / 不可读 / 非有限 / 非正 一律失败：
+        /// 激活前无法确定 baseline 就必须 fail-closed，绝不先写入再指望后续恢复。
+        /// </summary>
+        private static bool TryReadCameraAspect(Camera camera, string label, out float aspect, out string error)
+        {
+            aspect = 0f;
+            error = null;
+
+            if (camera == null)
+            {
+                error = "capture-aspect-camera-missing:" + label;
+                return false;
+            }
+
+            float current;
+            try
+            {
+                current = camera.aspect;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("FrameCaptureDriver: 读取 " + label + ".aspect 失败", ex);
+                error = "capture-aspect-unreadable:" + label;
+                return false;
+            }
+
+            if (float.IsNaN(current) || float.IsInfinity(current) || current <= 0f)
+            {
+                error = "capture-aspect-baseline-invalid:" + label + "=" +
+                        current.ToString("0.######", CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            aspect = current;
+            return true;
+        }
+
+        /// <summary>
+        /// 三台 baseline aspect 是否互相兼容。
+        ///
+        /// 判据刻意**不是**「baseline 是否与屏幕 aspect 数值相等」：targetTexture 由游戏接管后，
+        /// 自动 aspect 的来源未必是屏幕，用等值推断自动模式会产生假判据（因此本实现不做该推断）。
+        /// 这里只要求三台彼此一致——它们共用同一个渲染目标，正常基线必然一致；出现互不一致
+        /// 说明存在 Renderist 无法安全统一、也无法在 cleanup 中无损还原的显式 aspect 基线，
+        /// 因此 fail-closed。
+        /// </summary>
+        private static bool IsAspectBaselineCompatible(
+            float bgStaticAspect, float bgAspect, float mainAspect, out string detail)
+        {
+            bool consistent = AspectEquals(bgStaticAspect, bgAspect) &&
+                              AspectEquals(bgStaticAspect, mainAspect);
+            detail = "Bgcamstatic=" + bgStaticAspect.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " BGcam=" + bgAspect.ToString("0.######", CultureInfo.InvariantCulture) +
+                     " camobj=" + mainAspect.ToString("0.######", CultureInfo.InvariantCulture);
+            return consistent;
+        }
+
+        /// <summary>
+        /// ownership-aware 单 Camera aspect 释放，语义与 <see cref="RelinquishTargetTexture"/> 一致：
+        ///   * 本次从未成功写入该 Camera 的 aspect（<paramref name="aspectWasWritten"/> 为 false，
+        ///     例如 setter 在本台之前就抛异常）→ 没有 aspect ownership 需释放，恒为成功空操作；
+        ///   * 当前值仍等于 Renderist 写入值 → 仍由 Renderist 拥有 → <c>ResetAspect()</c>
+        ///     恢复 Unity 自动行为；
+        ///   * 当前值已被外部流程改写 → 只记录，不覆盖，视为已 relinquish（不是 failure）；
+        ///   * 读取或 ResetAspect 抛异常 → 返回 false，保留 ownership 供下一次 Stop 重试。
+        /// </summary>
+        private static bool RelinquishAspect(
+            Camera camera, float writtenAspect, float baselineAspect, string label, bool aspectWasWritten)
+        {
+            if (camera == null) return true;
+
+            // 本 session 从未写入过 aspect（整个写入阶段未开始，或在本台之前失败）：
+            // 没有 aspect ownership 需释放。绝不去 ResetAspect 一台没写过的 Camera——
+            // 否则在“baseline 数值恰好等于输出 aspect”时会误改外部状态。
+            if (!aspectWasWritten || writtenAspect <= 0f) return true;
+
+            float current;
+            try
+            {
+                current = camera.aspect;
+            }
+            catch (Exception ex)
+            {
+                // 读不到就保守认为仍由 Renderist 拥有，绝不提前丢弃 ownership。
+                Log.Exception("FrameCaptureDriver: 读取 " + label + ".aspect 失败，保留 ownership 供重试", ex);
+                return false;
+            }
+
+            if (!AspectEquals(current, writtenAspect))
+            {
+                Log.Info("FrameCaptureDriver: " + label +
+                         " aspect ownership already relinquished / externally changed; " +
+                         "leaving current aspect untouched (current=" +
+                         current.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " applied=" + writtenAspect.ToString("0.######", CultureInfo.InvariantCulture) +
+                         " baseline=" + baselineAspect.ToString("0.######", CultureInfo.InvariantCulture) + ")");
+                return true;
+            }
+
+            try
+            {
+                camera.ResetAspect();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("FrameCaptureDriver: ResetAspect(" + label + ") 失败，保留 ownership 供重试", ex);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// setter 成功之后的读回校验，**只用于日志**。
+        /// 读回失败或读回值不同都不改变 ownership：ownership 已在第一次 Camera 写入之前登记，
+        /// 因此 partial assignment 绝不会因为读回异常而被漏掉。
+        /// </summary>
+        private static void VerifyAspectAppliedBestEffort(Camera camera, float expected, string label)
+        {
+            if (camera == null) return;
+            try
+            {
+                float readBack = camera.aspect;
+                if (!AspectEquals(readBack, expected))
+                {
+                    Log.Warn("FrameCaptureDriver: " + label +
+                             ".aspect 读回与写入值不同（ownership 已登记，不影响恢复）：readBack=" +
+                             readBack.ToString("0.######", CultureInfo.InvariantCulture) +
+                             " expected=" + expected.ToString("0.######", CultureInfo.InvariantCulture));
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("FrameCaptureDriver: " + label +
+                         ".aspect 读回失败（ownership 已登记，不影响恢复）：" + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// aspect 数值等价判定。只吸收浮点表示 / native 往返误差，
+        /// 不构成 aspect 合法区间，也不限制任何 aspect 取值。
+        /// </summary>
+        private static bool AspectEquals(float a, float b)
+        {
+            float scale = Math.Max(1f, Math.Max(Math.Abs(a), Math.Abs(b)));
+            return Math.Abs(a - b) <= AspectTolerance * scale;
         }
 
         /// <summary>是否仍有任何 live Camera 的 targetTexture 精确引用本次 captureTarget。</summary>
@@ -627,6 +927,7 @@ namespace ADOFAI.Renderist.Export
                        (camera.gameObject.activeInHierarchy ? "true" : "false") +
                        " clearFlags=" + camera.clearFlags +
                        " cullingMask=" + camera.cullingMask.ToString(CultureInfo.InvariantCulture) +
+                       " aspect=" + camera.aspect.ToString("0.######", CultureInfo.InvariantCulture) +
                        " rect=" + rect.x.ToString("0.######", CultureInfo.InvariantCulture) + "," +
                        rect.y.ToString("0.######", CultureInfo.InvariantCulture) + "," +
                        rect.width.ToString("0.######", CultureInfo.InvariantCulture) + "," +

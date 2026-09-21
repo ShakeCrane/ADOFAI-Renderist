@@ -11,7 +11,7 @@ namespace ADOFAI.Renderist
 {
     /// <summary>
     /// Unity Mod Manager entry point for ADOFAI Renderist.
-    /// Phase 3.6.0 Render Time Determinism.
+    /// Phase 3.7.0 Custom Resolution &amp; Supersampling.
     /// Renderist remains passive towards replay / autoplay.
     /// </summary>
     public static class ModEntry
@@ -22,7 +22,7 @@ namespace ADOFAI.Renderist
         /// 当前 mod 版本。与 Info.json / csproj / 启动日志保持同步，
         /// 由 scripts/set-version.ps1 自动同步。
         /// </summary>
-        internal const string ModVersion = "0.3.6.4";
+        internal const string ModVersion = "0.3.7.0";
 
         internal static UnityModManager.ModEntry Mod;
         internal static UnityModManager.ModEntry.ModLogger Logger;
@@ -50,6 +50,12 @@ namespace ADOFAI.Renderist
         private static string _outputFpsText;
         private static bool _outputFpsInputValid = true;
 
+        // 自定义分辨率宽高编辑缓冲。Settings.EditorCustomResolution* 仍是唯一配置来源；
+        // 非法 / 越界输入不会写回 Settings，因此非法 persisted 值不会被 sanitize。
+        private static string _customResolutionWidthText;
+        private static string _customResolutionHeightText;
+        private static bool _geometryInputValid = true;
+
         /// <summary>
         /// UMM entry method, invoked via Info.json's "EntryMethod".
         /// </summary>
@@ -63,6 +69,7 @@ namespace ADOFAI.Renderist
                 Settings = UnityModManager.ModSettings.Load<Settings>(modEntry);
                 ResetEndTailGuiState();
                 ResetOutputFpsGuiState();
+                ResetGeometryGuiState();
 
                 modEntry.OnToggle = OnToggle;
                 modEntry.OnGUI = OnGUI;
@@ -71,7 +78,7 @@ namespace ADOFAI.Renderist
 
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.3.6.4 (Phase 3.6.0 Render Time Determinism).");
+                Log.Info("Loaded ADOFAI Renderist 0.3.7.0 (Phase 3.7.0 Custom Resolution & Supersampling).");
                 return true;
             }
             catch (Exception ex)
@@ -317,6 +324,11 @@ namespace ADOFAI.Renderist
                 }
                 GUILayout.Label(UiText.GuiEnvDetectionPrefix + detectionText, GUI.skin.label);
 
+                // 三台原生谱面 Camera 的当前 aspect（只读诊断）。实机验收需要记录
+                // “导出前”与“导出 / 取消并调整窗口后”的实际值，因此直接显示在 GUI。
+                GUILayout.Label(UiText.GuiEnvChartCameraAspectPrefix +
+                    BuildChartCameraAspectText(report), GUI.skin.label);
+
                 if (report.Readiness != EditorExportReadiness.Ready)
                 {
                     GUILayout.Label(UiText.GuiSeeLogForDetails, GUI.skin.label);
@@ -328,6 +340,27 @@ namespace ADOFAI.Renderist
             }
 
             DrawMasterTimelineHandoffGui();
+        }
+
+        /// <summary>
+        /// 三台原生谱面 Camera 的当前 aspect 文本（Bgcamstatic / BGcam / camobj）。
+        /// 只读诊断：读取失败显示为不可用，绝不阻断导出。
+        /// </summary>
+        private static string BuildChartCameraAspectText(EditorExportReadinessReport report)
+        {
+            if (!string.IsNullOrEmpty(report.ChartCameraAspectError))
+                return UiText.GuiEnvNotAvailable + "（" + report.ChartCameraAspectError + "）";
+
+            return FormatAspect(report.ChartCameraBgcamstaticAspect) + " / " +
+                   FormatAspect(report.ChartCameraBgcamAspect) + " / " +
+                   FormatAspect(report.ChartCameraCamobjAspect);
+        }
+
+        private static string FormatAspect(float? aspect)
+        {
+            return aspect.HasValue
+                ? aspect.Value.ToString("0.######", CultureInfo.InvariantCulture)
+                : UiText.GuiEnvNotAvailable;
         }
 
         private static string ReadinessText(EditorExportReadinessReport report)
@@ -342,6 +375,8 @@ namespace ADOFAI.Renderist
                         return UiText.GuiEndTailDependenciesUnavailable;
                     case EditorExportReadinessReason.EndTailExceedsSafetyLimit:
                         return UiText.GuiEndTailExceedsSafety;
+                    case EditorExportReadinessReason.InvalidOutputGeometry:
+                        return UiText.GuiReadinessInvalidOutputGeometry;
                 }
             }
 
@@ -362,6 +397,7 @@ namespace ADOFAI.Renderist
             DrawOutputFpsGui();
             DrawEndTailGui();
             DrawImageOutputGui();
+            DrawGeometryGui();
 
             EditorExportSession session = EditorExportController.CurrentSession;
             GUILayout.Label(UiText.GuiMasterTimelineHandoffStatusPrefix +
@@ -542,6 +578,147 @@ namespace ADOFAI.Renderist
             {
                 GUILayout.Label(UiText.GuiImageOutputDisabledHint, GUI.skin.label);
             }
+        }
+
+        /// <summary>
+        /// 「自定义输出分辨率」开关 + 宽高输入（Phase 3.7.0）。
+        ///
+        /// 唯一配置来源是 Settings.EditorCustomResolution*；本方法只提供编辑入口。
+        /// 只接受正整数且不超过真实硬件上限：空值 / 非法 / 越界一律不写入 Settings，
+        /// 因此**非法 persisted 值保持非法并 fail-closed**，不会被 sanitize 成默认值。
+        ///
+        /// 与 Output FPS / End Tail / 图像输出一致：session 进行中禁止编辑；真正的冻结与
+        /// 校验由 preflight 与 scheduler 在 Start 时完成。
+        /// </summary>
+        private static void DrawGeometryGui()
+        {
+            bool previousEnabled = GUI.enabled;
+            GUI.enabled = previousEnabled && !EditorExportController.IsBusy;
+
+            bool newValue = GUILayout.Toggle(
+                Settings.EditorCustomResolutionEnabled,
+                UiText.GuiCustomResolutionToggle);
+            if (newValue != Settings.EditorCustomResolutionEnabled)
+            {
+                Settings.EditorCustomResolutionEnabled = newValue;
+                // 影响 preflight：使 readiness 缓存失效。
+                _lastReadinessCacheRealtime = float.NegativeInfinity;
+            }
+
+            GUI.enabled = previousEnabled;
+
+            if (!Settings.EditorCustomResolutionEnabled)
+            {
+                GUILayout.Label(UiText.GuiCustomResolutionDisabledHint, GUI.skin.label);
+                return;
+            }
+
+            EnsureGeometryGuiState();
+
+            bool inputEnabled = GUI.enabled;
+            GUI.enabled = inputEnabled && !EditorExportController.IsBusy;
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(UiText.GuiCustomResolutionWidthLabel, GUI.skin.label, GUILayout.Width(82f));
+            string changedWidth = GUILayout.TextField(
+                _customResolutionWidthText ?? string.Empty, GUILayout.Width(110f));
+            if (!string.Equals(changedWidth, _customResolutionWidthText, StringComparison.Ordinal))
+            {
+                _customResolutionWidthText = changedWidth;
+                ApplyGeometryTextInput();
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(UiText.GuiCustomResolutionHeightLabel, GUI.skin.label, GUILayout.Width(82f));
+            string changedHeight = GUILayout.TextField(
+                _customResolutionHeightText ?? string.Empty, GUILayout.Width(110f));
+            if (!string.Equals(changedHeight, _customResolutionHeightText, StringComparison.Ordinal))
+            {
+                _customResolutionHeightText = changedHeight;
+                ApplyGeometryTextInput();
+            }
+            GUILayout.EndHorizontal();
+
+            // 始终显示当前真正生效的 persisted 值：输入非法时它不会与输入框内容一致。
+            GUILayout.Label(UiText.GuiCustomResolutionEffectivePrefix +
+                Settings.EditorCustomResolutionWidth.ToString(CultureInfo.InvariantCulture) + "x" +
+                Settings.EditorCustomResolutionHeight.ToString(CultureInfo.InvariantCulture),
+                GUI.skin.label);
+
+            GUI.enabled = inputEnabled;
+
+            GUILayout.Label(
+                _geometryInputValid ? UiText.GuiCustomResolutionHint : UiText.GuiCustomResolutionInvalid,
+                GUI.skin.label);
+        }
+
+        /// <summary>
+        /// 从 persisted Settings 重建几何 GUI 视图。**不 sanitize、不写回 Settings**：
+        /// 非法 persisted 值如实显示（含 0 / 负数），并由 preflight fail-closed 阻断导出，
+        /// 直到用户显式输入合法值。
+        /// </summary>
+        private static void ResetGeometryGuiState()
+        {
+            _customResolutionWidthText =
+                Settings.EditorCustomResolutionWidth.ToString(CultureInfo.InvariantCulture);
+            _customResolutionHeightText =
+                Settings.EditorCustomResolutionHeight.ToString(CultureInfo.InvariantCulture);
+            _geometryInputValid = ValidateGeometryTexts(out _, out _);
+        }
+
+        private static void EnsureGeometryGuiState()
+        {
+            if (_customResolutionWidthText == null || _customResolutionHeightText == null)
+                ResetGeometryGuiState();
+        }
+
+        private static void ApplyGeometryTextInput()
+        {
+            // 与 preflight / scheduler 共用同一范围规则（OutputGeometryPolicy）。
+            if (!ValidateGeometryTexts(out int width, out int height))
+            {
+                _geometryInputValid = false;
+                return; // 非法或越界输入：不写 Settings。
+            }
+
+            _geometryInputValid = true;
+
+            if (width == Settings.EditorCustomResolutionWidth &&
+                height == Settings.EditorCustomResolutionHeight)
+            {
+                return;
+            }
+
+            // 宽高作为一组写回：绝不留下"只更新了一半"的 persisted 组合。
+            Settings.EditorCustomResolutionWidth = width;
+            Settings.EditorCustomResolutionHeight = height;
+            _lastReadinessCacheRealtime = float.NegativeInfinity;
+        }
+
+        /// <summary>
+        /// 两个输入框都必须通过 OutputGeometryPolicy 的同一条规则（正整数 + 真实硬件上限）。
+        /// 只有两者都合法时才返回 true，并由调用方一次性写回 Settings。
+        /// </summary>
+        private static bool ValidateGeometryTexts(out int width, out int height)
+        {
+            width = Settings.EditorCustomResolutionWidth;
+            height = Settings.EditorCustomResolutionHeight;
+
+            if (!OutputGeometryPolicy.TryParseDimension(
+                    _customResolutionWidthText, "width", out int parsedWidth, out _))
+            {
+                return false;
+            }
+            if (!OutputGeometryPolicy.TryParseDimension(
+                    _customResolutionHeightText, "height", out int parsedHeight, out _))
+            {
+                return false;
+            }
+
+            width = parsedWidth;
+            height = parsedHeight;
+            return true;
         }
 
         /// <summary>

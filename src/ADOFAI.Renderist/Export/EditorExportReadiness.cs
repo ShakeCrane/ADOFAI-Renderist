@@ -47,6 +47,9 @@ namespace ADOFAI.Renderist.Export
         /// <summary>目标帧率不合法。</summary>
         InvalidTargetFrameRate,
 
+        /// <summary>自定义输出分辨率非法（非正整数或超过真实硬件上限）。</summary>
+        InvalidOutputGeometry,
+
         /// <summary>输出目录非法。</summary>
         InvalidOutputDirectory,
 
@@ -94,5 +97,37 @@ namespace ADOFAI.Renderist.Export
         /// </summary>
         public long? SafetyFrameLimit { get; set; }
         public string EndTailValidationError { get; set; }
+
+        // ---- Phase 3.7.0: 输出几何 ----
+
+        /// <summary>本报告解析出的输出几何来源方式。</summary>
+        public GeometryMode? OutputGeometryMode { get; set; }
+
+        /// <summary>解析后的输出宽度；几何非法时为 null。</summary>
+        public int? OutputWidth { get; set; }
+
+        /// <summary>解析后的输出高度；几何非法时为 null。</summary>
+        public int? OutputHeight { get; set; }
+
+        /// <summary>统一输出 aspect（width / height）；几何非法时为 null。</summary>
+        public double? OutputAspect { get; set; }
+
+        /// <summary>Settings 中 persisted 的自定义宽高（诊断用，未经解析）。</summary>
+        public int? ConfiguredCustomWidth { get; set; }
+
+        public int? ConfiguredCustomHeight { get; set; }
+
+        /// <summary>输出几何校验失败原因；null 表示合法。</summary>
+        public string GeometryValidationError { get; set; }
+
+        // ---- Phase 3.7.0: 三台原生谱面 Camera 的 aspect 诊断 ----
+        //
+        // 只读诊断：为实机验收记录“导出前 / 导出后”的三台 Camera.aspect。
+        // 任一读取失败对应字段为 null，不构成阻断条件。
+
+        public float? ChartCameraBgcamstaticAspect { get; set; }
+        public float? ChartCameraBgcamAspect { get; set; }
+        public float? ChartCameraCamobjAspect { get; set; }
+        public string ChartCameraAspectError { get; set; }
     }
 }

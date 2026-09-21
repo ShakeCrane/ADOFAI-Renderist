@@ -77,6 +77,19 @@ namespace ADOFAI.Renderist
         public const string GuiImageOutputToggle = " 输出 PNG 图像";
         public const string GuiImageOutputDisabledHint =
             "已关闭图像输出（log-only）：帧事务与时间推进照常执行，但不写 PNG 文件，仅写 metadata.json。";
+        // ---- Phase 3.7.0: 自定义输出分辨率 ----
+        public const string GuiCustomResolutionToggle = " 自定义输出分辨率";
+        public const string GuiCustomResolutionWidthLabel = "输出宽度：";
+        public const string GuiCustomResolutionHeightLabel = "输出高度：";
+        public const string GuiCustomResolutionEffectivePrefix = "实际输出：";
+        public const string GuiCustomResolutionInvalid =
+            "自定义分辨率输入无效：必须是正整数，且不得超过硬件上限；设置未被修改，导出保持阻断。";
+        public const string GuiCustomResolutionDisabledHint =
+            "已关闭自定义分辨率：沿用当前游戏窗口渲染分辨率（与既有行为一致）。";
+        public const string GuiCustomResolutionHint =
+            "导出期间三台谱面 Camera 统一使用该宽高比；异常时以 fail-closed 拒绝启动。";
+        public const string GuiReadinessInvalidOutputGeometry = "输出分辨率非法";
+        public const string GuiEnvChartCameraAspectPrefix = "谱面相机 aspect：";
         public const string GuiMasterTimelineHandoffBtnStart = "启动 MasterTimeline Deterministic Gameplay Handoff";
         public const string GuiMasterTimelineHandoffBtnStop = "停止 MasterTimeline Deterministic Gameplay Handoff";
 

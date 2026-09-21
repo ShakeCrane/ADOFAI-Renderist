@@ -185,12 +185,28 @@ namespace ADOFAI.Renderist.Export
                 // 自己的 _imageOutputEnabled 持有，运行中修改 GUI 不影响本 session。
                 bool imageOutputEnabled = settings.EditorImageOutputEnabled;
 
+                // 输出几何同样在 session 开始时一次性冻结。authority 是 scheduler 自己用
+                // 同一个纯函数解析的结果；这里先按同一配置解析一次，用于启动前写 metadata。
+                var geometryInput = new GeometryInput(
+                    settings.EditorCustomResolutionEnabled,
+                    settings.EditorCustomResolutionWidth,
+                    settings.EditorCustomResolutionHeight);
+                OutputGeometryPolicy.TryResolve(
+                    geometryInput, out GeometryResolution geometry, out _);
+
                 session = new EditorExportSession(sessionId, dir, report.EditorEnv.SceneName)
                 {
                     State = EditorExportState.Preparing,
                     StateDetail = "正在启动确定性帧调度器。",
                     OutputFps = outputFps,
                     ImageOutputEnabled = imageOutputEnabled,
+                    OutputGeometryMode = OutputGeometryPolicy.KindLabel(geometry.Mode),
+                    GeometryCustomResolutionEnabled = geometryInput.CustomResolutionEnabled,
+                    GeometryConfiguredWidth = geometryInput.Width,
+                    GeometryConfiguredHeight = geometryInput.Height,
+                    OutputWidth = geometry.Width,
+                    OutputHeight = geometry.Height,
+                    OutputAspect = geometry.Aspect,
                     SafetyPolicy = SafetyFrameLimitPolicy.KindLabel(safety.Kind),
                     SafetyFrameLimit = safety.FrameLimit > 0 ? safety.FrameLimit : (long?)null,
                     SafetyDurationSeconds = safety.FrameLimit > 0
@@ -221,7 +237,7 @@ namespace ADOFAI.Renderist.Export
                 // 这里是 terminal re-arm 后的正常路径；只允许一次 official Play。
                 string reject = DeterministicFrameScheduler.TryStart(
                     session.OutputDirectory, outputFps, configuredSafetyFrameLimit, endTailInput,
-                    imageOutputEnabled, false);
+                    geometryInput, imageOutputEnabled, false);
                 if (reject != null)
                 {
                     LastStartRejectReason = reject;
@@ -530,6 +546,15 @@ namespace ADOFAI.Renderist.Export
         {
             // 以 scheduler 实际冻结的模式为准（它才是本 session 执行时使用的值）。
             session.ImageOutputEnabled = DeterministicFrameScheduler.ImageOutputEnabled;
+            // 输出几何：以 scheduler 冻结的解析结果为准（legacy 模式的窗口尺寸也在那里冻结）。
+            session.OutputGeometryMode = DeterministicFrameScheduler.GeometryModeLabel;
+            session.GeometryCustomResolutionEnabled = DeterministicFrameScheduler.GeometryCustomResolutionEnabled;
+            session.GeometryConfiguredWidth = DeterministicFrameScheduler.GeometryConfiguredWidth;
+            session.GeometryConfiguredHeight = DeterministicFrameScheduler.GeometryConfiguredHeight;
+            session.OutputWidth = DeterministicFrameScheduler.OutputWidth;
+            session.OutputHeight = DeterministicFrameScheduler.OutputHeight;
+            session.OutputAspect = DeterministicFrameScheduler.OutputAspect;
+            CopyRenderEnvironmentInventory(session);
             session.SafetyPolicy = DeterministicFrameScheduler.SafetyPolicy;
             session.SafetyFrameLimit = DeterministicFrameScheduler.SafetyFrameLimit;
             session.SafetyDurationSeconds = DeterministicFrameScheduler.SafetyDurationSeconds;
@@ -540,6 +565,30 @@ namespace ADOFAI.Renderist.Export
             session.ResolvedTailBeats = DeterministicFrameScheduler.ResolvedTailBeats;
             session.CompletionBpm = DeterministicFrameScheduler.CompletionBpm;
             session.Pitch = DeterministicFrameScheduler.Pitch;
+        }
+
+        /// <summary>
+        /// 把 scheduler 冻结的只读运行时渲染环境 inventory 回填到 session metadata。
+        /// inventory 缺失（未启动成功）时字段保持 null，绝不伪造值。
+        /// </summary>
+        private static void CopyRenderEnvironmentInventory(EditorExportSession session)
+        {
+            RenderEnvironmentInventory inventory = DeterministicFrameScheduler.EnvironmentInventory;
+            if (inventory == null)
+                return;
+
+            session.ColorSpace = inventory.ColorSpace;
+            session.GraphicsDeviceType = inventory.GraphicsDeviceType;
+            session.GraphicsDeviceName = inventory.GraphicsDeviceName;
+            session.GraphicsDeviceVersion = inventory.GraphicsDeviceVersion;
+            session.GraphicsShaderLevel = inventory.GraphicsShaderLevel;
+            session.MaxTextureSize = inventory.MaxTextureSize;
+            session.SupportsComputeShaders = inventory.SupportsComputeShaders;
+            session.SystemMemorySizeMb = inventory.SystemMemorySizeMb;
+            session.RenderTextureFormat = inventory.RenderTextureFormat;
+            session.RenderTextureGraphicsFormat = inventory.RenderTextureGraphicsFormat;
+            session.RenderTextureAntiAliasing = inventory.RenderTextureAntiAliasing;
+            session.RenderTextureUseMipMap = inventory.RenderTextureUseMipMap;
         }
 
         /// <summary>轻量环境校验：Mod 启用、未离开编辑器、定期校验当前会话固定目录。</summary>

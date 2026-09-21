@@ -7,11 +7,13 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 确定性编辑器导出会话数据模型（Phase 3.6.0）。
+    /// 确定性编辑器导出会话数据模型（Phase 3.7.0）。
     ///
     /// 保存本阶段真实存在的信息：会话 ID、开始/结束时间、输出目录、当前状态、
     /// TickCount（Unity OnUpdate 推进次数，不是导出帧号）、OutputFps、tail / safety policy、
-    /// 输出模式（image output enabled / log-only）、逻辑帧事务计数与 PNG 写盘计数、
+    /// 输出模式（image output enabled / log-only）、输出几何（legacy-window /
+    /// custom-resolution 及其冻结宽高与统一 aspect）、只读运行时渲染环境 inventory
+    /// （色彩空间 / GPU / capture RenderTexture 形态）、逻辑帧事务计数与 PNG 写盘计数、
     /// canonical completion 观测结果、终止分类、场景名。
     ///
     /// 计数语义（两个模式共用同一条帧事务与唯一 CommitFrame）：
@@ -73,7 +75,42 @@ namespace ADOFAI.Renderist.Export
         public long CaptureWidth;
         public long CaptureHeight;
 
-        private const string PhaseLabel = "Phase 3.6.0 Render Time Determinism";
+        // ---- Phase 3.7.0: 输出几何 ----
+
+        /// <summary>本 session 的输出几何来源方式：legacy-window | custom-resolution。</summary>
+        public string OutputGeometryMode;
+        /// <summary>本 session 开始时冻结的“是否使用自定义分辨率”。</summary>
+        public bool GeometryCustomResolutionEnabled;
+        /// <summary>Settings 中 persisted 的自定义宽度（诊断用，未经解析、未 sanitize）。</summary>
+        public long GeometryConfiguredWidth;
+        /// <summary>Settings 中 persisted 的自定义高度（诊断用，未经解析、未 sanitize）。</summary>
+        public long GeometryConfiguredHeight;
+        /// <summary>本 session 冻结的输出宽度（= capture RenderTexture 宽度）。</summary>
+        public long OutputWidth;
+        /// <summary>本 session 冻结的输出高度（= capture RenderTexture 高度）。</summary>
+        public long OutputHeight;
+        /// <summary>本 session 冻结的统一输出 aspect（三台原生 Camera 与 capture RT 共用）。</summary>
+        public double OutputAspect;
+
+        // ---- Phase 3.7.0: 只读运行时渲染环境 inventory ----
+
+        /// <summary>QualitySettings.activeColorSpace（Gamma / Linear）；读取失败为 null。</summary>
+        public string ColorSpace;
+        public string GraphicsDeviceType;
+        public string GraphicsDeviceName;
+        public string GraphicsDeviceVersion;
+        public int? GraphicsShaderLevel;
+        /// <summary>SystemInfo.maxTextureSize：自定义分辨率的真实硬件能力上限来源。</summary>
+        public int? MaxTextureSize;
+        public bool? SupportsComputeShaders;
+        public int? SystemMemorySizeMb;
+        /// <summary>capture RenderTexture 的实际 format / graphicsFormat / MSAA / mipmap。</summary>
+        public string RenderTextureFormat;
+        public string RenderTextureGraphicsFormat;
+        public int? RenderTextureAntiAliasing;
+        public bool? RenderTextureUseMipMap;
+
+        private const string PhaseLabel = "Phase 3.7.0 Custom Resolution & Supersampling";
         /// <summary>PNG 序列模式的既有 mode 值（保持不变，避免破坏既有 metadata 语义）。</summary>
         private const string PngModeLabel = "editor-export-png-sequence";
         /// <summary>log-only（image output disabled）模式的 mode 值。</summary>
@@ -119,6 +156,28 @@ namespace ADOFAI.Renderist.Export
             CaptureSource = null;
             CaptureWidth = 0;
             CaptureHeight = 0;
+            // 输出几何：未被 scheduler 冻结前不得声称任何已解析结果；
+            // legacy-window 是 Settings 默认值对应的模式，因此作为初始标签。
+            OutputGeometryMode = OutputGeometryPolicy.LegacyWindowLabel;
+            GeometryCustomResolutionEnabled = false;
+            GeometryConfiguredWidth = 0;
+            GeometryConfiguredHeight = 0;
+            OutputWidth = 0;
+            OutputHeight = 0;
+            OutputAspect = 0.0;
+            // 运行时环境 inventory：未采集到就保持 null，绝不用占位值冒充真实环境。
+            ColorSpace = null;
+            GraphicsDeviceType = null;
+            GraphicsDeviceName = null;
+            GraphicsDeviceVersion = null;
+            GraphicsShaderLevel = null;
+            MaxTextureSize = null;
+            SupportsComputeShaders = null;
+            SystemMemorySizeMb = null;
+            RenderTextureFormat = null;
+            RenderTextureGraphicsFormat = null;
+            RenderTextureAntiAliasing = null;
+            RenderTextureUseMipMap = null;
             StopReason = null;
             TerminationKind = null;
             CompletionSignal = null;
@@ -184,6 +243,25 @@ namespace ADOFAI.Renderist.Export
             AppendStringNullable(sb, "captureSource", CaptureSource, true);
             AppendLong(sb, "captureWidth", CaptureWidth, true);
             AppendLong(sb, "captureHeight", CaptureHeight, true);
+            AppendString(sb, "outputGeometryMode", OutputGeometryMode ?? string.Empty, true);
+            AppendBool(sb, "geometryCustomResolutionEnabled", GeometryCustomResolutionEnabled, true);
+            AppendLong(sb, "geometryConfiguredWidth", GeometryConfiguredWidth, true);
+            AppendLong(sb, "geometryConfiguredHeight", GeometryConfiguredHeight, true);
+            AppendLong(sb, "outputWidth", OutputWidth, true);
+            AppendLong(sb, "outputHeight", OutputHeight, true);
+            AppendDouble(sb, "outputAspect", OutputAspect, true);
+            AppendStringNullable(sb, "colorSpace", ColorSpace, true);
+            AppendStringNullable(sb, "graphicsDeviceType", GraphicsDeviceType, true);
+            AppendStringNullable(sb, "graphicsDeviceName", GraphicsDeviceName, true);
+            AppendStringNullable(sb, "graphicsDeviceVersion", GraphicsDeviceVersion, true);
+            AppendIntNullable(sb, "graphicsShaderLevel", GraphicsShaderLevel, true);
+            AppendIntNullable(sb, "maxTextureSize", MaxTextureSize, true);
+            AppendBoolNullable(sb, "supportsComputeShaders", SupportsComputeShaders, true);
+            AppendIntNullable(sb, "systemMemorySizeMb", SystemMemorySizeMb, true);
+            AppendStringNullable(sb, "renderTextureFormat", RenderTextureFormat, true);
+            AppendStringNullable(sb, "renderTextureGraphicsFormat", RenderTextureGraphicsFormat, true);
+            AppendIntNullable(sb, "renderTextureAntiAliasing", RenderTextureAntiAliasing, true);
+            AppendBoolNullable(sb, "renderTextureUseMipMap", RenderTextureUseMipMap, true);
             AppendLong(sb, "frameTransactionRequestCount", FrameTransactionRequestCount, true);
             AppendLong(sb, "logicalFrameCount", LogicalFrameCount, true);
             AppendLong(sb, "captureRequestCount", CaptureRequestCount, true);
@@ -225,6 +303,22 @@ namespace ADOFAI.Renderist.Export
         {
             sb.Append("  \"").Append(name).Append("\": ");
             if (value.HasValue) sb.Append(value.Value.ToString(CultureInfo.InvariantCulture));
+            else sb.Append("null");
+            sb.Append(comma ? ",\n" : "\n");
+        }
+
+        private static void AppendIntNullable(StringBuilder sb, string name, int? value, bool comma)
+        {
+            sb.Append("  \"").Append(name).Append("\": ");
+            if (value.HasValue) sb.Append(value.Value.ToString(CultureInfo.InvariantCulture));
+            else sb.Append("null");
+            sb.Append(comma ? ",\n" : "\n");
+        }
+
+        private static void AppendBoolNullable(StringBuilder sb, string name, bool? value, bool comma)
+        {
+            sb.Append("  \"").Append(name).Append("\": ");
+            if (value.HasValue) sb.Append(value.Value ? "true" : "false");
             else sb.Append("null");
             sb.Append(comma ? ",\n" : "\n");
         }

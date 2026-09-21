@@ -56,6 +56,34 @@ namespace ADOFAI.Renderist
         /// </summary>
         public bool EditorImageOutputEnabled = true;
 
+        // ---------------- Phase 3.7.0: custom output resolution ----------------
+
+        /// <summary>
+        /// 是否使用自定义输出分辨率。默认 false = 沿用当前游戏窗口渲染分辨率
+        /// （Screen.width / Screen.height），保持 0.3.6.4 行为。
+        ///
+        /// true 时使用 EditorCustomResolutionWidth / EditorCustomResolutionHeight
+        /// 作为输出（以及 capture RenderTexture、三台原生 Camera aspect）的唯一来源。
+        ///
+        /// 该值在 session 开始时一次性冻结；运行中修改 GUI 不影响当前 session。
+        /// </summary>
+        public bool EditorCustomResolutionEnabled = false;
+
+        /// <summary>
+        /// 自定义输出宽度（像素）。只在 EditorCustomResolutionEnabled 为 true 时参与导出。
+        ///
+        /// 必须是正整数，且不得超过当前 GPU 的 SystemInfo.maxTextureSize（真实硬件能力）。
+        /// **非法 persisted 值不自动修复**：它保持非法并 fail-closed，直到用户显式改成
+        /// 合法值（与 persisted End Tail 的方案 A 语义一致）。
+        ///
+        /// OutputGeometryPolicy 是唯一判定点；这里不定义任何产品级性能上限。
+        /// 该值在 session 开始时一次性冻结。
+        /// </summary>
+        public int EditorCustomResolutionWidth = OutputGeometryPolicy.DefaultCustomWidth;
+
+        /// <summary>自定义输出高度（像素）。语义同 <see cref="EditorCustomResolutionWidth"/>。</summary>
+        public int EditorCustomResolutionHeight = OutputGeometryPolicy.DefaultCustomHeight;
+
         /// <summary>
         /// Optional safety-only output-frame limit for a session that never reaches
         /// native completion. 0 (default) and the historical default 36000 both mean

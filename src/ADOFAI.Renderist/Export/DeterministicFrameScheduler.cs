@@ -123,6 +123,21 @@ namespace ADOFAI.Renderist.Export
         private static int _captureWidth;
         private static int _captureHeight;
 
+        // ---- Phase 3.7.0: 输出几何（session 开始时一次性冻结）----
+        //
+        // 唯一 authority：OutputGeometryPolicy.TryResolve 在 TryStart 里解析一次，之后
+        // FrameCaptureDriver 只消费这里的冻结值，**不再**读取 Screen。这样 session 中途
+        // 改变窗口尺寸不会造成 capture RT 尺寸与 Camera aspect ownership 不一致。
+        private static GeometryMode _geometryMode = GeometryMode.LegacyWindow;
+        private static bool _geometryCustomResolutionEnabled;
+        private static int _geometryConfiguredWidth;
+        private static int _geometryConfiguredHeight;
+        private static int _outputWidth;
+        private static int _outputHeight;
+
+        /// <summary>session 开始时采集的只读运行时渲染环境 inventory（metadata 用）。</summary>
+        private static RenderEnvironmentInventory _environmentInventory;
+
         // Unity frame 域（Time.frameCount）与逐帧命中数保持 int：
         // 前者是 Unity API 的帧计数器，后者上界是当前谱面 floor 数。
         private static int _awaitFrameCount;
@@ -299,6 +314,23 @@ namespace ADOFAI.Renderist.Export
         public static string CaptureSource => _captureSource;
         public static int CaptureWidth => _captureWidth;
         public static int CaptureHeight => _captureHeight;
+        /// <summary>本 session 冻结的输出几何来源方式标签：legacy-window | custom-resolution。</summary>
+        public static string GeometryModeLabel => OutputGeometryPolicy.KindLabel(_geometryMode);
+        /// <summary>本 session 开始时冻结的“是否使用自定义分辨率”。</summary>
+        public static bool GeometryCustomResolutionEnabled => _geometryCustomResolutionEnabled;
+        /// <summary>Settings 里 persisted 的自定义宽度（诊断用，未解析）。</summary>
+        public static int GeometryConfiguredWidth => _geometryConfiguredWidth;
+        /// <summary>Settings 里 persisted 的自定义高度（诊断用，未解析）。</summary>
+        public static int GeometryConfiguredHeight => _geometryConfiguredHeight;
+        /// <summary>本 session 冻结的输出宽度（= capture RenderTexture 宽度）。</summary>
+        public static int OutputWidth => _outputWidth;
+        /// <summary>本 session 冻结的输出高度（= capture RenderTexture 高度）。</summary>
+        public static int OutputHeight => _outputHeight;
+        /// <summary>本 session 冻结的统一输出 aspect（三台原生 Camera 与 capture RT 共用）。</summary>
+        public static double OutputAspect =>
+            _outputHeight > 0 ? (double)_outputWidth / _outputHeight : 0.0;
+        /// <summary>session 开始时采集的运行时渲染环境 inventory；未启动时为 null。</summary>
+        public static RenderEnvironmentInventory EnvironmentInventory => _environmentInventory;
         public static bool CanonicalCompletionCallbackSeen => _canonicalCompletionCallbackSeen;
         public static bool CanonicalCompletionStateSeen => _canonicalCompletionStateSeen;
         public static long CanonicalCompletionFrameIndex => _canonicalCompletionFrameIndex;
@@ -323,9 +355,14 @@ namespace ADOFAI.Renderist.Export
         ///
         /// imageOutputEnabled 是 session 开始时冻结的输出模式（PNG / log-only）。
         /// 它在这里一次性冻结，session 期间不再读取 Settings。
+        ///
+        /// geometryInput 是 session 开始时冻结的输出几何配置（自定义分辨率或沿用窗口）。
+        /// 解析结果同时决定 capture RenderTexture 尺寸与三台原生 Camera 的统一 aspect；
+        /// session 期间不再读取 Settings，也不再读取 Screen（legacy 模式在解析时读一次）。
         /// </summary>
         public static string TryStart(string outputDirectory, int outputFps, int configuredSafetyFrameLimit,
-            EndTailInput endTailInput, bool imageOutputEnabled, bool allowExpectedTerminalControllerFail = false)
+            EndTailInput endTailInput, GeometryInput geometryInput, bool imageOutputEnabled,
+            bool allowExpectedTerminalControllerFail = false)
         {
             if (_running || !Terminal && _status != SchedulerStatus.Idle)
             {
@@ -362,6 +399,15 @@ namespace ADOFAI.Renderist.Export
                     return "output-fps-invalid:" + outputFpsError;
                 }
 
+                // 输出几何：在 session 开始时一次性解析并冻结。自定义分辨率关闭时等价于
+                // 冻结当时的 Screen 尺寸（保持 0.3.6.4 行为）；非法 persisted 值 fail-closed，
+                // **不**自动修复、也不替换为默认值。
+                if (!OutputGeometryPolicy.TryResolve(
+                        geometryInput, out GeometryResolution geometry, out string geometryError))
+                {
+                    return "output-geometry-invalid:" + geometryError;
+                }
+
                 _status = SchedulerStatus.Preparing;
                 _running = true;
                 _restored = false;
@@ -376,6 +422,15 @@ namespace ADOFAI.Renderist.Export
                 _safetyPolicyKind = safety.Kind;
                 _configuredSafetyFrameLimit = safety.ConfiguredFrameLimit;
                 _endTailInput = endTailInput;
+                _geometryMode = geometry.Mode;
+                _geometryCustomResolutionEnabled = geometryInput.CustomResolutionEnabled;
+                _geometryConfiguredWidth = geometryInput.Width;
+                _geometryConfiguredHeight = geometryInput.Height;
+                _outputWidth = geometry.Width;
+                _outputHeight = geometry.Height;
+                // 环境 inventory 只在 session 开始时采集一次；capture target 形态在
+                // source activation 成功后补填（见 FrameCaptureDriver.CaptureRenderTargetInventory）。
+                _environmentInventory = RenderEnvironmentInventory.Capture();
                 _initializationDeadlineRealtime = Time.realtimeSinceStartupAsDouble + PlaybackReadyTimeoutSeconds;
 
                 SaveState();
@@ -519,6 +574,18 @@ namespace ADOFAI.Renderist.Export
                 Log.Info("DeterministicFrameScheduler frozen output mode: imageOutputEnabled=" +
                          (_imageOutputEnabled ? "true" : "false") +
                          " mode=" + (_imageOutputEnabled ? "png-sequence" : "log-only"));
+                Log.Info("DeterministicFrameScheduler frozen output geometry: " +
+                         OutputGeometryPolicy.DescribeGeometryWithMode(geometry) +
+                         " customResolutionEnabled=" + (_geometryCustomResolutionEnabled ? "true" : "false") +
+                         " configuredCustomSize=" +
+                         _geometryConfiguredWidth.ToString(CultureInfo.InvariantCulture) + "x" +
+                         _geometryConfiguredHeight.ToString(CultureInfo.InvariantCulture) +
+                         " maxTextureSize=" +
+                         OutputGeometryPolicy.TryReadMaxTextureSize().ToString(CultureInfo.InvariantCulture));
+                Log.Info("DeterministicFrameScheduler render environment inventory: " +
+                         (_environmentInventory == null
+                             ? RenderEnvironmentInventory.UnavailableLabel
+                             : _environmentInventory.Describe()));
                 Log.Info("DeterministicFrameScheduler End Tail: input=" +
                          _endTailInput.Value.ToString("0.######", CultureInfo.InvariantCulture) +
                          " " + _endTailInput.Unit +
@@ -640,6 +707,14 @@ namespace ADOFAI.Renderist.Export
             _captureSource = null;
             _captureWidth = 0;
             _captureHeight = 0;
+            // 输出几何在 TryStart 内解析后重新冻结；这里先归零，避免继承上一 session。
+            _geometryMode = GeometryMode.LegacyWindow;
+            _geometryCustomResolutionEnabled = false;
+            _geometryConfiguredWidth = 0;
+            _geometryConfiguredHeight = 0;
+            _outputWidth = 0;
+            _outputHeight = 0;
+            _environmentInventory = null;
             _captureRequestCount = 0;
             _capturedFrameCount = 0;
             _frameTransactionRequestCount = 0;
@@ -919,7 +994,7 @@ namespace ADOFAI.Renderist.Export
                              preEntryCandidate + "");
 
                     if (!FrameCaptureDriver.TryActivateCameraSource(
-                            _captureGeneration, out string earlyCameraSourceError))
+                            _captureGeneration, _outputWidth, _outputHeight, out string earlyCameraSourceError))
                     {
                         Log.Warn("PreEntry source activation failed: " +
                                  (earlyCameraSourceError ?? "unknown") + "");
@@ -932,6 +1007,7 @@ namespace ADOFAI.Renderist.Export
                     _captureSource = FrameCaptureDriver.CameraSourceLabel;
                     _captureWidth = FrameCaptureDriver.CaptureWidth;
                     _captureHeight = FrameCaptureDriver.CaptureHeight;
+                    FrameCaptureDriver.CaptureRenderTargetInventory(_environmentInventory);
                     _preEntryCapturing = true;
                     _preEntryLastCaptureUnityFrame = -1;
                     Log.Info("PreEntry source active: first successful frame transaction " +
@@ -1091,7 +1167,7 @@ namespace ADOFAI.Renderist.Export
             // 不重复写 Camera targetTexture。
             if (!FrameCaptureDriver.HasActiveCameraSource &&
                 !FrameCaptureDriver.TryActivateCameraSource(
-                    _captureGeneration, out string cameraSourceError))
+                    _captureGeneration, _outputWidth, _outputHeight, out string cameraSourceError))
             {
                 Log.Warn("DeterministicFrameScheduler: capture source activation failed: " +
                          (cameraSourceError ?? "unknown"));
@@ -1102,6 +1178,7 @@ namespace ADOFAI.Renderist.Export
             _captureSource = FrameCaptureDriver.CameraSourceLabel;
             _captureWidth = FrameCaptureDriver.CaptureWidth;
             _captureHeight = FrameCaptureDriver.CaptureHeight;
+            FrameCaptureDriver.CaptureRenderTargetInventory(_environmentInventory);
 
             _activationUnityFrame = Time.frameCount + 1;
             _status = SchedulerStatus.Capturing;
