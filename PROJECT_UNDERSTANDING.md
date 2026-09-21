@@ -426,7 +426,7 @@ metadata 记录：版本/phase/mode/imageOutputEnabled、state/detail/reason/kin
 | --- | --- | --- |
 | 最终代码审查 | 75 项结构断言（覆盖下方 10 项审查重点 + 取消路径 + 范围控制） | 75 PASS / 0 FAIL；**未发现阻塞性问题** |
 | Release Rebuild | `dotnet build -c Release -t:Rebuild` | 0 error / 0 warning；内嵌 `FileVersion=0.3.6.4` |
-| package + verify | `scripts/package-release.ps1 -Configuration Release -Version 0.3.6.4 -Force` | 打包成功；verify **PASS 11 checks / 0 failures** |
+| package + verify | `scripts/package-release.ps1 -Configuration Release -Version 0.3.6.4 -Force`（提交前）与提交后 `-SkipBuild` 重新打包 | 两次均成功；verify **PASS 11 checks / 0 failures** |
 | 发布包内容 | 独立解包复核 | 仅 3 个顶层文件（`Info.json` / `ADOFAI.Renderist.dll` / `LICENSE`），无目录、无 banned 内容；包内 DLL 与 `bin\Release` 逐字节一致 |
 | metadata 计数与序列化 | **临时 harness（生产 `EditorExportSession.cs` + 最小 stub，已删除）** | 20 PASS / 0 FAIL：PNG 251 计数等式、Log-only `ftr=lf=251` 且 PNG 计数为 0、取消形态（`lf=90` / `ftr=91`）无伪提交、`mode` 取值、29 个字段齐全、JSON 严格可解析、无重复键、转义往返 |
 | Settings.xml 向后兼容 | 同 harness（XmlSerializer + 生产 `Settings.cs` 声明比对） | PASS：旧 Settings.xml 缺字段时 `EditorImageOutputEnabled=true`；显式 `false` 可读回/写出；不绑定 `VerboseLogging` |
@@ -539,12 +539,11 @@ metadata 记录：版本/phase/mode/imageOutputEnabled、state/detail/reason/kin
 - 当前产品版本为 `0.3.6.4`（**Log-only Frame Transactions**）；其上的 `0.3.6.3` 为 native deterministic pre-entry / count-in capture 正式化 + persisted End Tail 语义修正。前三位 `0.3.6` 与 Phase `Phase 3.6.0 Render Time Determinism` 均不变（`set-version.ps1` 未改 phase 文案，因此启动日志与 metadata 的 `phase` 保持一致）。
 - 本轮（0.3.6.4 发布收敛）实际同步的版本点：`mod/Info.json Version`、csproj `<Version>`、`ModEntry.ModVersion` 与 `ModEntry` 启动日志。**`EditorExportSession.PhaseLabel` 与 `FrameCaptureDriver` 类注释中的 phase 文案不属于 `set-version.ps1` 的同步范围**，本轮 phase 未变因此无需人工改动。
 - log-only 最小闭环比基线 `9a57ba9` 的改动：`Settings.cs`、`UiText.cs`、`ModEntry.cs`、`EditorExportController.cs`、`EditorExportSession.cs`、`DeterministicFrameScheduler.cs`、`FrameCaptureDriver.cs`（其余文件与受保护文件未改）。
-- 发布包：`Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` ignored。本轮 `package-release.ps1 -Configuration Release -Version 0.3.6.4 -Force` 产出 `dist/ADOFAI.Renderist.zip`（zip SHA256 `B8E81DBF…`），`verify-release-package.ps1` 结果 **PASS 11 checks / 0 failures**，包内仅有 3 个顶层文件。
-- 发布包内 DLL 的 `ProductVersion` 形如 `0.3.6.4+<HEAD 短哈希>`：该 `+hash` 是 SourceLink/InformationalVersion 在构建时记录的 **HEAD 提交**，而非工作区改动。由于打包发生在发布提交之前，包内 `+hash` 指向基线 `9a57ba9`；`FileVersion` 为 `0.3.6.4`。`verify-release-package.ps1` 会比较时剥离该 `+hash` 后缀，因此不影响校验。
+- 发布包：`Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` ignored。本轮以 `scripts/package-release.ps1 -Configuration Release -Version 0.3.6.4 -Force` 打包，并在发布提交后用 `-SkipBuild` 重新打包，产出 `dist/ADOFAI.Renderist.zip`（zip SHA256 `06225EB8F91542CE735ADFB522C1EB2D52D3E155D8B127596129B9D20642F855`，sidecar `dist/ADOFAI.Renderist.zip.sha256` 同值）；`verify-release-package.ps1` 结果 **PASS 11 checks / 0 failures**，包内仅有 3 个顶层文件、无目录、无 banned 内容。
+- 发布包内 DLL 的 `ProductVersion` 形如 `0.3.6.4+<HEAD 短哈希>`：该 `+hash` 是 SourceLink/InformationalVersion 在构建时记录的 **HEAD 提交**，不是工作区改动。最终发布包在发布提交 `bc7e4ea` 之后重建，因此 `ProductVersion = 0.3.6.4+bc7e4ea94a33b90d96cc7117243cfc5d5051ac2b`（`FileVersion = 0.3.6.4`），即包内构建标识精确指向承载本版本的提交。注意：若在打包后再提交任何改动，`+hash` 不会自动更新；应避免在打包后 `amend` 发布提交（会改变哈希并使包内标识失效）。`verify-release-package.ps1` 比较版本时会剥离 `+hash` 后缀。
 - 历史：`0.3.6.1`（Output FPS 无上限、safety 默认 unbounded、long frame chain、autoplay fail-closed、paused 阶段修正）→ `8bceeef` + `1af1205` hardening → `0.3.6.2` → native pre-entry 正式化 + persisted End Tail semantic fix → `0.3.6.3` → Log-only Frame Transactions → `0.3.6.4`。
-- 发布包：`Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` ignored。
 - 自动验证链：
   `dotnet build src/ADOFAI.Renderist/ADOFAI.Renderist.csproj -c Release -t:Rebuild`
   → `scripts/package-release.ps1 -Configuration Release -Force`
   → `scripts/verify-release-package.ps1 -ZipPath dist/ADOFAI.Renderist.zip`。
-- 部署使用 `scripts/copy-to-mods.ps1`，只更新 `Mods\ADOFAI.Renderist\`；路径来自本地 ignored `build/local.props`，未配置时不得猜测。
+- 部署使用 `scripts/copy-to-mods.ps1`，只更新 `Mods\ADOFAI.Renderist\`；路径来自本地 ignored `build/local.props`，未配置时不得猜测。本轮收敛后已部署 0.3.6.4 发布构建（DLL SHA256 `A1AEE36E…`，与 `bin\Release` 及发布包内 DLL 逐字节一致，`ProductVersion=0.3.6.4+bc7e4ea…`）；目录内的 `ADOFAI.Renderist.dll.<pid>.cache` 是 UMM/Mono 通用运行时缓存（`AdofaiTweaks` 同样存在），脚本默认保留。
