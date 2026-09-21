@@ -511,31 +511,44 @@ namespace ADOFAI.Renderist
             }
         }
 
+        /// <summary>
+        /// Rebuild the End Tail GUI view from persisted Settings only.
+        ///
+        /// Persisted state contract: this method must NEVER write Settings.EditorEndTailValue
+        /// or Settings.EditorEndTailUnit, and must never sanitize (no default substitution, no
+        /// clamp to 0, no ceil of fractional Frames). An invalid persisted value therefore stays
+        /// invalid and fail-closed until the user explicitly edits it through
+        /// <see cref="ApplyEndTailTextInput"/>.
+        /// </summary>
         private static void ResetEndTailGuiState()
         {
-            _endTailDisplayedUnit = Enum.IsDefined(typeof(EndTailUnit), Settings.EditorEndTailUnit)
-                ? Settings.EditorEndTailUnit
-                : EndTailPolicy.DefaultUnit;
-            double value = Settings.EditorEndTailValue;
-            if (double.IsNaN(value) || double.IsInfinity(value))
-                value = EndTailPolicy.DefaultValue;
-            else if (value < 0.0)
-                value = 0.0;
-            else if (_endTailDisplayedUnit == EndTailUnit.Frames &&
-                     Math.Abs(value - Math.Round(value)) > 1e-10)
-                value = Math.Ceiling(value);
-
-            // Persist the sanitized pair as well as displaying it. Otherwise an
-            // invalid value loaded from XML could look repaired while preflight
-            // still sees the stale setting.
-            Settings.EditorEndTailUnit = _endTailDisplayedUnit;
-            Settings.EditorEndTailValue = value;
-            _endTailValueText = FormatEndTailValue(value, _endTailDisplayedUnit);
+            _endTailDisplayedUnit = Settings.EditorEndTailUnit;
+            _endTailValueText = FormatPersistedEndTailValue(Settings.EditorEndTailValue);
             _endTailCanonicalSeconds = 0.0;
             _endTailCanonicalSecondsValid = false;
-            _endTailInputValid = true;
+            _endTailInputValid = false;
             _endTailInputError = null;
             _endTailUnitMenuOpen = false;
+
+            // Cheap business validation only (no BPM/pitch dependency); the conversion /
+            // dependency-dependent validation is re-run by EnsureEndTailGuiState once
+            // readiness is cached, so a valid persisted Beats value is not falsely blocked.
+            if (!TryParseEndTailValue(_endTailValueText, _endTailDisplayedUnit, out double value))
+            {
+                _endTailInputError = "end-tail-persisted-invalid";
+                return;
+            }
+
+            var persistedInput = new EndTailInput(value, _endTailDisplayedUnit);
+            if (!EndTailPolicy.TryValidateInput(persistedInput, out string persistedError))
+            {
+                _endTailInputError = string.IsNullOrEmpty(persistedError)
+                    ? "end-tail-persisted-invalid"
+                    : persistedError;
+                return;
+            }
+
+            _endTailInputValid = true;
         }
 
         private static void EnsureEndTailGuiState()
@@ -624,19 +637,27 @@ namespace ADOFAI.Renderist
             EnsureEndTailGuiState();
             if (!_endTailCanonicalSecondsValid)
             {
-                // A Beats value cannot be converted equivalently when BPM/pitch
-                // is unavailable. Still allow the player to escape that unit;
-                // retain the numeric value (ceil once for Frames) and rebuild
-                // conversion state under the newly selected unit.
-                if (!TryParseEndTailValue(_endTailValueText, _endTailDisplayedUnit, out double fallbackValue))
-                    fallbackValue = EndTailPolicy.DefaultValue;
-                if (targetUnit == EndTailUnit.Frames)
-                    fallbackValue = Math.Ceiling(fallbackValue);
+                // Distinguish "not a valid End Tail value" from "valid value whose Beats /
+                // Frames conversion needs BPM/pitch that is not available yet".
+                if (!TryParseEndTailValue(_endTailValueText, _endTailDisplayedUnit, out double currentValue) ||
+                    !EndTailPolicy.TryValidateInput(
+                        new EndTailInput(currentValue, _endTailDisplayedUnit), out _))
+                {
+                    // Persisted/GUI input is invalid: switching the displayed unit must not
+                    // launder it into a default, and must not write Settings. Keep the invalid
+                    // state fail-closed until the user explicitly types a valid value.
+                    _endTailInputValid = false;
+                    _endTailInputError = "end-tail-persisted-invalid";
+                    _lastReadinessCacheRealtime = float.NegativeInfinity;
+                    return;
+                }
 
+                // Valid value that simply cannot be converted yet (deps unavailable): allow
+                // escaping the unit for display/edit only. Re-validation and any Settings
+                // update happen on the next draw or through an explicit user edit.
                 _endTailDisplayedUnit = targetUnit;
-                _endTailValueText = FormatEndTailValue(fallbackValue, targetUnit);
                 _endTailCanonicalSecondsValid = false;
-                ApplyEndTailTextInput();
+                _lastReadinessCacheRealtime = float.NegativeInfinity;
                 return;
             }
 
@@ -737,6 +758,19 @@ namespace ADOFAI.Renderist
             return unit == EndTailUnit.Frames
                 ? Math.Round(value).ToString("0", CultureInfo.InvariantCulture)
                 : value.ToString("0.##########", CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>
+        /// Lossless display of a persisted End Tail value for the GUI view: never rounds,
+        /// ceils, clamps or substitutes a default, so an invalid persisted value stays
+        /// visible exactly as stored (including NaN / Infinity / negative / fractional).
+        /// </summary>
+        private static string FormatPersistedEndTailValue(double value)
+        {
+            if (double.IsNaN(value)) return "NaN";
+            if (double.IsPositiveInfinity(value)) return "Infinity";
+            if (double.IsNegativeInfinity(value)) return "-Infinity";
+            return value.ToString("R", CultureInfo.InvariantCulture);
         }
 
         private static string UnitText(EndTailUnit unit)
