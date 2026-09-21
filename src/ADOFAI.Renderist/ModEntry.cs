@@ -361,22 +361,25 @@ namespace ADOFAI.Renderist
 
             DrawOutputFpsGui();
             DrawEndTailGui();
+            DrawImageOutputGui();
 
             EditorExportSession session = EditorExportController.CurrentSession;
             GUILayout.Label(UiText.GuiMasterTimelineHandoffStatusPrefix +
                 EditorExportController.CurrentState.ToString(), GUI.skin.label);
             if (session != null)
             {
+                // 已提交帧 = 逻辑 commit 数（log-only 模式下 PNG 写盘数为 0，不能用它表示进度）。
                 GUILayout.Label(UiText.GuiMasterTimelineHandoffFramesPrefix +
-                    session.CapturedFrameCount.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
+                    session.LogicalFrameCount.ToString(CultureInfo.InvariantCulture), GUI.skin.label);
                 GUILayout.Label(session.SafetyFrameLimit.HasValue
                     ? UiText.Format(UiText.GuiMasterTimelineHandoffSafetyFormat,
                         session.SafetyFrameLimit.Value.ToString(CultureInfo.InvariantCulture),
                         (session.SafetyDurationSeconds ?? 0.0).ToString("0.###", CultureInfo.InvariantCulture))
                     : UiText.GuiMasterTimelineHandoffSafetyUnbounded,
                     GUI.skin.label);
+                // 视觉尾帧同样按逻辑提交数显示（PNG 与 log-only 的 completion 判定一致）。
                 GUILayout.Label(UiText.GuiMasterTimelineHandoffTailPrefix +
-                    session.TailFramesCaptured.ToString(CultureInfo.InvariantCulture) + "/" +
+                    session.TailFramesCommitted.ToString(CultureInfo.InvariantCulture) + "/" +
                     (session.ResolvedTailFrames?.ToString(CultureInfo.InvariantCulture) ?? "?"), GUI.skin.label);
             }
 
@@ -508,6 +511,36 @@ namespace ADOFAI.Renderist
             {
                 SwitchEndTailUnit(unit);
                 _endTailUnitMenuOpen = false;
+            }
+        }
+
+        /// <summary>
+        /// 「输出 PNG 图像」开关（默认开）。关闭 = log-only：帧事务与时间推进不变，
+        /// 只是不写 PNG 文件（仍写 metadata.json）。
+        ///
+        /// 模式在 session 开始时由 scheduler 一次性冻结；本开关只写 persisted Settings，
+        /// 因此运行中修改它不会影响当前 session。与 Output FPS / End Tail 一致，
+        /// session 进行中禁止编辑，避免用户误以为当前 session 已被改变。
+        /// 不绑定 VerboseLogging。
+        /// </summary>
+        private static void DrawImageOutputGui()
+        {
+            bool previousEnabled = GUI.enabled;
+            GUI.enabled = previousEnabled && !EditorExportController.IsBusy;
+
+            bool newValue = GUILayout.Toggle(
+                Settings.EditorImageOutputEnabled,
+                UiText.GuiImageOutputToggle);
+            if (newValue != Settings.EditorImageOutputEnabled)
+            {
+                Settings.EditorImageOutputEnabled = newValue;
+            }
+
+            GUI.enabled = previousEnabled;
+
+            if (!Settings.EditorImageOutputEnabled)
+            {
+                GUILayout.Label(UiText.GuiImageOutputDisabledHint, GUI.skin.label);
             }
         }
 

@@ -74,6 +74,9 @@ namespace ADOFAI.Renderist
         public const string GuiEndTailInvalid = "结束延长输入无效。";
         public const string GuiEndTailDependenciesUnavailable = "无法读取结束 BPM 或 pitch，不能安全换算拍。";
         public const string GuiEndTailExceedsSafety = "结束延长超过安全帧上限。";
+        public const string GuiImageOutputToggle = " 输出 PNG 图像";
+        public const string GuiImageOutputDisabledHint =
+            "已关闭图像输出（log-only）：帧事务与时间推进照常执行，但不写 PNG 文件，仅写 metadata.json。";
         public const string GuiMasterTimelineHandoffBtnStart = "启动 MasterTimeline Deterministic Gameplay Handoff";
         public const string GuiMasterTimelineHandoffBtnStop = "停止 MasterTimeline Deterministic Gameplay Handoff";
 

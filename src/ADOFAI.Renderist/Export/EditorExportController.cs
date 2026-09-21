@@ -181,11 +181,16 @@ namespace ADOFAI.Renderist.Export
                 var endTailInput = new EndTailInput(
                     settings.EditorEndTailValue, settings.EditorEndTailUnit);
 
+                // 输出模式在 session 开始时一次性冻结：这里读取一次，随后只由 scheduler
+                // 自己的 _imageOutputEnabled 持有，运行中修改 GUI 不影响本 session。
+                bool imageOutputEnabled = settings.EditorImageOutputEnabled;
+
                 session = new EditorExportSession(sessionId, dir, report.EditorEnv.SceneName)
                 {
                     State = EditorExportState.Preparing,
                     StateDetail = "正在启动确定性帧调度器。",
                     OutputFps = outputFps,
+                    ImageOutputEnabled = imageOutputEnabled,
                     SafetyPolicy = SafetyFrameLimitPolicy.KindLabel(safety.Kind),
                     SafetyFrameLimit = safety.FrameLimit > 0 ? safety.FrameLimit : (long?)null,
                     SafetyDurationSeconds = safety.FrameLimit > 0
@@ -215,7 +220,8 @@ namespace ADOFAI.Renderist.Export
 
                 // 这里是 terminal re-arm 后的正常路径；只允许一次 official Play。
                 string reject = DeterministicFrameScheduler.TryStart(
-                    session.OutputDirectory, outputFps, configuredSafetyFrameLimit, endTailInput, false);
+                    session.OutputDirectory, outputFps, configuredSafetyFrameLimit, endTailInput,
+                    imageOutputEnabled, false);
                 if (reject != null)
                 {
                     LastStartRejectReason = reject;
@@ -496,11 +502,15 @@ namespace ADOFAI.Renderist.Export
             s.EndedAtUtc = DateTime.UtcNow;
             s.CaptureRequestCount = DeterministicFrameScheduler.CaptureRequestCount;
             s.CapturedFrameCount = DeterministicFrameScheduler.CapturedFrameCount;
+            s.FrameTransactionRequestCount = DeterministicFrameScheduler.FrameTransactionRequestCount;
+            s.LogicalFrameCount = DeterministicFrameScheduler.LogicalFrameCount;
+            s.WrittenPngFrameCount = DeterministicFrameScheduler.WrittenPngFrameCount;
             s.CaptureSource = DeterministicFrameScheduler.CaptureSource;
             s.CaptureWidth = DeterministicFrameScheduler.CaptureWidth;
             s.CaptureHeight = DeterministicFrameScheduler.CaptureHeight;
             CopyFrozenPolicyFromScheduler(s);
             s.TailFramesCaptured = DeterministicFrameScheduler.TailFramesCaptured;
+            s.TailFramesCommitted = DeterministicFrameScheduler.TailFramesCommitted;
             s.CanonicalCompletionCallbackSeen = DeterministicFrameScheduler.CanonicalCompletionCallbackSeen;
             s.CanonicalCompletionStateSeen = DeterministicFrameScheduler.CanonicalCompletionStateSeen;
             s.CompletionFrameIndex = DeterministicFrameScheduler.CanonicalCompletionFrameIndex;
@@ -513,10 +523,13 @@ namespace ADOFAI.Renderist.Export
 
         /// <summary>
         /// 把 scheduler 在本 session 实际冻结的 policy 回填到 session：
-        /// safety（policy 标签 / 可选 frame 上限 / 可选逻辑时长，unbounded 时为 null）与 End Tail。
+        /// 输出模式（PNG / log-only）、safety（policy 标签 / 可选 frame 上限 / 可选逻辑时长，
+        /// unbounded 时为 null）与 End Tail。
         /// </summary>
         private static void CopyFrozenPolicyFromScheduler(EditorExportSession session)
         {
+            // 以 scheduler 实际冻结的模式为准（它才是本 session 执行时使用的值）。
+            session.ImageOutputEnabled = DeterministicFrameScheduler.ImageOutputEnabled;
             session.SafetyPolicy = DeterministicFrameScheduler.SafetyPolicy;
             session.SafetyFrameLimit = DeterministicFrameScheduler.SafetyFrameLimit;
             session.SafetyDurationSeconds = DeterministicFrameScheduler.SafetyDurationSeconds;

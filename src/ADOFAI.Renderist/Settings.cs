@@ -44,6 +44,19 @@ namespace ADOFAI.Renderist
         public EndTailUnit EditorEndTailUnit = EndTailPolicy.DefaultUnit;
 
         /// <summary>
+        /// 是否把每个 output frame 写成 PNG 文件。默认 true，保持既有 PNG 序列行为。
+        ///
+        /// false = log-only（image output disabled）：帧事务本身完全不变
+        /// （native Update/render → WaitForEndOfFrame → source / generation / pending-index 校验
+        /// → 成功的帧末回调 → 唯一 CommitFrame），只是跳过图像读回、编码与写盘，
+        /// 也不构造 PNG 文件路径。session 仍写入 metadata.json。
+        ///
+        /// 该值在 session 开始时冻结（由 scheduler 持有），运行中修改 GUI 不影响当前 session。
+        /// 与 VerboseLogging 无关。
+        /// </summary>
+        public bool EditorImageOutputEnabled = true;
+
+        /// <summary>
         /// Optional safety-only output-frame limit for a session that never reaches
         /// native completion. 0 (default) and the historical default 36000 both mean
         /// "not configured": no total frame-count and no total-duration limit exists.

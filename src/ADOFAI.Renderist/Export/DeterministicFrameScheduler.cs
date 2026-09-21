@@ -17,7 +17,9 @@ namespace ADOFAI.Renderist.Export
     ///     → ADOFAI 原生 Update
     ///     → Conductor.Update Postfix（RenderistAutoPlay due-floor / Hit(true)）
     ///     → WaitForEndOfFrame
-    ///     → FrameCaptureDriver 同步 PNG
+    ///     → FrameCaptureDriver 帧末事务
+    ///        （PNG：ReadPixels → EncodeToPNG → File.WriteAllBytes；log-only：仅 source / generation /
+    ///          pending-index 校验后返回成功帧末结果）
     ///     → CommitFrame（成功后 outputFrameIndex++）
     ///
     /// 关键不变量：Frame N 未成功捕获，就不提交 N，也不开始 N+1。
@@ -84,7 +86,6 @@ namespace ADOFAI.Renderist.Export
         private static SafetyLimitKind _safetyPolicyKind = SafetyLimitKind.Disabled;
         private static int _configuredSafetyFrameLimit;
         private static long _resolvedTailFrameCount = DefaultTailFrameCount;
-        private static long _tailFramesCaptured;
         private static EndTailInput _endTailInput =
             new EndTailInput(EndTailPolicy.DefaultValue, EndTailPolicy.DefaultUnit);
         private static double _resolvedTailSeconds;
@@ -92,9 +93,22 @@ namespace ADOFAI.Renderist.Export
         private static double? _completionBpm;
         // canonical output frame 编号 / 计数全部是 long：合法 Output FPS 是任意正 int，
         // 且默认 safety unbounded，因此帧号不能依赖 int。
-        private static long _outputFrameIndex;             // 已提交数量，同时也是“下一帧”编号
+        private static long _outputFrameIndex;             // 已提交的逻辑输出帧数量，同时也是“下一帧”编号
+        // 逻辑帧事务（frame transaction）请求数：PNG 与 log-only 都计入。
+        // PNG 模式下它与 _captureRequestCount 同步递增；log-only 模式下 _captureRequestCount 恒为 0。
+        private static long _frameTransactionRequestCount;
+        // PNG 图像请求 / 成功写盘计数。log-only 模式下两者恒为 0（不请求、不写盘）。
         private static long _captureRequestCount;
         private static long _capturedFrameCount;
+        // 尾帧计数拆成逻辑与 PNG 两个维度：completion / End Tail / safety 判定只使用逻辑提交数。
+        private static long _tailFramesCommitted;
+        private static long _tailFramesCaptured;
+
+        /// <summary>
+        /// 本 session 冻结的输出模式：true = PNG 序列，false = log-only（image output disabled）。
+        /// 只在 TryStart 赋值，session 期间不读 Settings，因此运行中修改 GUI 不影响当前 session。
+        /// </summary>
+        private static bool _imageOutputEnabled = true;
 
         private static double _outputTime;
         private static double _forcedSongPosition;
@@ -253,13 +267,29 @@ namespace ADOFAI.Renderist.Export
         /// <summary>Settings 里的原始配置值（诊断用，未解析）。</summary>
         public static int ConfiguredSafetyFrameLimit => _configuredSafetyFrameLimit;
         public static long ResolvedTailFrameCount => _resolvedTailFrameCount;
+        /// <summary>成功提交的**逻辑**尾帧数（PNG 与 log-only 都计入）。completion / End Tail 判定使用它。</summary>
+        public static long TailFramesCommitted => _tailFramesCommitted;
+        /// <summary>成功写盘的 PNG 尾帧数。log-only 模式下恒为 0。</summary>
         public static long TailFramesCaptured => _tailFramesCaptured;
         public static double EndTailInputValue => _endTailInput.Value;
         public static EndTailUnit EndTailInputUnit => _endTailInput.Unit;
         public static double ResolvedTailSeconds => _resolvedTailSeconds;
         public static double? ResolvedTailBeats => _resolvedTailBeats;
         public static double? CompletionBpm => _completionBpm;
+        /// <summary>本 session 冻结的输出模式（true = PNG 序列，false = log-only）。</summary>
+        public static bool ImageOutputEnabled => _imageOutputEnabled;
+        /// <summary>本 session 请求过的逻辑帧事务数（PNG 与 log-only 都计入）。</summary>
+        public static long FrameTransactionRequestCount => _frameTransactionRequestCount;
+        /// <summary>
+        /// 已提交的**逻辑**输出帧数。权威来源就是 <see cref="_outputFrameIndex"/>，
+        /// 不额外维护同步计数器；log-only 与 PNG 都按同一逻辑 commit 推进。
+        /// </summary>
+        public static long LogicalFrameCount => _outputFrameIndex;
+        /// <summary>成功写盘 PNG 的帧数（log-only 模式下恒为 0）。</summary>
+        public static long WrittenPngFrameCount => _capturedFrameCount;
+        /// <summary>PNG 图像请求数（log-only 模式下恒为 0）。</summary>
         public static long CaptureRequestCount => _captureRequestCount;
+        /// <summary>成功写盘 PNG 的帧数；与 <see cref="WrittenPngFrameCount"/> 是同一个计数。</summary>
         public static long CapturedFrameCount => _capturedFrameCount;
         public static double OutputTime => _outputTime;
         public static double ForcedSongPosition => _forcedSongPosition;
@@ -290,9 +320,12 @@ namespace ADOFAI.Renderist.Export
         /// configuredSafetyFrameLimit 是 Settings 的原始配置值（未解析）；
         /// safety policy 在这里结合 outputFps 一次性解析，scheduler 内部只消费
         /// 解析后的 long frame 上限与逻辑时长。
+        ///
+        /// imageOutputEnabled 是 session 开始时冻结的输出模式（PNG / log-only）。
+        /// 它在这里一次性冻结，session 期间不再读取 Settings。
         /// </summary>
         public static string TryStart(string outputDirectory, int outputFps, int configuredSafetyFrameLimit,
-            EndTailInput endTailInput, bool allowExpectedTerminalControllerFail = false)
+            EndTailInput endTailInput, bool imageOutputEnabled, bool allowExpectedTerminalControllerFail = false)
         {
             if (_running || !Terminal && _status != SchedulerStatus.Idle)
             {
@@ -337,6 +370,7 @@ namespace ADOFAI.Renderist.Export
                 ResetRunStateForStart();
 
                 _outputFps = outputFps;
+                _imageOutputEnabled = imageOutputEnabled;
                 SafetyLimitResolution safety = SafetyFrameLimitPolicy.Resolve(configuredSafetyFrameLimit);
                 _safetyFrameLimit = safety.FrameLimit;
                 _safetyPolicyKind = safety.Kind;
@@ -418,9 +452,9 @@ namespace ADOFAI.Renderist.Export
                     return FailStart("autoplay-api-unavailable:" + autoPlayError);
                 }
 
-                // ---- 5) 捕获后端 ----
+                // ---- 5) 帧末事务后端（PNG / log-only 由冻结模式决定；两者共用同一套 host / EOF / cleanup）----
                 if (!FrameCaptureDriver.Start(outputDirectory, FramePrefix, ZeroPadWidth,
-                        OnCaptureResult, out long captureGeneration, out string captureError))
+                        OnCaptureResult, _imageOutputEnabled, out long captureGeneration, out string captureError))
                 {
                     return FailStart("capture-driver-start-failed:" + captureError);
                 }
@@ -482,6 +516,9 @@ namespace ADOFAI.Renderist.Export
                     SafetyPolicy,
                     SafetyFrameLimitPolicy.DescribeFrameLimit(_safetyFrameLimit),
                     outputDirectory));
+                Log.Info("DeterministicFrameScheduler frozen output mode: imageOutputEnabled=" +
+                         (_imageOutputEnabled ? "true" : "false") +
+                         " mode=" + (_imageOutputEnabled ? "png-sequence" : "log-only"));
                 Log.Info("DeterministicFrameScheduler End Tail: input=" +
                          _endTailInput.Value.ToString("0.######", CultureInfo.InvariantCulture) +
                          " " + _endTailInput.Unit +
@@ -605,6 +642,8 @@ namespace ADOFAI.Renderist.Export
             _captureHeight = 0;
             _captureRequestCount = 0;
             _capturedFrameCount = 0;
+            _frameTransactionRequestCount = 0;
+            _tailFramesCommitted = 0;
             _tailFramesCaptured = 0;
             _endTailInput = new EndTailInput(EndTailPolicy.DefaultValue, EndTailPolicy.DefaultUnit);
             _resolvedTailFrameCount = DefaultTailFrameCount;
@@ -895,7 +934,7 @@ namespace ADOFAI.Renderist.Export
                     _captureHeight = FrameCaptureDriver.CaptureHeight;
                     _preEntryCapturing = true;
                     _preEntryLastCaptureUnityFrame = -1;
-                    Log.Info("PreEntry source active: first successful PNG " +
+                    Log.Info("PreEntry source active: first successful frame transaction " +
                              "commit after this point defines absolute output frame 0; ");
                 }
             }
@@ -903,7 +942,7 @@ namespace ADOFAI.Renderist.Export
             if (!IsPlaybackReady(state)) return;
 
             // Never switch to the canonical gameplay clock while the last native
-            // pre-entry PNG transaction is unresolved. Its successful commit owns
+            // pre-entry frame transaction is unresolved. Its successful commit owns
             // the preceding absolute output index.
             if (_preEntryCapturing && _pendingCapture)
                 return;
@@ -1289,7 +1328,7 @@ namespace ADOFAI.Renderist.Export
             if (SafetyFrameLimitPolicy.IsFrameLimitReached(_safetyFrameLimit, _outputFrameIndex))
             {
                 if (_canonicalCompletionStateSeen &&
-                    _tailFramesCaptured >= _resolvedTailFrameCount)
+                    _tailFramesCommitted >= _resolvedTailFrameCount)
                     RequestStop("completed", "canonical-completion-tail-drained");
                 else
                     RequestStop("safety-limit", "safety-frame-limit");
@@ -1350,7 +1389,9 @@ namespace ADOFAI.Renderist.Export
                          "");
             }
 
-            _captureRequestCount++;
+            _frameTransactionRequestCount++;
+            // captureRequestCount 只统计 PNG 图像请求；log-only 模式下保持 0。
+            if (_imageOutputEnabled) _captureRequestCount++;
             if (!FrameCaptureDriver.RequestCapture(_captureGeneration, index))
             {
                 RequestStop("capture-failed", "capture-request-rejected");
@@ -1773,7 +1814,9 @@ namespace ADOFAI.Renderist.Export
             EditorVisualClock.SetActive(true);
 
 
-            _captureRequestCount++;
+            _frameTransactionRequestCount++;
+            // captureRequestCount 只统计 PNG 图像请求；log-only 模式下保持 0。
+            if (_imageOutputEnabled) _captureRequestCount++;
             if (!FrameCaptureDriver.RequestCapture(_captureGeneration, index))
             {
                 RequestStop("capture-failed", "preentry-capture-request-rejected");
@@ -1790,7 +1833,8 @@ namespace ADOFAI.Renderist.Export
         // Capture / Commit（WaitForEndOfFrame）
         // ================================================================
 
-        private static void OnCaptureResult(long generation, long frameIndex, bool success, string filePath, string error)
+        private static void OnCaptureResult(
+            long generation, long frameIndex, bool success, bool imageWritten, string filePath, string error)
         {
             if (!_running) return;
 
@@ -1830,14 +1874,29 @@ namespace ADOFAI.Renderist.Export
                 Log.Error(UiText.Format(UiText.LogSchedulerCaptureFailedFormat,
                     frameIndex.ToString(CultureInfo.InvariantCulture),
                     error ?? "unknown"));
-                RequestStop("capture-failed", "write-png-failed");
+                // 只有 PNG 模式才可能写盘失败；log-only 不写图像，失败原因是帧末事务本身。
+                RequestStop("capture-failed",
+                    _imageOutputEnabled ? "write-png-failed" : "frame-transaction-failed");
                 return;
             }
 
-            CommitFrame(frameIndex, filePath);
+            // 冻结模式与回调给出的 imageWritten 必须一致：这是 metadata 计数等式
+            // （writtenPngFrameCount == logicalFrameCount 仅限 PNG 模式）的前提，
+            // 不一致时 fail-closed，绝不把不清楚来源的帧记成已写盘或已提交。
+            if (imageWritten != _imageOutputEnabled)
+            {
+                Log.Warn("DeterministicFrameScheduler: image-output mode mismatch at frame " +
+                         frameIndex.ToString(CultureInfo.InvariantCulture) +
+                         " frozenImageOutputEnabled=" + (_imageOutputEnabled ? "true" : "false") +
+                         " imageWritten=" + (imageWritten ? "true" : "false"));
+                RequestStop("capture-failed", "frame-transaction-mode-mismatch");
+                return;
+            }
+
+            CommitFrame(frameIndex, imageWritten, filePath);
         }
 
-        private static void CommitFrame(long frameIndex, string filePath)
+        private static void CommitFrame(long frameIndex, bool imageWritten, string filePath)
         {
             if (frameIndex != _outputFrameIndex)
             {
@@ -1855,9 +1914,9 @@ namespace ADOFAI.Renderist.Export
             }
 
             LogFrame0Stage(frameIndex, "COMMIT");
-            // _capturedFrameCount / _captureRequestCount 与 _outputFrameIndex 同步递增，
-            // 且 _outputFrameIndex 全局受 long.MaxValue 边界守卫，因此它们同样不可能回绕。
-            _capturedFrameCount++;
+            // 逻辑帧推进是唯一的帧 authority：_outputFrameIndex 全局受 long.MaxValue 边界守卫，
+            // 因此不可能回绕。PNG 写盘计数只在 imageWritten 时递增（log-only 恒为 0）。
+            if (imageWritten) _capturedFrameCount++;
             _outputFrameIndex++;
 
             if (_preEntryCapturing)
@@ -1866,7 +1925,8 @@ namespace ADOFAI.Renderist.Export
                 _preEntryFrameIndex++;
             }
 
-            // TEMP Trail-aging probe：只在 B-1 的 PNG 已成功 ReadPixels / Encode / Write，
+            // TEMP Trail-aging probe：只在 B-1 的帧末事务成功（PNG 模式下即 ReadPixels / Encode /
+            // Write 全部成功；log-only 模式下即帧末校验通过）
             // 且上一 commit counters 已推进后，才在同一 Unity frame 结束前接管 timeScale。
             // 因此写盘失败绝不会 freeze；下一 hidden Unity frame 从 frame begin 起就应看到
             // timeScale=0 / deltaTime=0，而已完成的 B-1 视觉事务不受影响。
@@ -1884,9 +1944,9 @@ namespace ADOFAI.Renderist.Export
                 }
             }
 
-            // G 的 PNG 已成功 ReadPixels / Encode / Write 且 commit counters 已推进；现在
+            // G 的帧末事务已成功且 commit counters 已推进；现在
             // 才恢复 session 开始时保存的原始 timeScale，使 G+1 从完整 timestep 开始。
-            // G 写盘失败、取消或异常均不会走到这里，而由统一 cleanup 恢复。
+            // G 失败、取消或异常均不会走到这里，而由统一 cleanup 恢复。
             if (_preEntryLifecyclePartialScaleArmed &&
                 _preEntryGameplayStartOutputFrameIndex >= 0 &&
                 frameIndex == _preEntryGameplayStartOutputFrameIndex)
@@ -1905,13 +1965,21 @@ namespace ADOFAI.Renderist.Export
 
             _progressDeadlineRealtime = Time.realtimeSinceStartupAsDouble + FrameProgressWatchdogSeconds;
 
+            // 尾帧计数拆成逻辑 / PNG 两个维度：completion 判定只使用逻辑提交数，
+            // 因此两个模式在相同谱面上的 completionFrameIndex / tailFramesCommitted 必须一致。
             if (_canonicalCompletionStateSeen && frameIndex > _canonicalCompletionFrameIndex)
-                _tailFramesCaptured++;
+            {
+                _tailFramesCommitted++;
+                if (imageWritten) _tailFramesCaptured++;
+            }
 
-            Log.Debug("DeterministicFrameScheduler: commit frame " + frameIndex + " -> " + filePath);
+            Log.Debug("DeterministicFrameScheduler: commit frame " + frameIndex +
+                      " imageWritten=" + (imageWritten ? "true" : "false") +
+                      " imageOutputEnabled=" + (_imageOutputEnabled ? "true" : "false") +
+                      " -> " + (filePath ?? "(no image output)"));
 
             if (_canonicalCompletionStateSeen &&
-                _tailFramesCaptured >= _resolvedTailFrameCount)
+                _tailFramesCommitted >= _resolvedTailFrameCount)
             {
                 RequestStop("completed", "canonical-completion-tail-drained");
                 return;
@@ -2507,10 +2575,11 @@ namespace ADOFAI.Renderist.Export
 
         private static SchedulerStatus MapTerminal(string stopEvent)
         {
-            // Completed 只能来自 canonical completion + 已捕获全部 tail。
+            // Completed 只能来自 canonical completion + 已提交全部 tail。
+            // 判定使用逻辑提交数，因此 PNG 与 log-only 的 completion authority 完全相同。
             if (string.Equals(stopEvent, "completed", StringComparison.Ordinal) &&
                 _canonicalCompletionStateSeen &&
-                _tailFramesCaptured >= _resolvedTailFrameCount)
+                _tailFramesCommitted >= _resolvedTailFrameCount)
             {
                 return SchedulerStatus.Completed;
             }
@@ -2543,7 +2612,10 @@ namespace ADOFAI.Renderist.Export
                 reason.IndexOf("watchdog", StringComparison.OrdinalIgnoreCase) >= 0)
                 return "watchdog";
             if (reason.IndexOf("capture", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                reason.IndexOf("png", StringComparison.OrdinalIgnoreCase) >= 0)
+                reason.IndexOf("png", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                // log-only 的帧末事务失败与 PNG 写盘失败属于同一类终止原因；
+                // 它绝不能被误报成 write-png-failed，但 terminationKind 保持一致。
+                reason.IndexOf("frame-transaction", StringComparison.OrdinalIgnoreCase) >= 0)
                 return "capture-failure";
             return "lifecycle-failure";
         }

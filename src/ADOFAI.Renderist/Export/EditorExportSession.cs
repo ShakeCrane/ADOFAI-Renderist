@@ -11,8 +11,16 @@ namespace ADOFAI.Renderist.Export
     ///
     /// 保存本阶段真实存在的信息：会话 ID、开始/结束时间、输出目录、当前状态、
     /// TickCount（Unity OnUpdate 推进次数，不是导出帧号）、OutputFps、tail / safety policy、
-    /// CaptureRequestCount / CapturedFrameCount（PNG 写盘成功后递增的真实计数）、canonical
-    /// completion 观测结果、终止分类、场景名。
+    /// 输出模式（image output enabled / log-only）、逻辑帧事务计数与 PNG 写盘计数、
+    /// canonical completion 观测结果、终止分类、场景名。
+    ///
+    /// 计数语义（两个模式共用同一条帧事务与唯一 CommitFrame）：
+    ///   * FrameTransactionRequestCount：请求过的逻辑帧事务数（PNG 与 log-only 都计入）。
+    ///   * CaptureRequestCount：PNG 图像请求数（log-only 恒为 0）。
+    ///   * LogicalFrameCount：成功提交的逻辑输出帧数。
+    ///   * WrittenPngFrameCount / CapturedFrameCount：成功写盘 PNG 的帧数（log-only 恒为 0）。
+    ///   * TailFramesCommitted：成功提交的逻辑尾帧数（completion 判定 authority）。
+    ///   * TailFramesCaptured：成功写盘的 PNG 尾帧数（log-only 恒为 0）。
     /// </summary>
     internal sealed class EditorExportSession
     {
@@ -49,7 +57,16 @@ namespace ADOFAI.Renderist.Export
         public double? ResolvedTailBeats;
         public double? CompletionBpm;
         public double? Pitch;
+        /// <summary>
+        /// 本 session 冻结的输出模式：true = 写 PNG 序列，false = log-only
+        /// （image output disabled；帧事务照常，但不写图像，仍写 metadata）。
+        /// </summary>
+        public bool ImageOutputEnabled;
+        public long TailFramesCommitted;
         public long TailFramesCaptured;
+        public long FrameTransactionRequestCount;
+        public long LogicalFrameCount;
+        public long WrittenPngFrameCount;
         public long CaptureRequestCount;
         public long CapturedFrameCount;
         public string CaptureSource;
@@ -57,8 +74,16 @@ namespace ADOFAI.Renderist.Export
         public long CaptureHeight;
 
         private const string PhaseLabel = "Phase 3.6.0 Render Time Determinism";
-        private const string ModeLabel = "editor-export-png-sequence";
+        /// <summary>PNG 序列模式的既有 mode 值（保持不变，避免破坏既有 metadata 语义）。</summary>
+        private const string PngModeLabel = "editor-export-png-sequence";
+        /// <summary>log-only（image output disabled）模式的 mode 值。</summary>
+        private const string LogOnlyModeLabel = "editor-export-log-only";
         private const string MetadataFileName = "metadata.json";
+
+        /// <summary>
+        /// metadata 的 mode 字段：由冻结的 imageOutputEnabled 派生，不额外维护第二套状态。
+        /// </summary>
+        public string Mode => ImageOutputEnabled ? PngModeLabel : LogOnlyModeLabel;
 
         public EditorExportSession(string sessionId, string outputDirectory, string sceneName)
         {
@@ -81,7 +106,14 @@ namespace ADOFAI.Renderist.Export
             ResolvedTailBeats = null;
             CompletionBpm = null;
             Pitch = null;
+            // 与 Settings.EditorImageOutputEnabled 的默认值一致：未被显式设置前不得
+            // 静默声称 log-only。
+            ImageOutputEnabled = true;
+            TailFramesCommitted = 0;
             TailFramesCaptured = 0;
+            FrameTransactionRequestCount = 0;
+            LogicalFrameCount = 0;
+            WrittenPngFrameCount = 0;
             CaptureRequestCount = 0;
             CapturedFrameCount = 0;
             CaptureSource = null;
@@ -120,7 +152,8 @@ namespace ADOFAI.Renderist.Export
             sb.Append("{\n");
             AppendString(sb, "version", ModEntry.ModVersion, true);
             AppendString(sb, "phase", PhaseLabel, true);
-            AppendString(sb, "mode", ModeLabel, true);
+            AppendString(sb, "mode", Mode, true);
+            AppendBool(sb, "imageOutputEnabled", ImageOutputEnabled, true);
             AppendString(sb, "sessionId", SessionId ?? string.Empty, true);
             AppendStringNullable(sb, "createdAt", IsoUtc(StartedAtUtc), true);
             AppendStringNullable(sb, "endedAt", IsoUtc(EndedAtUtc), true);
@@ -146,11 +179,15 @@ namespace ADOFAI.Renderist.Export
             AppendDoubleNullable(sb, "resolvedTailBeats", ResolvedTailBeats, true);
             AppendDoubleNullable(sb, "completionBpm", CompletionBpm, true);
             AppendDoubleNullable(sb, "pitch", Pitch, true);
+            AppendLong(sb, "tailFramesCommitted", TailFramesCommitted, true);
             AppendLong(sb, "tailFramesCaptured", TailFramesCaptured, true);
             AppendStringNullable(sb, "captureSource", CaptureSource, true);
             AppendLong(sb, "captureWidth", CaptureWidth, true);
             AppendLong(sb, "captureHeight", CaptureHeight, true);
+            AppendLong(sb, "frameTransactionRequestCount", FrameTransactionRequestCount, true);
+            AppendLong(sb, "logicalFrameCount", LogicalFrameCount, true);
             AppendLong(sb, "captureRequestCount", CaptureRequestCount, true);
+            AppendLong(sb, "writtenPngFrameCount", WrittenPngFrameCount, true);
             AppendLong(sb, "capturedFrameCount", CapturedFrameCount, true);
             sb.Length -= 2; // remove trailing ",\n"
             sb.Append("\n}\n");

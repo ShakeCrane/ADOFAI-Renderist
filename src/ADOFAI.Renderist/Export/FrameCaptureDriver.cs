@@ -8,13 +8,21 @@ using ADOFAI.Renderist.Logging;
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
-    /// 确定性编辑器导出的同步 PNG 捕获后端（Phase 3.6.0 Render Time Determinism）。
+    /// 确定性编辑器导出的同步帧末事务后端（Phase 3.6.0 Render Time Determinism）。
+    /// 支持两种冻结模式：PNG 序列（image output enabled）与 log-only（image output disabled）。
     ///
     /// Render Source：ADOFAI 原生谱面摄像机链（scrCamera.Bgcamstatic / BGcam / camobj）
     /// 的 targetTexture 在本 session 内被接管到 Renderist-owned RenderTexture。
     /// Unity 仍按正常帧渲染流程渲染这三台 Camera，Screen Space UI 不进入该 RT。
     ///
-    /// 捕获点：WaitForEndOfFrame。完成语义：ReadPixels → EncodeToPNG → File.WriteAllBytes 成功，才算一帧已捕获。
+    /// 捕获点：WaitForEndOfFrame。帧末事务在同一处完成，并按 session 开始时冻结的输出模式分支：
+    ///   * PNG（imageOutputEnabled = true）：ReadPixels → EncodeToPNG → File.WriteAllBytes 成功
+    ///     才算一帧已捕获（imageWritten = true）。
+    ///   * Log-only（imageOutputEnabled = false）：source / generation / pending-index 校验成功后
+    ///     直接返回成功的帧末事务结果（imageWritten = false，filePath = null），
+    ///     不执行 EnsureTexture / Texture2D 创建 / ReadPixels / Texture2D.Apply / EncodeToPNG /
+    ///     File.WriteAllBytes，也不构造 PNG 文件路径。
+    /// 两种模式共用同一个结果回调入口与同一套 EOF coroutine / generation 隔离 / cleanup；
     /// 不调用 Camera.Render / ScreenCapture；不创建替代 Camera；不依赖异步完成回调。
     ///
     /// generation 机制：每次成功 Start 分配一个唯一 generation，旧 session 的 EndOfFrame callback
@@ -38,11 +46,15 @@ namespace ADOFAI.Renderist.Export
     internal static class FrameCaptureDriver
     {
         /// <summary>
-        /// 捕获结果回调（在 Unity 主线程 WaitForEndOfFrame 之后调用）。
+        /// 帧末事务结果回调（在 Unity 主线程 WaitForEndOfFrame 之后调用），PNG 与 log-only
+        /// 两种模式共用同一个入口。
         /// frameIndex 是 canonical output frame number，类型为 long（合法 Output FPS
         /// 为任意正 int，帧号不能依赖 int）。
+        /// imageWritten = true 表示本帧确实成功写盘 PNG，且 filePath 是实际写入路径；
+        /// imageWritten = false（log-only）表示本帧只完成了帧末事务，filePath 必为 null。
         /// </summary>
-        public delegate void CaptureResultCallback(long generation, long frameIndex, bool success, string filePath, string error);
+        public delegate void CaptureResultCallback(
+            long generation, long frameIndex, bool success, bool imageWritten, string filePath, string error);
 
         /// <summary>本阶段 Render Source 标签；写入 session metadata。</summary>
         public const string CameraSourceLabel = "scrCamera-rendertexture";
@@ -98,6 +110,7 @@ namespace ADOFAI.Renderist.Export
             string prefix,
             int zeroPadWidth,
             CaptureResultCallback onResult,
+            bool imageOutputEnabled,
             out long generation,
             out string error)
         {
@@ -129,7 +142,7 @@ namespace ADOFAI.Renderist.Export
 
                 behaviour = host.AddComponent<CaptureHostBehaviour>();
                 behaviour.Configure(outputDirectory, string.IsNullOrEmpty(prefix) ? "frame_" : prefix,
-                    zeroPadWidth < 1 ? 1 : zeroPadWidth, onResult, generation);
+                    zeroPadWidth < 1 ? 1 : zeroPadWidth, onResult, generation, imageOutputEnabled);
 
                 // 静态 ownership 只在全部启动步骤成功后交接；此前 host/behaviour
                 // 属于局部 ownership，中途异常由 catch 就地清理。
@@ -295,7 +308,9 @@ namespace ADOFAI.Renderist.Export
         }
 
         /// <summary>
-        /// 请求在下一个 WaitForEndOfFrame 捕获指定输出帧。同帧内会被去重。
+        /// 请求在下一个 WaitForEndOfFrame 完成指定输出帧的**帧末事务**。同帧内会被去重。
+        /// PNG 与 log-only 都走这一条入口；是否真的读回 / 编码 / 写盘由 session 开始时
+        /// 冻结的 <c>_imageOutputEnabled</c> 决定。
         /// generation 与当前 active generation 不一致、或 Render Source 尚未激活时返回 false。
         /// 绝不回退到 Screen framebuffer。
         /// </summary>
@@ -637,6 +652,11 @@ namespace ADOFAI.Renderist.Export
             private int _zeroPadWidth;
             private CaptureResultCallback _onResult;
             private long _generation;
+            /// <summary>
+            /// session 开始时冻结的输出模式。true = PNG 序列；false = log-only
+            /// （帧事务照常，但绝不读回 / 编码 / 写盘，也不构造 PNG 文件路径）。
+            /// </summary>
+            private bool _imageOutputEnabled = true;
 
             private bool _pending;
             private long _pendingIndex;
@@ -644,13 +664,14 @@ namespace ADOFAI.Renderist.Export
             private bool _stopped;
 
             public void Configure(string outputDirectory, string prefix, int zeroPadWidth,
-                CaptureResultCallback onResult, long generation)
+                CaptureResultCallback onResult, long generation, bool imageOutputEnabled)
             {
                 _outputDirectory = outputDirectory;
                 _prefix = prefix;
                 _zeroPadWidth = zeroPadWidth;
                 _onResult = onResult;
                 _generation = generation;
+                _imageOutputEnabled = imageOutputEnabled;
                 _pending = false;
                 _pendingIndex = -1;
                 _stopped = false;
@@ -707,11 +728,13 @@ namespace ADOFAI.Renderist.Export
             {
                 if (_stopped || _generation != _activeGeneration) return;
 
-                string filePath = BuildFilePath(frameIndex);
+                // Log-only 绝不构造 PNG 文件路径；filePath 保持 null。
+                string filePath = _imageOutputEnabled ? BuildFilePath(frameIndex) : null;
 
                 try
                 {
                     // 必须从已经激活的 capture source 读取。source 未激活时不得回退到屏幕。
+                    // source / 尺寸校验是两种模式共用的帧末事务前置条件。
                     RenderTexture target = _captureTarget;
                     if (!_sourceActive || target == null)
                     {
@@ -722,6 +745,21 @@ namespace ADOFAI.Renderist.Export
                         throw new InvalidOperationException("capture-dimensions-invalid");
                     }
 
+                    // ---- Log-only：跳过图像读回 / 编码 / 写盘 ----
+                    // 帧末事务已经成立（source 有效、generation 未失效、pending index 由 observe
+                    // 循环校验），因此返回成功的帧末结果，由 scheduler 走同一个 CommitFrame。
+                    // 本分支不得触碰 EnsureTexture / Texture2D / ReadPixels / Apply /
+                    // EncodeToPNG / File.WriteAllBytes。
+                    if (!_imageOutputEnabled)
+                    {
+                        if (_stopped || _generation != _activeGeneration) return;
+                        Log.Debug("FrameCaptureDriver: log-only frame-end transaction frameIndex=" +
+                                  frameIndex.ToString(CultureInfo.InvariantCulture) + " (no image output)");
+                        _onResult?.Invoke(_generation, frameIndex, true, false, null, null);
+                        return;
+                    }
+
+                    // ---- PNG ----（以下全部只为 image output 服务）
                     EnsureTexture();
 
                     // RenderTexture.active 只在这段临界区内改变；即使后续
@@ -755,12 +793,12 @@ namespace ADOFAI.Renderist.Export
                     if (_stopped || _generation != _activeGeneration) return;
 
                     Log.Debug("FrameCaptureDriver: wrote " + filePath + " (" + png.Length + " bytes)");
-                    _onResult?.Invoke(_generation, frameIndex, true, filePath, null);
+                    _onResult?.Invoke(_generation, frameIndex, true, true, filePath, null);
                 }
                 catch (Exception ex)
                 {
-                    Log.Exception("FrameCaptureDriver: 捕获输出帧 " + frameIndex + " 失败", ex);
-                    _onResult?.Invoke(_generation, frameIndex, false, filePath, ex.Message);
+                    Log.Exception("FrameCaptureDriver: 输出帧 " + frameIndex + " 帧末事务失败", ex);
+                    _onResult?.Invoke(_generation, frameIndex, false, false, filePath, ex.Message);
                 }
             }
 
