@@ -619,7 +619,20 @@ namespace ADOFAI.Renderist.Export
             var targets = new RenderTexture[steps.Length];
             _downsampleTargets = targets;
 
-            RenderTextureDescriptor template = _captureTarget.descriptor;
+            // 读取 Source descriptor 本身也可能抛异常（例如 target 已销毁）。任何异常都必须
+            // 折成 fail-closed 的返回值，绝不允许逃逸到 scheduler 的 activation 调用点：
+            // ownership 已登记，由 RetainOrDiscardUntouchedTargets / Stop 收敛。
+            RenderTextureDescriptor template;
+            try
+            {
+                template = _captureTarget.descriptor;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("FrameCaptureDriver: 读取 Source RenderTexture descriptor 失败", ex);
+                error = "downsample-chain-descriptor-unavailable:" + ex.Message;
+                return false;
+            }
 
             for (int i = 0; i < steps.Length; i++)
             {
