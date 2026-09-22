@@ -42,8 +42,8 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 | 产品版本 | `0.3.7.0` |
 | Phase | `Phase 3.7.0 Custom Resolution & Supersampling` |
 | 版本定位 | `0.3.7.0` = **第一闭环 Custom Resolution（自定义分辨率，supersampling scale 固定为 1）**；其上 `0.3.6.4` = **Log-only Frame Transactions（image output disabled）** |
-| 稳定实机基线 | `0.3.6.4`：同一基准谱面的 PNG 与 Log-only 均已完整跑通（见 §9.1）。`0.3.7.0` **尚未取得实机验收**，因此不作为稳定基线。 |
-| 当前开发方向 | `0.3.7.0` 第一闭环（custom resolution + 三台原生 Camera 的 aspect ownership）已实现、已构建打包；**等待用户实机验收**（Camera aspect / resize 场景，见 §9.5）。第二闭环 supersampling 未开始，整个 `0.3.7.0` 阶段**未**标记完成。 |
+| 稳定实机基线 | `0.3.6.4`：同一基准谱面的 PNG 与 Log-only 均已完整跑通（见 §9.1）。`0.3.7.0` 第一闭环 Custom Resolution **已通过用户实机验收并完成实机产物批量分析**（见 §9.1），因此其**第一闭环范围**可作为稳定实机基线；但第二闭环 supersampling 未实现，整个 `0.3.7.0` 阶段仍**未**标记完成。 |
+| 当前开发方向 | `0.3.7.0` 第一闭环（custom resolution + 三台原生 Camera 的 aspect ownership）已实现、已构建打包、**已通过实机验收**（证据分级见 §9.1）。第二闭环 supersampling 未开始。 |
 
 `0.3.6.2` 相对 `0.3.6.1` 的四个 hardening 点（功能语义不变，只收敛异常路径与输入判定）：
 
@@ -371,12 +371,14 @@ metadata 记录：版本/phase/mode/imageOutputEnabled、state/detail/reason/kin
 
 - 既有 `captureWidth` / `captureHeight` 保留（仅在激活后非 0）；`outputWidth` / `outputHeight` 从 session 开始即已知。
 - 该 inventory 是后续 supersampling / 降采样工作的基线事实来源（尤其 `colorSpace` 与 RT format）。
+- **当前受测环境的实测值**（`0.3.7.0` 实机 8/8 session metadata 完全一致；仅用于记录本次受测环境，**不得推广为所有用户环境**）：`colorSpace=Gamma`、`graphicsDeviceType=Direct3D11`（`graphicsDeviceVersion=Direct3D 11.0 [level 11.1]`）、`graphicsShaderLevel=50`、`maxTextureSize=16384`、`supportsComputeShaders=true`、`systemMemorySizeMb=32304`、`renderTextureFormat=ARGB32`、`renderTextureGraphicsFormat=R8G8B8A8_UNorm`、`renderTextureAntiAliasing=1`、`renderTextureUseMipMap=false`；GPU 名称为受测机型号，不作为基线要求。
+- 同一受测环境中 `0Harmony.dll` 实际 `FileVersion` 实测为 **`2.3.6.0`**（`references\UMM` 与游戏 `Managed\UnityModManager` 两处一致），与 §1 记录的 Harmony 基线相符。
 
 ---
 
 ## 9. Runtime / 静态验证基线
 
-### 9.1 实机（0.3.6.1 / 0.3.6.2 / 0.3.6.3）
+### 9.1 实机（0.3.6.1 / 0.3.6.2 / 0.3.6.3 / 0.3.7.0）
 
 **0.3.6.1 30 FPS**：
 
@@ -427,6 +429,36 @@ metadata 记录：版本/phase/mode/imageOutputEnabled、state/detail/reason/kin
 - Log-only gameplay 中途取消两次：分别为 **90 成功提交帧 / 91 事务请求**、**183 / 184**；取消**没有伪提交 pending frame**；取消后 Log-only 再次完整导出成功。
 - 用户已确认 Log-only 的实际输出目录**无 PNG**。
 - 适用范围限定：上述通过只对应 `0.3.6.4` 的实现与该基准谱面 / 设置。**未直接覆盖**的场景见 §11 第 9 项（pre-entry 阶段取消 / End Tail 阶段取消 / 取消后切换 PNG），不得记为已通过。
+
+**0.3.7.0 第一闭环 Custom Resolution 实机验收（已通过）**：
+
+实机材料：`Player.log`（单一游戏进程，8 次导出）+ 输出根目录 `D:\Output\ADOFAI Captures` 下 8 个 `0.3.7.0` session 目录（每个含 `metadata.json`）。受测构建身份：已部署 `Mods\ADOFAI.Renderist\ADOFAI.Renderist.dll` 与 `bin\Release` 逐字节一致（SHA256 `14D335FD2E2C051DBCE43BF1DB414F8ED177BEB221846EFB4FB50D761DBFBBBA`，`ProductVersion=0.3.7.0+05a3b4a…`），发布包 zip SHA256 `B251B6A4631401E44F96130E152FB834B70B47CE6E75CA45304DC43380A4155F`。
+
+- **8 个 session** = **6 个 PNG session**（合计 **1117 张 PNG**）+ **2 个 Log-only session**（PNG 计数全 0）。终态：Completed 5 次、Cancelled 3 次。
+- **输出尺寸验证**（读 PNG IHDR 实测，不依赖 metadata 声称）：`legacy-window` 3072×1920（251 张）、`custom-resolution` 1080×1080（251 / 186 / 51 张）、256×256（251 张）、1920×1080（127 张）。每个 session 内**所有 PNG 尺寸单一**，且与该 session 的 `outputWidth` / `outputHeight` 一致。
+- **PNG 编号与数量**：编号 `frame_000000.png …` **连续、无缺号、无重复、无异常命名**；**磁盘 PNG 数 = 日志 `FrameCaptureDriver: wrote` 行数 = metadata `writtenPngFrameCount`**（251 / 251 / 251 / 186 / 127 / 51，合计 1117），三方一致。
+- **PNG 与 Log-only 逻辑计数一致**：PNG 完成会话 `frameTransactionRequestCount = logicalFrameCount = captureRequestCount = writtenPngFrameCount = capturedFrameCount`；Log-only 完成会话 `frameTransactionRequestCount = logicalFrameCount = 251`、PNG 计数全 0。与**参数同构**的一对（`152418` Log-only vs `152427` PNG，同为 legacy 3072×1920、Output FPS 30、pitch 1、BPM 100、End Tail 12 Frames）逐项相等：逻辑帧 251、事务请求 251、`completionFrameIndex` 238、`tailFramesCommitted` 12、`stopReason` 一致。
+- **Completed / Cancelled cleanup 正常**：日志无 `cleanup-failed`、无 `capture source 释放未完成`、无 residual、无 RT `Release` / `Destroy` 失败、无 `capture-source-assign-failed`；三次取消之后的下一 session **均正常启动并跑到终态** ⇒ 无跨会话 residual ownership（residual gate 是 fail-closed 的，会阻止新 session 创建目录）。
+- **取消路径覆盖（三种时机，仅 PNG 模式）**：
+  - `152602`：Esc 触发，`stopReason=native-playback-stopped`，`logicalFrameCount=186` / `frameTransactionRequestCount=187`（一个已请求但未 commit 的事务被取消，**无伪 commit**）；日志确认 native `SwitchToEditMode → SetupRTCam(false)` 已先把三台 `targetTexture` 置 null，Renderist 未覆盖、只记录；
+  - `152622`：GUI 停止，`stopReason=user-stop`，127 / 127（取消落在两次请求之间）；
+  - `152633`：GUI 停止，**取消发生在 pre-entry / Countdown 阶段** —— 该 session `boundaryOutputFrameIndex=57`、`logicalFrameCount=51`，逐帧为 `timeline=native-preentry controllerState=Countdown`，且 8 个 session 中唯独它**没有**出现 `回放就绪，Initialization Hold 已释放`；同样**无伪提交、cleanup 正常、后续 session（`152644`）正常启动并 Completed**。
+  - 边界提醒：上述 pre-entry 取消证据**只覆盖 PNG 模式**；Log-only 的 pre-entry 取消仍未取得实机证据（见 §9.4 与 §11 第 9 项）。
+- **跨会话 Camera aspect 恢复正常**：8 次会话每次 `FrameCaptureDriver: capture source active` 的三台 `baselineAspect` 均为 `1.6`（= 当前窗口自动值），而前一次会话写入的是 `1` 或 `1.777778` ⇒ Completed 与 Cancelled 路径上 aspect 均已回到自动模式。结合 cleanup 侧证据（`cleanup-failed` = 0、`aspect ownership already relinquished` = 0、setter 失败 = 0，因此在写入过 aspect 的前提下 `RelinquishAspect` 唯一可成功返回的分支就是 `ResetAspect()` 成功），构成 aspect 恢复的独立日志证据。
+- **不同宽高比下的几何一致性（像素证据）**：取相同逻辑帧号抽样比对——1:1 输出与 16:9 输出的中央 1:1 裁剪、legacy 1.6 与 1:1、以及 256×256 降采样比对，平均绝对误差（MAE）落在重采样 / 抗锯齿残差量级（0.17–1.91），而错位裁剪对照为 16.5–25.8 ⇒ 排除「aspect 未接管导致拉伸 / 挤压」与「RT 尺寸与相机 aspect 不一致导致构图错位」。
+- **legacy 兼容性（像素证据）**：`0.3.7.0` legacy-window（3072×1920）与历史 PNG 基线同几何、同谱面比对，MAE **0.45–0.80** ⇒ 新增的 aspect 写入（其数值等于窗口 aspect）未改变 legacy 输出。该结果描述为**像素级高度一致**，**不是**逐像素完全相同。
+- **帧时间确定性无回归**：8/8 session `boundaryOutputFrameIndex = 57`、`previousBoundaryTime = 1.778667`、`canonicalStart = 1.8`、`partialFraction = 0.64`，与上面 `0.3.6.4` 记录的数值一致。
+- **未发现阻塞性产品问题。**
+
+**0.3.7.0 第一闭环证据边界（不得互相冒充）**：
+
+| 结论 | 证据类型 |
+| --- | --- |
+| session 数 / 终态 / `stopReason` / `completionFrameIndex` / End Tail / 输出几何冻结值 / 全部逻辑与 PNG 计数 / 运行时 inventory | session `metadata.json` |
+| 每次导出的启动与停止、`frozen output geometry`、`render environment inventory`、`capture source active` + `baselineAspect`、`wrote` 行数、cleanup 是否成功（有无 `cleanup-failed`）、失败 token 计数、Exception 计数 | `Player.log` |
+| PNG 实际尺寸单一性、编号连续性、数量与 metadata 一致、跨几何构图一致性、legacy 与历史基线一致性 | PNG 像素分析（读 PNG header + 抽样相同逻辑帧号定点比对；本次分析侧不具备图像可视化能力，故不据此断言观感） |
+| 窗口 resize 后 Camera aspect **自动跟随窗口**这一动态行为；不同宽高比下画面构图的**最终视觉观感** | 用户实机观察（本轮日志中窗口尺寸恒为 3072×1920、无 resize 事件，因此日志**无法**独立复核该动态行为） |
+| `OutputGeometryPolicy` 参数语义、几何冻结时机、aspect ownership / `ResetAspect` 路径、唯一 `CommitFrame`、PNG 与 Log-only 共用 EOF 事务、metadata 字段来源 | 静态代码核对（本轮只读核对，未修改代码） |
 
 ### 9.2 已验证的历史事实（仍影响当前设计）
 
@@ -487,10 +519,11 @@ metadata 记录：版本/phase/mode/imageOutputEnabled、state/detail/reason/kin
 - Esc 观察者 `OnEditorSwitchToEditModePostfix` 接受 `InitializationHold` 与 `Capturing`，且 `_ownsPlayback` 在 `TrySelectFloor0`（TryStart 第 1 步）即置 true，早于 observer 注册 —— 因此 **pre-entry 取消与 End Tail 取消在代码上可达**，只是 Log-only 导出极快、难以稳定命中时机。
 - 取消路径本身**不含任何模式相关分支**（Esc 请求路径与 `RestoreAll` 均无 `_imageOutputEnabled`），因此"取消后切换 PNG"不共享任何模式状态；下一 session 的模式仍由 `Settings` 在 `TryStart` 重新冻结，且 residual gate 在创建 session 目录前 fail-closed。
 - 这三项**不得记为实机通过**：pre-entry 阶段取消、End Tail 阶段取消、取消后切换 PNG。
+- **补充（`0.3.7.0` 轮次新增，注意模式不可混用）**：`0.3.7.0` 轮次取得了一条**PNG 模式**的 pre-entry / Countdown 阶段取消实机证据（session `152633`，见 §9.1）。它属于 **PNG 模式**，**不能**用于证明本节这些 **Log-only 专属**未覆盖项；Log-only 的 pre-entry 阶段取消、End Tail 阶段取消、取消后切换 PNG **仍然没有实机证据，继续不得记为已通过**。
 
-### 9.5 `0.3.7.0` 第一闭环实机验收清单（**未执行；不得记为 PASS**）
+### 9.5 `0.3.7.0` 第一闭环实机验收清单（**已执行；结果与证据分级见 §9.1**）
 
-代码、构建与自动验证已完成，但**以下全部为待用户实机执行项**。实机通过之前不进入第二闭环，也不把整个 `0.3.7.0` 阶段标记为完成。
+用户已按下列步骤完成实机验收**并报告通过**；本节保留原清单作为「实际执行了什么」的记录，验收结论与证据分级统一记在 §9.1，避免同一结论在本文件内出现两处互相冲突的表述。第一闭环通过**不等于**整个 `0.3.7.0` 阶段完成 —— 第二闭环 supersampling 仍未实现。
 
 验收步骤：
 
@@ -509,7 +542,11 @@ metadata 记录：版本/phase/mode/imageOutputEnabled、state/detail/reason/kin
 - `FrameCaptureDriver: capture source active ... unifiedAspect=<W/H> baselineAspect={Bgcamstatic=...,BGcam=...,camobj=...}`
 - cleanup 后**不应**出现 `capture source 释放未完成` / `aspect ownership already relinquished` 之外的异常，且不应有 residual ownership（下一次导出不应被 residual gate 拒绝）。
 
+→ **实测结果**：8 次 session 全部未出现 `cleanup-failed`、`capture source 释放未完成`、residual 或 RT 失败；仅 `152602`（Esc）出现预期的 *native 已先置 null* 的三条 `target ownership already relinquished` 记录；取消后各 session 均正常启动。
+
 另外需要确认的兼容性项：**自定义分辨率关闭（默认）时，输出尺寸与构图应与 `0.3.6.4` 完全一致**（legacy-window 模式本轮新增了 aspect 写入，其数值等于窗口 aspect，预期不改变构图，但需要实机确认）。
+
+→ **已确认**：`0.3.7.0` legacy-window（3072×1920）与历史 PNG 基线同几何比对 MAE **0.45–0.80**，描述为**像素级高度一致**（不写成逐像素完全相同）；新增 aspect 写入未改变 legacy 输出。
 
 ### 9.6 `0.3.7.0` 第一闭环的非实机验证结果（**已执行**）
 
@@ -529,7 +566,8 @@ harness 覆盖的关键证据（全部 PASS）：
 - **Camera aspect baseline gate**：三台 baseline 不一致 → fail-closed，且**零 Camera 写入**、capture RT 已销毁、无 residual；aspect 不可读 / `NaN` / `0` / 负数 → 同样 fail-closed 且无任何写入。
 - **aspect ownership**：正常 `Stop()` → 三台 `targetTexture` 恢复 + **每台恰好一次** `ResetAspect()`；partial assignment（三台 targetTexture 已写入、aspect 第 2 台 setter 抛异常）→ 统一收敛、无 residual、三台恢复原值；partial + `ResetAspect()` 失败 → **residual 保留**，清除故障后下一次 `Stop()` 收敛；**setter 成功后读回失败 → ownership 未丢失**（三台仍被 `ResetAspect()`）；外部改写的 aspect → **不调用** `ResetAspect()`、不覆盖该值，其余两台正常恢复；**baseline 数值恰好等于目标 aspect 时，未真正写入的 Camera 不会被 `ResetAspect()`**（断言精确为 `1/0/0`，这正是“不覆盖外部状态”的关键判别项）。
 - **RT fault injection**：`Create()` 抛异常 / `IsCreated() == false` / `Release()` 抛异常 / `Destroy(rt)` 抛异常 → 均保留可重试 ownership，清除故障后 `Stop()` 收敛；正常路径结束后**无 RenderTexture 泄漏**（成功创建但未销毁 = 0）；`Stop()` 幂等。
-- **metadata**：22 个新键齐全、**无重复键**、严格可解析（`System.Text.Json`）、`mode` 取值分别为 `editor-export-png-sequence` / `editor-export-log-only`、`phase` 精确等于 `Phase 3.7.0 Custom Resolution & Supersampling`、inventory 缺失时序列化为 JSON `null`（不是空字符串）。
+- **metadata**：新增 **19 个键**齐全、**无重复键**、严格可解析（`System.Text.Json`）、`mode` 取值分别为 `editor-export-png-sequence` / `editor-export-log-only`、`phase` 精确等于 `Phase 3.7.0 Custom Resolution & Supersampling`、inventory 缺失时序列化为 JSON `null`（不是空字符串）。
+  - **键数修正（依据实际 schema 差集）**：`0.3.6.x` metadata 为 **39 键**，`0.3.7.0` metadata 为 **58 键**，本轮新增 **19 键**（不是此前的 22 键）；差集内容与 §8.2 自列字段完全一致 —— 输出几何 7 键（`outputGeometryMode` / `geometryCustomResolutionEnabled` / `geometryConfiguredWidth` / `geometryConfiguredHeight` / `outputWidth` / `outputHeight` / `outputAspect`）+ 运行环境 inventory 12 键（`colorSpace` / `graphicsDeviceType` / `graphicsDeviceName` / `graphicsDeviceVersion` / `graphicsShaderLevel` / `maxTextureSize` / `supportsComputeShaders` / `systemMemorySizeMb` / `renderTextureFormat` / `renderTextureGraphicsFormat` / `renderTextureAntiAliasing` / `renderTextureUseMipMap`），且**无任何旧键被删除**。此处只保留修正后的数字，不保留旧的 22 键说法。
 
 静态不变量要点（23 PASS / 0 FAIL）：`CommitFrame` 唯一调用点；`_outputFrameIndex++` 唯一；`new WaitForEndOfFrame()` 唯一且不按模式分支；`Observe()` 仅 1 处；`Graphics.Blit` **0 处**；`new RenderTexture(...)` 全仓库仅 **1 处**（ARGB32 / depth 24 / MSAA 1 / 无 mipmap 基线保持）；`FrameCaptureDriver` **0 处 Screen 读取**；`camera.aspect =` 仅 3 处（每台一次）；`ResetAspect()` 仅 1 处调用点；scheduler 全程 **0 处读取 `ModEntry.Settings`**（模式与几何都在 `TryStart` 冻结）。
 
@@ -612,20 +650,20 @@ harness 覆盖的关键证据（全部 PASS）：
 6. **更广泛谱面覆盖**：BPM change、Twirl、Midspin、event-heavy、特殊 startup、长时大规模导出。
 7. **native Esc teardown 警告**：曾见 Unity `Coroutine couldn't be started ... Conductor is inactive`，静态证据更像 native teardown；未做 disable-mod A/B。
 8. **custom resolution / supersampling、audio、FFmpeg、replay、Preview Bridge**：
-   - **custom resolution：第一闭环已实现并已构建打包（`0.3.7.0`），但尚未取得实机验收**（见 §9.5）。实现见 §2 / §3.1 / §3.5 / §7 / §8.2。
-   - **supersampling、降采样、`Graphics.Blit`、downsample RT 链：仍未实现**，且明确不属于第一闭环。
+   - **custom resolution：第一闭环已实现、已构建打包、并已通过用户实机验收与实机产物批量分析（`0.3.7.0`）**（结论与证据分级见 §9.1）。实现见 §2 / §3.1 / §3.5 / §7 / §8.2。
+   - **supersampling、降采样、`Graphics.Blit`、downsample RT 链：仍未实现**，且明确不属于第一闭环；整个 `0.3.7.0` 阶段**未**标记完成。
    - audio、FFmpeg、replay、Preview Bridge 均未实现。
-9. **`0.3.7.0` 第一闭环的核心未验证项（实机验收清单见 §9.5）**：
-   - **Camera aspect 在实机中的真实基线语义**：三台 Camera 在 `SetupRTCam(true)`（`scnGame.Play`）之后、Renderist 接管之前的 `Camera.aspect` 实际取值来源（屏幕 or 游戏 `camRT`）尚未实机确认。当前实现的判据只做了“可读 / 有限 / 为正 / 三台互相兼容”，**刻意没有**用“是否等于屏幕 aspect”推断自动模式（该推断在 targetTexture 被接管后不可靠）。
-   - **已知实现判定的待确认点**：`capture-aspect-baseline-incompatible` 的判据被实现为“三台 baseline 互相不一致”。若实机发现三台 Camera 在正常基线下**合法地**拥有不同 aspect（例如各自 `rect` 不同），则该判据会误杀，需要交回 GPT Work 重新确定“不兼容的显式 aspect 基线”的定义。**这是本轮最需要实机确认的语义假设。**
-   - **cleanup 后的 aspect 恢复**：`ResetAspect()` 是否真的让三台 Camera 重新自动跟随窗口宽高比，尚未实机确认。
-   - **不同宽高比下的构图正确性**：自定义 1:1 输出是否导致三层 Camera 错位，尚未实机确认。
-   - **若无实机证据，不得把上述任一项记为 PASS。**
+9. **`0.3.7.0` 第一闭环：实机验收已通过（见 §9.1）**；下列为该闭环的**残余/边界项**，不再作为阻断条件，但保留准确状态：
+   - **Camera aspect 在实机中的真实基线语义**：8/8 session 实测三台 Camera 在接管前的 `baselineAspect` 均为 `1.6`（= 当前窗口自动值），三台始终互相一致；当前实现的判据（可读 / 有限 / 为正 / 三台互相兼容）**在实机上未出现误杀**。实现**刻意没有**用「是否等于屏幕 aspect」推断自动模式。仍未直接确认该自动值的**内部来源**（屏幕 or 游戏 `camRT`）。
+   - **`capture-aspect-baseline-incompatible` 判据**：其定义为「三台 baseline 互相不一致」。实机 8/8 未见三台不一致，故未触发；若将来出现三台 Camera **合法地**拥有不同 aspect（例如各自 `rect` 不同）的正常基线，该判据会误杀 —— 届时需交回 GPT Work 重新确定「不兼容的显式 aspect 基线」的定义。属**未证否的理论风险**。
+   - **cleanup 后的 aspect 恢复**：已由日志（`ResetAspect()` 被调用且未抛异常）+ 跨会话 `baselineAspect` 回到 `1.6` 双重证据支持（推理链见 §9.1）。窗口 resize 后**自动跟随新窗口比例**这一动态行为主要由**用户实机观察**确认，本轮日志无 resize 事件、无法独立复核。
+   - **不同宽高比下的构图正确性**：几何一致性已有像素证据（见 §9.1）；**最终视觉观感**由用户确认（分析侧无图像可视化能力）。
+   - **取消路径覆盖边界**：PNG 模式的 pre-entry 阶段取消已取得实机证据（`152633`，见 §9.1）；**Log-only 的 pre-entry 阶段取消、End Tail 阶段取消、取消后切换 PNG 仍无实机证据，不得记为已通过**（见 §9.4）。
 9. **log-only / image-output-disabled（`0.3.6.4` Log-only Frame Transactions）：已实现、已发布收敛、并已通过用户实机验收。**
    - 已实施：`Settings.EditorImageOutputEnabled`（默认 `true`）+ GUI「输出 PNG 图像」开关与关闭说明；模式在 session 开始时冻结；帧末结果改用显式 `imageWritten` 标志区分；逻辑帧计数与 PNG 计数拆分；completion / End Tail / safety / watchdog 全部改用逻辑 authority；metadata 增加 `imageOutputEnabled` / `mode` / `frameTransactionRequestCount` / `logicalFrameCount` / `writtenPngFrameCount` / `tailFramesCommitted`（旧字段保留）；log-only 不写 PNG、但仍写 metadata。详见 §3.2、§7、§8.1。
    - 设计确定项：**保留** Camera source / RenderTexture 接管与 `WaitForEndOfFrame`（两种模式只在图像读回/编码/写盘处分支）；不新增 Harmony Patch、不引入新的 ADOFAI 内部 API、不新建第二套 scheduler / driver；`captureRequestCount` 在 log-only 下为 `0`，逻辑事务计数由 `frameTransactionRequestCount` 承担。
    - **实机验收结果（用户提供，见 §9.1）**：PNG 与 Log-only 均正常完成；两模式均提交 251 个连续逻辑帧，`completionFrameIndex=238`、`tailFramesCommitted=12` 一致；`B=G=57`、`partialFraction=0.64`；两模式 Hit frame index 一致；PNG → Log-only → PNG 切换正常；`cachedAngle` 首次运行差异可在 PNG → PNG 复现（非 Log-only 独有）；Log-only gameplay 取消两次（90/91、183/184），无伪提交，取消后可再次完整导出；Log-only 输出目录确认无 PNG。
-   - **未覆盖（不得记为已通过）**：pre-entry 阶段取消、End Tail 阶段取消、取消后切换 PNG。原因是 Log-only 导出极快、难以稳定命中时机；不为此人为减慢导出或加入临时测试功能。针对这三项的**静态审查**结论见 §9.4：取消路径不含任何模式相关分支，Esc 观察者在 `InitializationHold` / `Capturing` 均可用，因此不具备模式特异性风险，但缺少实机证据。
+   - **未覆盖（不得记为已通过）**：pre-entry 阶段取消、End Tail 阶段取消、取消后切换 PNG。原因是 Log-only 导出极快、难以稳定命中时机；不为此人为减慢导出或加入临时测试功能。针对这三项的**静态审查**结论见 §9.4：取消路径不含任何模式相关分支，Esc 观察者在 `InitializationHold` / `Capturing` 均可用，因此不具备模式特异性风险，但缺少实机证据。**注意**：`0.3.7.0` 轮次的 `152633` 是 **PNG 模式**的 pre-entry 取消（见 §9.1），**不能**用于勾销本节这些 **Log-only** 项。
    - 已完成的非实机验证（最终审查 75/0、Release Rebuild、package/verify 11–0、序列化 harness 20/0）见 §9.4。
    - 残留观察项：log-only 的 `captureRequestCount = 0` 与 PNG 模式下取消时 `captureRequestCount = capturedFrameCount + 1` 语义不同源（两者都已实机确认无伪提交）；`image-output-mode-mismatch` 守卫为保计数等式的 fail-closed 新增失败点，正常路径不触发。
 10. `set-version.ps1` phase 同步范围说明可在后续 tooling 清理时收紧，当前不阻塞产品一致性。
@@ -639,9 +677,9 @@ harness 覆盖的关键证据（全部 PASS）：
 - 本轮**未**新增 Harmony Patch、未新增 ADOFAI 内部 API 依赖、未修改 README。
 - 发布包：`Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` ignored。本轮以 `scripts/package-release.ps1 -Configuration Release -Version 0.3.7.0 -Force` 打包，并在发布提交 `05a3b4a` 之后重新 Release Rebuild 并以 `-SkipBuild` 重新打包，产出 `dist/ADOFAI.Renderist.zip`（zip SHA256 `B251B6A4631401E44F96130E152FB834B70B47CE6E75CA45304DC43380A4155F`，sidecar `dist/ADOFAI.Renderist.zip.sha256` 同值）；`verify-release-package.ps1` 结果 **PASS 11 checks / 0 failures**，独立解包复核确认包内仅有 3 个顶层文件、无目录，且包内 DLL 与 `bin\Release` 逐字节一致。
 - 发布包内 DLL 的 `ProductVersion` 形如 `<version>+<HEAD 短哈希>`：该 `+hash` 是 SourceLink/InformationalVersion 在构建时记录的 **HEAD 提交**，不是工作区改动。`0.3.7.0` 的最终发布包在发布提交 `05a3b4a` 之后重建，因此 `ProductVersion = 0.3.7.0+05a3b4adda0fb5d9ce89c5ca29af1a6f496d75f3`（`FileVersion = 0.3.7.0`，DLL SHA256 `14D335FD2E2C051DBCE43BF1DB414F8ED177BEB221846EFB4FB50D761DBFBBBA`），即包内构建标识精确指向承载本版本的提交。注意：若在打包后再提交任何改动，`+hash` 不会自动更新；应避免在打包后 `amend` 发布提交（会改变哈希并使包内标识失效）。`verify-release-package.ps1` 比较版本时会剥离 `+hash` 后缀。
-- 历史：`0.3.6.1`（Output FPS 无上限、safety 默认 unbounded、long frame chain、autoplay fail-closed、paused 阶段修正）→ `8bceeef` + `1af1205` hardening → `0.3.6.2` → native pre-entry 正式化 + persisted End Tail semantic fix → `0.3.6.3` → Log-only Frame Transactions → `0.3.6.4` → `05a3b4a` Custom Resolution（第一闭环；supersampling 未实现）。
+- 历史：`0.3.6.1`（Output FPS 无上限、safety 默认 unbounded、long frame chain、autoplay fail-closed、paused 阶段修正）→ `8bceeef` + `1af1205` hardening → `0.3.6.2` → native pre-entry 正式化 + persisted End Tail semantic fix → `0.3.6.3` → Log-only Frame Transactions → `0.3.6.4` → `05a3b4a` Custom Resolution（**第一闭环；已通过实机验收；supersampling 未实现**）。
 - 自动验证链：
   `dotnet build src/ADOFAI.Renderist/ADOFAI.Renderist.csproj -c Release -t:Rebuild`
   → `scripts/package-release.ps1 -Configuration Release -Force`
   → `scripts/verify-release-package.ps1 -ZipPath dist/ADOFAI.Renderist.zip`。
-- 部署使用 `scripts/copy-to-mods.ps1`，只更新 `Mods\ADOFAI.Renderist\`；路径来自本地 ignored `build/local.props`，未配置时不得猜测。本轮已部署 `0.3.7.0` 发布构建（DLL SHA256 `14D335FD2E2C…`，与 `bin\Release` 及发布包内 DLL 逐字节一致，`ProductVersion=0.3.7.0+05a3b4a…`）；目录内的 `ADOFAI.Renderist.dll.<pid>.cache` 是 UMM/Mono 通用运行时缓存（`AdofaiTweaks` 同样存在），脚本默认保留。**部署本身不等于实机验收**：`0.3.7.0` 的实机项目仍全部待验（见 §9.5）。
+- 部署使用 `scripts/copy-to-mods.ps1`，只更新 `Mods\ADOFAI.Renderist\`；路径来自本地 ignored `build/local.props`，未配置时不得猜测。本轮已部署 `0.3.7.0` 发布构建（DLL SHA256 `14D335FD2E2C…`，与 `bin\Release` 及发布包内 DLL 逐字节一致，`ProductVersion=0.3.7.0+05a3b4a…`）；目录内的 `ADOFAI.Renderist.dll.<pid>.cache` 是 UMM/Mono 通用运行时缓存（`AdofaiTweaks` 同样存在），脚本默认保留。**部署本身不等于实机验收**：本轮 `0.3.7.0` 第一闭环的实机项目**已完成验收并逐项记录于 §9.1**（其中窗口 resize 后 aspect 自动跟随与最终视觉观感属用户观察证据）；第二闭环 supersampling 未实现、未验收。
