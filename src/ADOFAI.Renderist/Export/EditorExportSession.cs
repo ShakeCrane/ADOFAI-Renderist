@@ -72,7 +72,13 @@ namespace ADOFAI.Renderist.Export
         public long CaptureRequestCount;
         public long CapturedFrameCount;
         public string CaptureSource;
+        /// <summary>
+        /// 三台原生 Camera 实际渲染进入的那张 Source RenderTexture 的宽度。
+        /// scale=1 时等于 OutputWidth；scale&gt;1 时等于 RenderWidth（&gt; OutputWidth）。
+        /// 最终 PNG 尺寸的权威字段始终是 OutputWidth。
+        /// </summary>
         public long CaptureWidth;
+        /// <summary>Source RenderTexture 的高度；语义同 <see cref="CaptureWidth"/>。</summary>
         public long CaptureHeight;
 
         // ---- Phase 3.7.0: 输出几何 ----
@@ -85,12 +91,27 @@ namespace ADOFAI.Renderist.Export
         public long GeometryConfiguredWidth;
         /// <summary>Settings 中 persisted 的自定义高度（诊断用，未经解析、未 sanitize）。</summary>
         public long GeometryConfiguredHeight;
-        /// <summary>本 session 冻结的输出宽度（= capture RenderTexture 宽度）。</summary>
+        /// <summary>Settings 中 persisted 的超采样倍率（诊断用，未经解析、未 sanitize）。</summary>
+        public long GeometryConfiguredSupersamplingScale;
+        /// <summary>本 session 冻结的最终输出宽度（= PNG / ReadPixels 尺寸）。</summary>
         public long OutputWidth;
-        /// <summary>本 session 冻结的输出高度（= capture RenderTexture 高度）。</summary>
+        /// <summary>本 session 冻结的最终输出高度（= PNG / ReadPixels 尺寸）。</summary>
         public long OutputHeight;
         /// <summary>本 session 冻结的统一输出 aspect（三台原生 Camera 与 capture RT 共用）。</summary>
         public double OutputAspect;
+
+        // ---- Phase 3.7.0 第二闭环: 超采样 ----
+
+        /// <summary>本 session 冻结的超采样倍率；1 = 关闭。</summary>
+        public long SupersamplingScale;
+        /// <summary>Source RenderTexture 宽度 = OutputWidth × SupersamplingScale。</summary>
+        public long RenderWidth;
+        /// <summary>Source RenderTexture 高度 = OutputHeight × SupersamplingScale。</summary>
+        public long RenderHeight;
+        /// <summary>降采样级数（不含 source）；scale=1 时为 0。</summary>
+        public long DownsampleLevelCount;
+        /// <summary>降采样算法标识；scale=1 时为空字符串。</summary>
+        public string DownsampleAlgorithm;
 
         // ---- Phase 3.7.0: 只读运行时渲染环境 inventory ----
 
@@ -109,6 +130,12 @@ namespace ADOFAI.Renderist.Export
         public string RenderTextureGraphicsFormat;
         public int? RenderTextureAntiAliasing;
         public bool? RenderTextureUseMipMap;
+        /// <summary>
+        /// 降采样链首级（若有）的实际 format / graphicsFormat；用于核对
+        /// “各级与 source 的 graphicsFormat / sRGB 语义一致”。scale=1 时为 null。
+        /// </summary>
+        public string DownsampleRenderTextureFormat;
+        public string DownsampleRenderTextureGraphicsFormat;
 
         private const string PhaseLabel = "Phase 3.7.0 Custom Resolution & Supersampling";
         /// <summary>PNG 序列模式的既有 mode 值（保持不变，避免破坏既有 metadata 语义）。</summary>
@@ -162,9 +189,16 @@ namespace ADOFAI.Renderist.Export
             GeometryCustomResolutionEnabled = false;
             GeometryConfiguredWidth = 0;
             GeometryConfiguredHeight = 0;
+            GeometryConfiguredSupersamplingScale = OutputGeometryPolicy.DefaultSupersamplingScale;
             OutputWidth = 0;
             OutputHeight = 0;
             OutputAspect = 0.0;
+            // 超采样：未冻结前不声称已启用；1 = 关闭（默认行为）。
+            SupersamplingScale = OutputGeometryPolicy.DefaultSupersamplingScale;
+            RenderWidth = 0;
+            RenderHeight = 0;
+            DownsampleLevelCount = 0;
+            DownsampleAlgorithm = string.Empty;
             // 运行时环境 inventory：未采集到就保持 null，绝不用占位值冒充真实环境。
             ColorSpace = null;
             GraphicsDeviceType = null;
@@ -178,6 +212,8 @@ namespace ADOFAI.Renderist.Export
             RenderTextureGraphicsFormat = null;
             RenderTextureAntiAliasing = null;
             RenderTextureUseMipMap = null;
+            DownsampleRenderTextureFormat = null;
+            DownsampleRenderTextureGraphicsFormat = null;
             StopReason = null;
             TerminationKind = null;
             CompletionSignal = null;
@@ -247,9 +283,15 @@ namespace ADOFAI.Renderist.Export
             AppendBool(sb, "geometryCustomResolutionEnabled", GeometryCustomResolutionEnabled, true);
             AppendLong(sb, "geometryConfiguredWidth", GeometryConfiguredWidth, true);
             AppendLong(sb, "geometryConfiguredHeight", GeometryConfiguredHeight, true);
+            AppendLong(sb, "geometryConfiguredSupersamplingScale", GeometryConfiguredSupersamplingScale, true);
             AppendLong(sb, "outputWidth", OutputWidth, true);
             AppendLong(sb, "outputHeight", OutputHeight, true);
             AppendDouble(sb, "outputAspect", OutputAspect, true);
+            AppendLong(sb, "supersamplingScale", SupersamplingScale, true);
+            AppendLong(sb, "renderWidth", RenderWidth, true);
+            AppendLong(sb, "renderHeight", RenderHeight, true);
+            AppendLong(sb, "downsampleLevelCount", DownsampleLevelCount, true);
+            AppendString(sb, "downsampleAlgorithm", DownsampleAlgorithm ?? string.Empty, true);
             AppendStringNullable(sb, "colorSpace", ColorSpace, true);
             AppendStringNullable(sb, "graphicsDeviceType", GraphicsDeviceType, true);
             AppendStringNullable(sb, "graphicsDeviceName", GraphicsDeviceName, true);
@@ -262,6 +304,8 @@ namespace ADOFAI.Renderist.Export
             AppendStringNullable(sb, "renderTextureGraphicsFormat", RenderTextureGraphicsFormat, true);
             AppendIntNullable(sb, "renderTextureAntiAliasing", RenderTextureAntiAliasing, true);
             AppendBoolNullable(sb, "renderTextureUseMipMap", RenderTextureUseMipMap, true);
+            AppendStringNullable(sb, "downsampleRenderTextureFormat", DownsampleRenderTextureFormat, true);
+            AppendStringNullable(sb, "downsampleRenderTextureGraphicsFormat", DownsampleRenderTextureGraphicsFormat, true);
             AppendLong(sb, "frameTransactionRequestCount", FrameTransactionRequestCount, true);
             AppendLong(sb, "logicalFrameCount", LogicalFrameCount, true);
             AppendLong(sb, "captureRequestCount", CaptureRequestCount, true);

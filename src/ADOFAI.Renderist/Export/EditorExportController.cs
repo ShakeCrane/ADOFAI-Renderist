@@ -190,7 +190,8 @@ namespace ADOFAI.Renderist.Export
                 var geometryInput = new GeometryInput(
                     settings.EditorCustomResolutionEnabled,
                     settings.EditorCustomResolutionWidth,
-                    settings.EditorCustomResolutionHeight);
+                    settings.EditorCustomResolutionHeight,
+                    settings.EditorSupersamplingScale);
                 OutputGeometryPolicy.TryResolve(
                     geometryInput, out GeometryResolution geometry, out _);
 
@@ -204,6 +205,12 @@ namespace ADOFAI.Renderist.Export
                     GeometryCustomResolutionEnabled = geometryInput.CustomResolutionEnabled,
                     GeometryConfiguredWidth = geometryInput.Width,
                     GeometryConfiguredHeight = geometryInput.Height,
+                    GeometryConfiguredSupersamplingScale = geometryInput.SupersamplingScale,
+                    SupersamplingScale = geometry.Scale,
+                    RenderWidth = geometry.RenderWidth,
+                    RenderHeight = geometry.RenderHeight,
+                    DownsampleLevelCount = geometry.DownsampleLevelCount,
+                    DownsampleAlgorithm = OutputGeometryPolicy.DownsampleAlgorithmLabel,
                     OutputWidth = geometry.Width,
                     OutputHeight = geometry.Height,
                     OutputAspect = geometry.Aspect,
@@ -551,6 +558,13 @@ namespace ADOFAI.Renderist.Export
             session.GeometryCustomResolutionEnabled = DeterministicFrameScheduler.GeometryCustomResolutionEnabled;
             session.GeometryConfiguredWidth = DeterministicFrameScheduler.GeometryConfiguredWidth;
             session.GeometryConfiguredHeight = DeterministicFrameScheduler.GeometryConfiguredHeight;
+            session.GeometryConfiguredSupersamplingScale =
+                DeterministicFrameScheduler.GeometryConfiguredSupersamplingScale;
+            session.SupersamplingScale = DeterministicFrameScheduler.SupersamplingScale;
+            session.RenderWidth = DeterministicFrameScheduler.RenderWidth;
+            session.RenderHeight = DeterministicFrameScheduler.RenderHeight;
+            session.DownsampleLevelCount = DeterministicFrameScheduler.DownsampleLevelCount;
+            session.DownsampleAlgorithm = OutputGeometryPolicy.DownsampleAlgorithmLabel;
             session.OutputWidth = DeterministicFrameScheduler.OutputWidth;
             session.OutputHeight = DeterministicFrameScheduler.OutputHeight;
             session.OutputAspect = DeterministicFrameScheduler.OutputAspect;
@@ -589,6 +603,8 @@ namespace ADOFAI.Renderist.Export
             session.RenderTextureGraphicsFormat = inventory.RenderTextureGraphicsFormat;
             session.RenderTextureAntiAliasing = inventory.RenderTextureAntiAliasing;
             session.RenderTextureUseMipMap = inventory.RenderTextureUseMipMap;
+            session.DownsampleRenderTextureFormat = inventory.DownsampleRenderTextureFormat;
+            session.DownsampleRenderTextureGraphicsFormat = inventory.DownsampleRenderTextureGraphicsFormat;
         }
 
         /// <summary>轻量环境校验：Mod 启用、未离开编辑器、定期校验当前会话固定目录。</summary>

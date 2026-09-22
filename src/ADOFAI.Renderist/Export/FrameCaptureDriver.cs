@@ -3,35 +3,66 @@ using System.Collections;
 using System.Globalization;
 using System.IO;
 using UnityEngine;
+using UnityEngine.Experimental.Rendering;
 using ADOFAI.Renderist.Logging;
 
 namespace ADOFAI.Renderist.Export
 {
     /// <summary>
     /// 确定性编辑器导出的同步帧末事务后端（Phase 3.7.0 Custom Resolution &amp; Supersampling）。
-    /// 支持两种冻结模式：PNG 序列（image output enabled）与 log-only（image output disabled）。
+    /// 支持两种冻结模式：PNG 序列（image output enabled）与 log-only（image output disabled）；
+    /// PNG 模式下可选整数倍超采样（scale &gt; 1）与多级 bilinear 降采样。
     ///
     /// Render Source：ADOFAI 原生谱面摄像机链（scrCamera.Bgcamstatic / BGcam / camobj）
     /// 的 targetTexture 在本 session 内被接管到 Renderist-owned RenderTexture。
     /// Unity 仍按正常帧渲染流程渲染这三台 Camera，Screen Space UI 不进入该 RT。
     ///
-    /// Output geometry：捕获尺寸与统一 Camera aspect 由 scheduler 在 session 开始时冻结后
-    /// 传入 <see cref="TryActivateCameraSource"/>，本类**不再**读取 Screen.width / Screen.height。
-    /// 因此窗口尺寸在 session 中途变化不会造成 RT 尺寸与 aspect ownership 不一致。
-    /// PNG 与 log-only 共用同一尺寸、同一个 RenderTexture 与同一个 aspect。
+    /// Output geometry：Source RT 尺寸（renderWidth×renderHeight）、最终输出尺寸
+    /// （outputWidth×outputHeight）与统一 Camera aspect 都由 scheduler 在 session 开始时
+    /// 冻结后传入，本类**不再**读取 Screen.width / Screen.height。因此窗口尺寸在
+    /// session 中途变化不会造成 RT 尺寸与 aspect ownership 不一致。
     ///
-    /// Camera aspect ownership：三台 Camera 统一使用冻结输出的 aspect，并各自登记 ownership。
-    /// 释放时只在当前值仍等于 Renderist 写入值时才 <c>ResetAspect()</c>（恢复 Unity 自动行为）；
-    /// 已被外部流程改写的值不覆盖。Renderist 不通过“旧 aspect 是否等于屏幕 aspect”来推断
-    /// 自动模式——该推断在 targetTexture 接管后不可靠。
+    /// 超采样（Phase 3.7.0 第二闭环）：
+    ///   * render = output × scale；scale=1 时 render == output，且**完全不走降采样路径**
+    ///     （不创建链、不调用 Graphics.Blit、不触碰 GL.sRGBWrite），保持第一闭环行为。
+    ///   * scale&gt;1 且 image output enabled 时，在 activation 阶段创建 Source RT
+    ///     与其后的多级 Downsample RT 链（尺寸由 OutputGeometryPolicy 的倍率规划器给出），
+    ///     链逐帧复用；每帧在同一个 WaitForEndOfFrame 事务内先逐级降采样，
+    ///     再从最后一级 ReadPixels 出 outputWidth×outputHeight 的图像。
+    ///   * 每一级 Downsample RT 都从**已创建的 Source RT descriptor** 派生，只修改尺寸 /
+    ///     深度 / MSAA / mipmap / dynamic scale 等必要字段，因此 graphicsFormat 与
+    ///     sRGB 语义与 Source 一致（构造性保证，而不是事后比对）。
+    ///   * 不使用 RenderTexture.GetTemporary：池化 RT 的生命周期不由本模块独占，
+    ///     无法与既有的 residual ownership / Stop 重试语义共存。
+    ///
+    /// Log-only 与 scale&gt;1：仍使用相同的 renderWidth/renderHeight 创建高分辨率 Source RT、
+    /// 维持同样的 Camera aspect ownership 与同一个 EOF 事务，但**不创建 Downsample RT**，
+    /// 也不进入 Blit / ReadPixels / Texture2D / PNG / 文件写入路径。
+    ///
+    /// Camera aspect ownership：三台 Camera 统一使用冻结输出 aspect（由 output 尺寸派生；
+    /// aspect 与倍率无关）。释放时只在当前值仍等于 Renderist 写入值时才
+    /// <c>ResetAspect()</c>（恢复 Unity 自动行为）；已被外部流程改写的值不覆盖。
+    /// Renderist 不通过“旧 aspect 是否等于屏幕 aspect”来推断自动模式——该推断在
+    /// targetTexture 接管后不可靠。
+    ///
+    /// GPU 状态 ownership：
+    ///   * <c>RenderTexture.active</c> 与 <c>GL.sRGBWrite</c> 各自登记独立的 restore token，
+    ///     独立恢复；任一未恢复即当前帧失败（不 Apply / 不 EncodeToPNG / 不写盘 / 不 commit），
+    ///     并保留 residual 由下一次 Stop 分别重试。
+    ///   * 只有实际发生过修改才可能产生 residual：保存失败且尚未修改任何状态时，
+    ///     不产生虚假 residual。
+    ///   * Gamma 色彩空间下**不触碰** <c>GL.sRGBWrite</c>；Linear 下每次 Blit 按
+    ///     destination 的实际 sRGB 语义设置它。scale=1 时两者都不写 sRGBWrite。
+    ///   * GPU 状态未全部恢复前，绝不 Release / Destroy 任何可能仍被该状态引用的 RT。
     ///
     /// 捕获点：WaitForEndOfFrame。帧末事务在同一处完成，并按 session 开始时冻结的输出模式分支：
-    ///   * PNG（imageOutputEnabled = true）：ReadPixels → EncodeToPNG → File.WriteAllBytes 成功
-    ///     才算一帧已捕获（imageWritten = true）。
+    ///   * PNG（imageOutputEnabled = true）：降采样（若有）→ ReadPixels →
+    ///     GPU 状态全部恢复 → Apply / EncodeToPNG / File.WriteAllBytes 成功才算一帧已捕获
+    ///     （imageWritten = true）。
     ///   * Log-only（imageOutputEnabled = false）：source / generation / pending-index 校验成功后
     ///     直接返回成功的帧末事务结果（imageWritten = false，filePath = null），
-    ///     不执行 EnsureTexture / Texture2D 创建 / ReadPixels / Texture2D.Apply / EncodeToPNG /
-    ///     File.WriteAllBytes，也不构造 PNG 文件路径。
+    ///     不执行链创建 / Blit / EnsureTexture / Texture2D 创建 / ReadPixels / Apply /
+    ///     EncodeToPNG / File.WriteAllBytes，也不构造 PNG 文件路径。
     /// 两种模式共用同一个结果回调入口与同一套 EOF coroutine / generation 隔离 / cleanup；
     /// 不调用 Camera.Render / ScreenCapture；不创建替代 Camera；不依赖异步完成回调。
     ///
@@ -40,21 +71,24 @@ namespace ADOFAI.Renderist.Export
     ///
     /// 两阶段生命周期：
     ///   Start()                    → generation / host / CaptureHostBehaviour / coroutine
-    ///   TryActivateCameraSource()  → 取得当前 session 的 Camera 链并接管 targetTexture
+    ///   TryActivateCameraSource()  → 取得当前 session 的 Camera 链、创建 Source RT 与降采样链、
+    ///                                登记全部 ownership 后才接管 targetTexture 与 aspect
     /// Start 不得假定 scrCamera 摄像机链已经可用；source 未激活时 RequestCapture 一律拒绝，
     /// 绝不回退到 Screen framebuffer。
     ///
     /// Activation ownership 不变量：
-    ///   * RenderTexture 一旦创建成功，任何失败路径都必须二选一：Release + Destroy 均成功，
-    ///     或把该引用保存在本类可观察、可重试的 ownership 中（`_captureTarget`），
-    ///     绝不作为 local reference 丢失。
+    ///   * RenderTexture 一旦构造成功就**立即**登记进本类的可观察 ownership
+    ///     （`_captureTarget` / `_downsampleTargets[i]`），之后才执行可能抛异常的属性设置、
+    ///     Create、IsCreated 与格式验证。任何失败路径都必须二选一：Release + Destroy 均成功，
+    ///     或把该引用保留在 ownership 中可观察、可重试，绝不作为 local reference 丢失。
+    ///   * 所有 RT（Source + 全部降采样级）准备成功后，才允许接管 Camera。
     ///   * Camera refs / saved old targets / **saved baseline aspect** / 本次写入的统一 aspect
     ///     同样在**第一次 Camera 写入之前**就登记，因此 partial camera assignment 天然属于
     ///     `_sourceActive` 的 ownership transaction，由同一个 `RestoreCameraSource` 收敛
     ///     （不新增第二套 partial cleanup）。
-    ///   * targetTexture 与 aspect 使用**各自独立**的释放路径（RelinquishTargetTexture /
-    ///     RelinquishAspect），但收敛判定合并到同一个 `_sourceActive`：因此 setter 成功之后
-    ///     读回失败、或 aspect 恢复失败，都不会漏掉 partial assignment，也不会提前清空 ownership。
+    ///   * targetTexture、aspect 与 GPU 状态使用**各自独立**的释放路径
+    ///     （RelinquishTargetTexture / RelinquishAspect / TryRestoreGpuState），
+    ///     但收敛判定合并：任一未收敛都返回 false 并保留 residual。
     ///   * 只有 `IsCaptureTargetStillReferenced() == false` 时才 Release / Destroy RT。
     /// </summary>
     internal static class FrameCaptureDriver
@@ -75,6 +109,8 @@ namespace ADOFAI.Renderist.Export
 
         private const string CaptureTargetName = "ADOFAI.Renderist.CaptureTarget";
 
+        private const string DownsampleTargetNamePrefix = "ADOFAI.Renderist.Downsample.";
+
         /// <summary>
         /// 判定「baseline 三台 aspect 是否互相兼容」以及「当前 aspect 是否仍是 Renderist
         /// 写入值」的相对容差。只吸收浮点表示 / native 往返误差，不构成任何 aspect 合法区间，
@@ -82,11 +118,16 @@ namespace ADOFAI.Renderist.Export
         /// </summary>
         private const float AspectTolerance = 1e-4f;
 
+        private static readonly RenderTexture[] EmptyDownsampleTargets = new RenderTexture[0];
+
         private static GameObject _host;
         private static CaptureHostBehaviour _behaviour;
 
         private static long _generationCounter;
         private static long _activeGeneration;
+
+        /// <summary>session 开始时冻结的输出模式（PNG / log-only）。仅用于决定是否创建降采样链。</summary>
+        private static bool _imageOutputEnabled = true;
 
         // ---- Render Source ownership（只在本 session 内有效）----
         //
@@ -97,14 +138,33 @@ namespace ADOFAI.Renderist.Export
         // 写入失败即由 RestoreCameraSource 收敛；未能收敛时状态保留供 Stop 重试。
         private static bool _sourceActive;
         private static RenderTexture _captureTarget;
-        private static int _captureWidth;
-        private static int _captureHeight;
+        /// <summary>Source RenderTexture 尺寸（三台 Camera 实际渲染进入的 RT）。</summary>
+        private static int _renderWidth;
+        private static int _renderHeight;
+        /// <summary>最终输出尺寸（PNG / ReadPixels）。</summary>
+        private static int _outputWidth;
+        private static int _outputHeight;
+        /// <summary>本 session 冻结的超采样倍率；1 = 关闭。</summary>
+        private static int _supersamplingScale = OutputGeometryPolicy.DefaultSupersamplingScale;
+        /// <summary>降采样链（source 之后逐级）；scale=1 时为空数组。</summary>
+        private static RenderTexture[] _downsampleTargets = EmptyDownsampleTargets;
         private static Camera _bgStaticCamera;
         private static Camera _bgCamera;
         private static Camera _mainCamera;
         private static RenderTexture _oldBgStaticTarget;
         private static RenderTexture _oldBgTarget;
         private static RenderTexture _oldMainTarget;
+
+        // ---- GPU 状态 ownership ----
+        //
+        // 两个 token 相互独立：RenderTexture.active 与 GL.sRGBWrite。
+        // 只有真正登记过（即发生过修改）时才可能产生 residual；保存失败且未修改时不登记。
+        private static bool _activeStateOwned;
+        private static RenderTexture _savedActiveState;
+        private static bool _srgbWriteOwned;
+        private static bool _savedSrgbWrite;
+        /// <summary>activation 时冻结的色彩空间判定；Linear 下才按 destination 设置 sRGBWrite。</summary>
+        private static bool _linearColorSpace;
 
         // ---- Camera aspect ownership（与 targetTexture 独立登记、合并收敛）----
         //
@@ -144,8 +204,30 @@ namespace ADOFAI.Renderist.Export
         public static bool HasOwnedCaptureTarget => _captureTarget != null;
 
         /// <summary>
+        /// 是否仍持有任何未成功释放的降采样 RT（residual ownership）。
+        /// </summary>
+        public static bool HasOwnedDownsampleChain
+        {
+            get
+            {
+                if (_downsampleTargets == null) return false;
+                for (int i = 0; i < _downsampleTargets.Length; i++)
+                {
+                    if (_downsampleTargets[i] != null) return true;
+                }
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 是否有 GPU 状态（RenderTexture.active / GL.sRGBWrite）尚未恢复。
+        /// 未恢复前绝不销毁任何 RT，且当前帧不得 commit。
+        /// </summary>
+        public static bool HasResidualGpuState => _activeStateOwned || _srgbWriteOwned;
+
+        /// <summary>
         /// 把本 session capture target 的只读形态（format / graphicsFormat / MSAA / mipmap /
-        /// 冻结尺寸）写入运行时 inventory，供 session metadata 记录。
+        /// 冻结尺寸）与降采样链首级形态写入运行时 inventory，供 session metadata 记录。
         /// 只读：不修改 RenderTexture 的任何属性；target 未激活时为 no-op。
         /// </summary>
         public static void CaptureRenderTargetInventory(RenderEnvironmentInventory inventory)
@@ -155,13 +237,30 @@ namespace ADOFAI.Renderist.Export
             RenderTexture target = _captureTarget;
             if (target == null) return;
 
-            inventory.CaptureRenderTarget(target, _captureWidth, _captureHeight);
+            inventory.CaptureRenderTarget(target, _renderWidth, _renderHeight);
+
+            if (_downsampleTargets != null && _downsampleTargets.Length > 0)
+                inventory.CaptureDownsampleTarget(_downsampleTargets[0]);
         }
 
-        /// <summary>本 session 冻结的捕获尺寸；未激活时为 0。</summary>
-        public static int CaptureWidth => _captureWidth;
+        /// <summary>
+        /// 三台原生 Camera 实际渲染进入的 Source RenderTexture 宽度；未激活时为 0。
+        /// </summary>
+        public static int CaptureWidth => _renderWidth;
 
-        public static int CaptureHeight => _captureHeight;
+        public static int CaptureHeight => _renderHeight;
+
+        /// <summary>最终输出宽度（PNG / ReadPixels）；未激活时为 0。</summary>
+        public static int OutputWidth => _outputWidth;
+
+        /// <summary>最终输出高度（PNG / ReadPixels）；未激活时为 0。</summary>
+        public static int OutputHeight => _outputHeight;
+
+        /// <summary>本 session 冻结的超采样倍率；1 = 关闭。</summary>
+        public static int SupersamplingScale => _supersamplingScale;
+
+        /// <summary>降采样级数（不含 source）；scale=1 时为 0。</summary>
+        public static int DownsampleLevelCount => _downsampleTargets == null ? 0 : _downsampleTargets.Length;
 
         /// <summary>
         /// 本 session 写入三台 Camera 的统一输出 aspect（width / height）；
@@ -202,6 +301,10 @@ namespace ADOFAI.Renderist.Export
                 // 新 generation 从"未写过任何 aspect"开始；上一次 session 的 ownership
                 // 必须先由 Stop() 收敛（Start 不接管未释放的 ownership）。
                 _aspectAssignedCount = 0;
+                // 输出模式在 session 开始时冻结一次：降采样链是否创建只取决于本值。
+                _imageOutputEnabled = imageOutputEnabled;
+                _downsampleTargets = EmptyDownsampleTargets;
+                _supersamplingScale = OutputGeometryPolicy.DefaultSupersamplingScale;
 
                 host = new GameObject("ADOFAI.Renderist.FrameCaptureDriver");
                 host.hideFlags = HideFlags.HideAndDontSave;
@@ -252,8 +355,10 @@ namespace ADOFAI.Renderist.Export
         /// Start 不负责这件事；真正接管必须等到 scheduler 的 InitializationHold readiness
         /// 满足、即将进入 Capturing 之前。此时 scrCamera 与三台 Camera 才必然可用。
         ///
-        /// width / height 是 scheduler 在 session 开始时冻结的输出几何（自定义分辨率或
-        /// 冻结的窗口尺寸）；本方法**不读 Screen**，因此 session 中途改变窗口不影响本 session。
+        /// renderWidth/renderHeight 是 Source RT 尺寸（= output × scale）；
+        /// outputWidth/outputHeight 是最终 PNG / ReadPixels 尺寸；
+        /// supersamplingScale &gt; 1 且 image output enabled 时，会在 Source RT 之后
+        /// 创建多级降采样链。本方法**不读 Screen**，因此 session 中途改变窗口不影响本 session。
         ///
         /// 激活前的 aspect baseline 检查（在任何 Camera 写入之前完成，fail-closed）：
         ///   * 三台 aspect 必须可读、有限且为正；
@@ -265,7 +370,10 @@ namespace ADOFAI.Renderist.Export
         /// 成功后才允许 RequestCapture。失败返回 false + machine-readable error；
         /// 调用方必须让 session 失败，不得回退到 Screen framebuffer。
         /// </summary>
-        public static bool TryActivateCameraSource(long generation, int width, int height, out string error)
+        public static bool TryActivateCameraSource(
+            long generation, int renderWidth, int renderHeight,
+            int outputWidth, int outputHeight, int supersamplingScale,
+            out string error)
         {
             error = null;
 
@@ -286,9 +394,19 @@ namespace ADOFAI.Renderist.Export
             }
 
             // 冻结几何由调用方提供：驱动不存在第二个分辨率来源。
-            if (width <= 0 || height <= 0)
+            if (renderWidth <= 0 || renderHeight <= 0)
             {
                 error = "capture-dimensions-invalid";
+                return false;
+            }
+            if (outputWidth <= 0 || outputHeight <= 0)
+            {
+                error = "capture-output-dimensions-invalid";
+                return false;
+            }
+            if (supersamplingScale < OutputGeometryPolicy.MinimumSupersamplingScale)
+            {
+                error = "capture-supersampling-scale-invalid";
                 return false;
             }
 
@@ -301,29 +419,74 @@ namespace ADOFAI.Renderist.Export
                 return false;
             }
 
+            _renderWidth = renderWidth;
+            _renderHeight = renderHeight;
+            _outputWidth = outputWidth;
+            _outputHeight = outputHeight;
+            _supersamplingScale = supersamplingScale;
+            _linearColorSpace = ReadLinearColorSpace();
+
+            // ---- 1) Source RenderTexture：构造成功即登记 ownership ----
             RenderTexture target;
             try
             {
-                target = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
-                target.name = CaptureTargetName;
-                target.antiAliasing = 1;
-                target.useMipMap = false;
-                target.autoGenerateMips = false;
-                target.Create();
+                target = new RenderTexture(renderWidth, renderHeight, 24, RenderTextureFormat.ARGB32);
             }
             catch (Exception ex)
             {
                 Log.Exception("FrameCaptureDriver: 创建 capture target 失败", ex);
                 error = "capture-target-create-failed:" + ex.Message;
+                ClearFrozenGeometry();
                 return false;
             }
 
             // 从这里开始 target 已存在：任何失败路径都必须"销毁成功"或"保留为 ownership"。
+            _captureTarget = target;
+
+            try
+            {
+                target.name = CaptureTargetName;
+                target.antiAliasing = 1;
+                target.useMipMap = false;
+                target.autoGenerateMips = false;
+                // 降采样要求确定性采样方式：Source 也会作为第一级 Blit 的输入。
+                target.filterMode = FilterMode.Bilinear;
+                target.wrapMode = TextureWrapMode.Clamp;
+                target.Create();
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("FrameCaptureDriver: 配置 capture target 失败", ex);
+                error = "capture-target-configure-failed:" + ex.Message;
+                RetainOrDiscardUntouchedTargets();
+                return false;
+            }
+
             if (!target.IsCreated())
             {
-                DiscardOrRetainUntouchedTarget(target);
                 error = "capture-target-not-created";
+                RetainOrDiscardUntouchedTargets();
                 return false;
+            }
+
+            // ---- 2) 降采样链（仅 PNG 且 scale>1）：构造成功即登记 ----
+            if (_imageOutputEnabled && supersamplingScale > 1)
+            {
+                if (!OutputGeometryPolicy.TryBuildDownsampleSteps(
+                        outputWidth, outputHeight, supersamplingScale,
+                        out DownsampleStep[] steps, out string stepsError))
+                {
+                    error = "downsample-chain-plan-failed:" + stepsError;
+                    RetainOrDiscardUntouchedTargets();
+                    return false;
+                }
+
+                if (!TryCreateDownsampleChain(steps, out string chainCreateError))
+                {
+                    error = chainCreateError;
+                    RetainOrDiscardUntouchedTargets();
+                    return false;
+                }
             }
 
             // 保存真实旧值：不得假定原值为 null。getter 也可能抛异常（例如 Camera 已销毁），
@@ -340,8 +503,8 @@ namespace ADOFAI.Renderist.Export
             catch (Exception ex)
             {
                 Log.Exception("FrameCaptureDriver: 读取 Camera 旧 targetTexture 失败", ex);
-                DiscardOrRetainUntouchedTarget(target);
                 error = "capture-source-saved-target-unavailable:" + ex.Message;
+                RetainOrDiscardUntouchedTargets();
                 return false;
             }
 
@@ -351,29 +514,26 @@ namespace ADOFAI.Renderist.Export
                 !TryReadCameraAspect(bgCamera, "BGcam", out float oldBgAspect, out aspectReadError) ||
                 !TryReadCameraAspect(mainCamera, "camobj", out float oldMainAspect, out aspectReadError))
             {
-                DiscardOrRetainUntouchedTarget(target);
                 error = aspectReadError;
+                RetainOrDiscardUntouchedTargets();
                 return false;
             }
 
             if (!IsAspectBaselineCompatible(
                     oldBgStaticAspect, oldBgAspect, oldMainAspect, out string aspectBaselineDetail))
             {
-                DiscardOrRetainUntouchedTarget(target);
                 error = "capture-aspect-baseline-incompatible:" + aspectBaselineDetail;
+                RetainOrDiscardUntouchedTargets();
                 return false;
             }
 
-            // 统一输出 aspect：由冻结几何派生，三台 Camera 使用同一个值。
-            float unifiedAspect = (float)((double)width / (double)height);
+            // 统一输出 aspect：由冻结**输出**几何派生（(S·W)/(S·H) == W/H，与倍率无关），
+            // 三台 Camera 使用同一个值。
+            float unifiedAspect = (float)((double)outputWidth / (double)outputHeight);
 
             // 在**第一次 Camera 写入之前**登记 ownership：partial assignment 也必须可见、可重试。
             // 从此 _sourceActive 表示"ownership transaction 已开始（可能 partial）"。
             // targetTexture 与 aspect 同时登记，因此 setter 成功后读回失败也不会漏掉 partial。
-            _captureTarget = target;
-            _captureWidth = width;
-            _captureHeight = height;
-            _writtenAspect = unifiedAspect;
             _bgStaticCamera = bgStaticCamera;
             _bgCamera = bgCamera;
             _mainCamera = mainCamera;
@@ -383,6 +543,7 @@ namespace ADOFAI.Renderist.Export
             _oldBgStaticAspect = oldBgStaticAspect;
             _oldBgAspect = oldBgAspect;
             _oldMainAspect = oldMainAspect;
+            _writtenAspect = unifiedAspect;
             _sourceActive = true;
 
             try
@@ -417,8 +578,12 @@ namespace ADOFAI.Renderist.Export
 
             // 只在 source activate 时记录一次完整 inventory；不逐帧刷日志。
             Log.Info("FrameCaptureDriver: capture source active source=" + CameraSourceLabel +
-                     " size=" + width.ToString(CultureInfo.InvariantCulture) + "x" +
-                     height.ToString(CultureInfo.InvariantCulture) +
+                     " size=" + renderWidth.ToString(CultureInfo.InvariantCulture) + "x" +
+                     renderHeight.ToString(CultureInfo.InvariantCulture) +
+                     " outputSize=" + outputWidth.ToString(CultureInfo.InvariantCulture) + "x" +
+                     outputHeight.ToString(CultureInfo.InvariantCulture) +
+                     " supersamplingScale=" + supersamplingScale.ToString(CultureInfo.InvariantCulture) +
+                     " downsampleLevels=" + DownsampleLevelCount.ToString(CultureInfo.InvariantCulture) +
                      " unifiedAspect=" + unifiedAspect.ToString("0.######", CultureInfo.InvariantCulture) +
                      " baselineAspect={Bgcamstatic=" +
                      oldBgStaticAspect.ToString("0.######", CultureInfo.InvariantCulture) +
@@ -432,9 +597,105 @@ namespace ADOFAI.Renderist.Export
         }
 
         /// <summary>
+        /// 由已创建的 Source RT descriptor 派生降采样链。
+        ///
+        /// 只修改必要字段（尺寸 / 深度 / MSAA / mipmap / dynamic scale / bindMS /
+        /// random write），**不改动 graphicsFormat 与 sRGB 语义**，因此各级与 Source 的
+        /// 颜色格式与 sRGB 语义一致性是构造性保证。
+        ///
+        /// 每一级构造成功后**立即**登记到 `_downsampleTargets[i]`，之后才做属性设置与
+        /// Create / IsCreated 校验，避免"只用局部变量持有再执行可能抛异常的操作"。
+        /// </summary>
+        private static bool TryCreateDownsampleChain(DownsampleStep[] steps, out string error)
+        {
+            error = null;
+
+            if (steps == null || steps.Length == 0)
+            {
+                _downsampleTargets = EmptyDownsampleTargets;
+                return true;
+            }
+
+            var targets = new RenderTexture[steps.Length];
+            _downsampleTargets = targets;
+
+            RenderTextureDescriptor template = _captureTarget.descriptor;
+
+            for (int i = 0; i < steps.Length; i++)
+            {
+                DownsampleStep step = steps[i];
+
+                RenderTexture level;
+                try
+                {
+                    RenderTextureDescriptor descriptor = template;
+                    descriptor.width = step.Width;
+                    descriptor.height = step.Height;
+                    // 降采样只做颜色搬运，不需要深度；中间级也不使用 MSAA / mipmap。
+                    descriptor.depthBufferBits = 0;
+                    descriptor.msaaSamples = 1;
+                    descriptor.useMipMap = false;
+                    descriptor.autoGenerateMips = false;
+                    descriptor.bindMS = false;
+                    descriptor.enableRandomWrite = false;
+                    descriptor.useDynamicScale = false;
+
+                    level = new RenderTexture(descriptor);
+                }
+                catch (Exception ex)
+                {
+                    Log.Exception("FrameCaptureDriver: 创建降采样级 " + i + " 失败", ex);
+                    error = "downsample-target-create-failed:" + i + ":" + ex.Message;
+                    return false;
+                }
+
+                // 构造成功即登记 ownership（在任何可能抛异常的属性操作之前）。
+                targets[i] = level;
+
+                try
+                {
+                    level.name = DownsampleTargetNamePrefix + i.ToString(CultureInfo.InvariantCulture);
+                    // Blit 使用**源**纹理的 filter / wrap：Source 与其后每一级都必须显式
+                    // 设为 Bilinear + Clamp，否则边缘会出现跨边界渗色或取样方式不确定。
+                    level.filterMode = FilterMode.Bilinear;
+                    level.wrapMode = TextureWrapMode.Clamp;
+                    level.Create();
+                }
+                catch (Exception ex)
+                {
+                    Log.Exception("FrameCaptureDriver: 配置降采样级 " + i + " 失败", ex);
+                    error = "downsample-target-configure-failed:" + i + ":" + ex.Message;
+                    return false;
+                }
+
+                if (!level.IsCreated())
+                {
+                    error = "downsample-target-not-created:" + i.ToString(CultureInfo.InvariantCulture);
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>读取当前色彩空间；失败按 Gamma 处理（Gamma 路径不触碰 GL.sRGBWrite）。</summary>
+        private static bool ReadLinearColorSpace()
+        {
+            try
+            {
+                return QualitySettings.activeColorSpace == ColorSpace.Linear;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("FrameCaptureDriver: 读取 activeColorSpace 失败，按 Gamma 处理", ex);
+                return false;
+            }
+        }
+
+        /// <summary>
         /// 请求在下一个 WaitForEndOfFrame 完成指定输出帧的**帧末事务**。同帧内会被去重。
-        /// PNG 与 log-only 都走这一条入口；是否真的读回 / 编码 / 写盘由 session 开始时
-        /// 冻结的 <c>_imageOutputEnabled</c> 决定。
+        /// PNG 与 log-only 都走这一条入口；是否真的降采样 / 读回 / 编码 / 写盘由 session
+        /// 开始时冻结的 <c>_imageOutputEnabled</c> 决定。
         /// generation 与当前 active generation 不一致、或 Render Source 尚未激活时返回 false。
         /// 绝不回退到 Screen framebuffer。
         /// </summary>
@@ -449,24 +710,83 @@ namespace ADOFAI.Renderist.Export
         }
 
         /// <summary>
-        /// target 已创建但**尚未接触任何 Camera** 时的失败收敛：
-        /// 先尝试完整 Release + Destroy；失败则把引用交给 ownership（`_captureTarget`，
-        /// 不伪造 Camera ownership、`_sourceActive` 保持 false），由 Stop /
-        /// RestoreCameraSource 的 source-inactive retry path 继续收敛。
+        /// target 已登记但**尚未接触任何 Camera** 时的失败收敛：
+        /// 先尝试把全部已创建的 RT（source + 各级）完整 Release + Destroy；
+        /// 失败的那些保留在 ownership 中（可观察、可重试），`_sourceActive` 保持 false，
+        /// 由 Stop 的 source-inactive retry path 继续收敛。
         /// 绝不把已创建的 RenderTexture 作为 local reference 丢弃。
         /// </summary>
-        private static void DiscardOrRetainUntouchedTarget(RenderTexture target)
+        private static void RetainOrDiscardUntouchedTargets()
         {
-            if (TryDestroyTexture(target))
-                return;
+            if (_captureTarget != null && !TryDiscardOwnedTarget(_captureTarget))
+            {
+                Log.Warn("FrameCaptureDriver: capture target 销毁失败，保留 ownership 供下一次 Stop 重试");
+            }
 
-            _captureTarget = target;
-            Log.Warn("FrameCaptureDriver: capture target 销毁失败，保留 ownership 供下一次 Stop 重试");
+            if (_downsampleTargets != null)
+            {
+                for (int i = 0; i < _downsampleTargets.Length; i++)
+                {
+                    RenderTexture level = _downsampleTargets[i];
+                    if (level == null) continue;
+                    if (!TryDiscardOwnedTarget(level))
+                    {
+                        Log.Warn("FrameCaptureDriver: 降采样级 " + i +
+                                 " 销毁失败，保留 ownership 供下一次 Stop 重试");
+                    }
+                }
+            }
+
+            ClearFrozenGeometryIfReleased();
+        }
+
+        /// <summary>
+        /// 尝试销毁单个仍由本类拥有的 RT，并在成功后清空对应 ownership 槽位。
+        /// 返回 false 时调用方必须保留引用（本方法不清空任何槽位）。
+        /// </summary>
+        private static bool TryDiscardOwnedTarget(RenderTexture target)
+        {
+            if (target == null) return true;
+            if (!TryDestroyTexture(target)) return false;
+
+            if (ReferenceEquals(_captureTarget, target))
+            {
+                _captureTarget = null;
+            }
+
+            if (_downsampleTargets != null)
+            {
+                for (int i = 0; i < _downsampleTargets.Length; i++)
+                {
+                    if (ReferenceEquals(_downsampleTargets[i], target))
+                        _downsampleTargets[i] = null;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>RT 全部释放后清空冻结尺寸，避免残留旧的几何读数。</summary>
+        private static void ClearFrozenGeometryIfReleased()
+        {
+            if (_captureTarget != null) return;
+            if (HasOwnedDownsampleChain) return;
+            ClearFrozenGeometry();
+        }
+
+        private static void ClearFrozenGeometry()
+        {
+            _renderWidth = 0;
+            _renderHeight = 0;
+            _outputWidth = 0;
+            _outputHeight = 0;
+            _supersamplingScale = OutputGeometryPolicy.DefaultSupersamplingScale;
+            _downsampleTargets = EmptyDownsampleTargets;
         }
 
         /// <summary>
         /// Camera 接管过程中失败后的统一收敛：直接把已登记的 ownership（captureTarget +
-        /// Camera refs + saved old targets）交给既有 <see cref="RestoreCameraSource"/>。
+        /// 降采样链 + Camera refs + saved old targets）交给既有 <see cref="RestoreCameraSource"/>。
         /// partial assignment 与完整 assignment 走同一条 ownership-aware 路径：
         ///   * cleanup 成功 → ownership 全清，返回 false 让 scheduler fail-closed；
         ///   * cleanup 失败 → 状态原样保留为 residual ownership，下一次 Stop 继续重试。
@@ -493,7 +813,8 @@ namespace ADOFAI.Renderist.Export
         }
 
         /// <summary>
-        /// 停止并释放 host / coroutine / 复用纹理，并精确恢复 Render Source ownership。幂等。
+        /// 停止并释放 host / coroutine / 复用纹理，并精确恢复 Render Source ownership 与
+        /// GPU 状态 ownership。幂等。
         /// generation 先失效；Shutdown / capture source restore / host Destroy 各自独立收敛。
         /// host / behaviour 引用只有在 Destroy(host) 返回成功后才清空；失败时保留供下次 Stop 重试。
         /// </summary>
@@ -553,7 +874,8 @@ namespace ADOFAI.Renderist.Export
             }
 
             return sourceRestored && hostDestroyed && !IsRunning &&
-                   !HasOwnedCaptureTarget && _activeGeneration == 0;
+                   !HasOwnedCaptureTarget && !HasOwnedDownsampleChain && !HasResidualGpuState &&
+                   _activeGeneration == 0;
         }
 
         // ================================================================
@@ -561,7 +883,7 @@ namespace ADOFAI.Renderist.Export
         // ================================================================
 
         /// <summary>
-        /// 幂等释放 Render Source。Renderist 只恢复自己仍然拥有的属性：
+        /// 幂等释放 Render Source 与 GPU 状态。Renderist 只恢复自己仍然拥有的属性：
         ///
         /// 逐 Camera 检查当前 targetTexture 是否仍然精确等于本 session 的 captureTarget。
         ///   * 是  → Renderist 仍拥有该属性 → 写回 session 前的真实值。
@@ -574,12 +896,16 @@ namespace ADOFAI.Renderist.Export
         /// 逐 Camera 处理结束后再确认是否仍有 live Camera 精确引用 captureTarget：
         ///   * 有 → restoration 未完成，保留 ownership 与 captureTarget 供下次 retry，
         ///          返回 false（绝不 Release / Destroy 仍被引用的 RenderTexture）。
-        ///   * 无 → 尝试 Release + Destroy；两步都成功返回后才清空 captureTarget、Camera
-        ///          与冻结尺寸。任一步异常都保留 target 引用并返回 false，供下一次 Stop 重试。
+        ///   * 无 → GPU 状态（active / sRGBWrite）先独立恢复；任一未恢复即返回 false 并
+        ///          **保留全部 RT**（它们可能仍被该 GPU 状态引用）。
+        ///   * GPU 状态全部恢复后 → 按叶子→根释放降采样链，再释放 Source RT；两步都成功
+        ///          返回后才清空 captureTarget、Camera 与冻结尺寸。任一步异常都保留引用
+        ///          并返回 false，供下一次 Stop 重试。
         ///
-        /// Camera aspect 与 targetTexture **各自独立**释放（RelinquishAspect /
-        /// RelinquishTargetTexture），但收敛判定合并：aspect 恢复失败同样返回 false 并保留
-        /// ownership，因此 residual 不会被提前清空；最后一次成功收敛时才清空 aspect 记录。
+        /// Camera aspect、targetTexture 与 GPU 状态**各自独立**释放
+        /// （RelinquishAspect / RelinquishTargetTexture / TryRestoreGpuState），
+        /// 但收敛判定合并：任一失败同样返回 false 并保留 ownership，因此 residual 不会
+        /// 被提前清空；最后一次成功收敛时才清空 aspect 记录。
         /// </summary>
         private static bool RestoreCameraSource()
         {
@@ -623,6 +949,23 @@ namespace ADOFAI.Renderist.Export
                 return false;
             }
 
+            // GPU 状态：未全部恢复前，绝不销毁可能仍被该状态引用的 RT。
+            if (!TryRestoreGpuState(out string gpuStateError))
+            {
+                Log.Warn("FrameCaptureDriver: GPU 状态尚未恢复，保留全部 RT ownership 供下一次 cleanup 重试" +
+                         " (activeStateOwned=" + (_activeStateOwned ? "true" : "false") +
+                         " srgbWriteOwned=" + (_srgbWriteOwned ? "true" : "false") +
+                         " error=" + (gpuStateError ?? "unknown") + ")");
+                return false;
+            }
+
+            // 降采样链：叶子 → 根，每级都必须 Release + Destroy 全成功才丢引用。
+            if (!TryReleaseDownsampleChain())
+            {
+                // 各失败级别已保留在 _downsampleTargets 中；Source RT 也不能丢。
+                return false;
+            }
+
             RenderTexture target = _captureTarget;
             if (!TryDestroyTexture(target))
             {
@@ -644,9 +987,84 @@ namespace ADOFAI.Renderist.Export
             _oldBgAspect = 0f;
             _oldMainAspect = 0f;
             _aspectAssignedCount = 0;
-            _captureWidth = 0;
-            _captureHeight = 0;
+            ClearFrozenGeometry();
             return true;
+        }
+
+        /// <summary>
+        /// 释放降采样链（叶子 → 根）。每级都必须 Release + Destroy 全成功才清空该槽位；
+        /// 任一失败即返回 false（失败级别保留在 ownership 中供下一次 Stop 重试）。
+        /// </summary>
+        private static bool TryReleaseDownsampleChain()
+        {
+            if (_downsampleTargets == null || _downsampleTargets.Length == 0)
+            {
+                _downsampleTargets = EmptyDownsampleTargets;
+                return true;
+            }
+
+            bool all = true;
+            for (int i = _downsampleTargets.Length - 1; i >= 0; i--)
+            {
+                RenderTexture level = _downsampleTargets[i];
+                if (level == null) continue;
+
+                if (!TryDiscardOwnedTarget(level))
+                {
+                    all = false;
+                    Log.Warn("FrameCaptureDriver: 降采样级 " + i +
+                             " 释放失败，保留 ownership 供下一次 cleanup 重试");
+                }
+            }
+
+            if (all && !HasOwnedDownsampleChain)
+                _downsampleTargets = EmptyDownsampleTargets;
+
+            return all;
+        }
+
+        /// <summary>
+        /// 独立恢复 GPU 状态两个 token。返回 false 表示至少一个仍未恢复（保留 residual）。
+        /// 正常帧路径已在 finally 中等价恢复并清空 token，因此此处通常是 no-op。
+        /// </summary>
+        private static bool TryRestoreGpuState(out string error)
+        {
+            error = null;
+            bool ok = true;
+
+            if (_activeStateOwned)
+            {
+                try
+                {
+                    RenderTexture.active = _savedActiveState;
+                    _activeStateOwned = false;
+                    _savedActiveState = null;
+                }
+                catch (Exception ex)
+                {
+                    ok = false;
+                    error = "active-state-restore-failed:" + ex.Message;
+                    Log.Exception("FrameCaptureDriver: 恢复 RenderTexture.active 失败，保留 ownership 供重试", ex);
+                }
+            }
+
+            if (_srgbWriteOwned)
+            {
+                try
+                {
+                    GL.sRGBWrite = _savedSrgbWrite;
+                    _srgbWriteOwned = false;
+                }
+                catch (Exception ex)
+                {
+                    ok = false;
+                    string detail = "srgb-write-restore-failed:" + ex.Message;
+                    error = error == null ? detail : error + " | " + detail;
+                    Log.Exception("FrameCaptureDriver: 恢复 GL.sRGBWrite 失败，保留 ownership 供重试", ex);
+                }
+            }
+
+            return ok;
         }
 
         /// <summary>
@@ -955,7 +1373,7 @@ namespace ADOFAI.Renderist.Export
             private long _generation;
             /// <summary>
             /// session 开始时冻结的输出模式。true = PNG 序列；false = log-only
-            /// （帧事务照常，但绝不读回 / 编码 / 写盘，也不构造 PNG 文件路径）。
+            /// （帧事务照常，但绝不降采样 / 读回 / 编码 / 写盘，也不构造 PNG 文件路径）。
             /// </summary>
             private bool _imageOutputEnabled = true;
 
@@ -1025,6 +1443,17 @@ namespace ADOFAI.Renderist.Export
                 }
             }
 
+            /// <summary>本帧读回源：scale=1 时为 Source RT，否则为链的最后一级（output 尺寸）。</summary>
+            private static RenderTexture ReadbackTarget
+            {
+                get
+                {
+                    if (_downsampleTargets != null && _downsampleTargets.Length > 0)
+                        return _downsampleTargets[_downsampleTargets.Length - 1];
+                    return _captureTarget;
+                }
+            }
+
             private void CaptureNow(long frameIndex)
             {
                 if (_stopped || _generation != _activeGeneration) return;
@@ -1041,18 +1470,22 @@ namespace ADOFAI.Renderist.Export
                     {
                         throw new InvalidOperationException("capture-source-inactive");
                     }
-                    if (_captureWidth <= 0 || _captureHeight <= 0)
+                    if (_renderWidth <= 0 || _renderHeight <= 0 ||
+                        _outputWidth <= 0 || _outputHeight <= 0)
                     {
                         throw new InvalidOperationException("capture-dimensions-invalid");
                     }
 
-                    // ---- Log-only：跳过图像读回 / 编码 / 写盘 ----
+                    // ---- Log-only：跳过高分辨率链 / 图像读回 / 编码 / 写盘 ----
                     // 帧末事务已经成立（source 有效、generation 未失效、pending index 由 observe
                     // 循环校验），因此返回成功的帧末结果，由 scheduler 走同一个 CommitFrame。
-                    // 本分支不得触碰 EnsureTexture / Texture2D / ReadPixels / Apply /
-                    // EncodeToPNG / File.WriteAllBytes。
+                    // 本分支不得触碰链创建 / Blit / EnsureTexture / Texture2D / ReadPixels /
+                    // Apply / EncodeToPNG / File.WriteAllBytes。
                     if (!_imageOutputEnabled)
                     {
+                        if (_downsampleTargets != null && _downsampleTargets.Length != 0)
+                            throw new InvalidOperationException("log-only-downsample-chain-present");
+
                         if (_stopped || _generation != _activeGeneration) return;
                         Log.Debug("FrameCaptureDriver: log-only frame-end transaction frameIndex=" +
                                   frameIndex.ToString(CultureInfo.InvariantCulture) + " (no image output)");
@@ -1063,22 +1496,17 @@ namespace ADOFAI.Renderist.Export
                     // ---- PNG ----（以下全部只为 image output 服务）
                     EnsureTexture();
 
-                    // RenderTexture.active 只在这段临界区内改变；即使后续
-                    // EncodeToPNG / 文件 IO 抛异常，全局 active RT 也已恢复。
-                    RenderTexture previous = RenderTexture.active;
-                    RenderTexture.active = target;
-                    try
+                    // GPU 临界区：降采样链 + ReadPixels。返回前必须已恢复全部 GPU 状态；
+                    // 未恢复即视为本帧失败（不 Apply / 不 EncodeToPNG / 不写盘 / 不 commit）。
+                    if (!TryRunGpuCapturePipeline(out string gpuError))
                     {
-                        _texture.ReadPixels(
-                            new Rect(0, 0, _captureWidth, _captureHeight), 0, 0);
-                    }
-                    finally
-                    {
-                        RenderTexture.active = previous;
+                        if (_stopped || _generation != _activeGeneration) return;
+                        throw new InvalidOperationException(gpuError ?? "gpu-capture-pipeline-failed");
                     }
 
                     if (_stopped || _generation != _activeGeneration) return;
 
+                    // GPU 状态已全部恢复成功，之后才做 CPU 侧的 Apply / 编码 / 写盘。
                     _texture.Apply(false);
 
                     byte[] png = _texture.EncodeToPNG();
@@ -1103,10 +1531,145 @@ namespace ADOFAI.Renderist.Export
                 }
             }
 
+            /// <summary>
+            /// 帧末 GPU 临界区：可选的多级 bilinear 降采样 + 从 output 尺寸的读回源 ReadPixels。
+            ///
+            /// GPU 状态 ownership：
+            ///   * 保存失败且**尚未修改任何状态**时直接失败，不登记 token（不产生虚假 residual）。
+            ///   * 保存成功后立即登记 token；结束时两个 token **独立**恢复。
+            ///   * 任一 token 恢复失败即返回 false 且保留该 token（residual），由下一次 Stop 重试。
+            ///   * Gamma 下不触碰 GL.sRGBWrite；scale=1 时也不触碰（保持第一闭环行为）。
+            /// </summary>
+            private bool TryRunGpuCapturePipeline(out string error)
+            {
+                error = null;
+
+                bool trackSrgbWrite = _linearColorSpace && _downsampleTargets != null &&
+                                      _downsampleTargets.Length > 0;
+
+                // ---- 1) 保存（在任何修改之前）----
+                RenderTexture previousActive;
+                try
+                {
+                    previousActive = RenderTexture.active;
+                }
+                catch (Exception ex)
+                {
+                    // 保存失败且未做任何修改：不登记 ownership，不产生虚假 residual。
+                    error = "gpu-state-save-failed:" + ex.Message;
+                    return false;
+                }
+
+                bool previousSrgbWrite = false;
+                if (trackSrgbWrite)
+                {
+                    try
+                    {
+                        previousSrgbWrite = GL.sRGBWrite;
+                    }
+                    catch (Exception ex)
+                    {
+                        error = "gpu-state-save-failed:" + ex.Message;
+                        return false;
+                    }
+                }
+
+                // ---- 2) 登记 ownership（此时才开始拥有）----
+                _savedActiveState = previousActive;
+                _activeStateOwned = true;
+                if (trackSrgbWrite)
+                {
+                    _savedSrgbWrite = previousSrgbWrite;
+                    _srgbWriteOwned = true;
+                }
+
+                // ---- 3) 降采样链 + ReadPixels ----
+                string pipelineError = null;
+                try
+                {
+                    RenderTexture source = _captureTarget;
+                    for (int i = 0; i < _downsampleTargets.Length; i++)
+                    {
+                        RenderTexture destination = _downsampleTargets[i];
+                        if (destination == null)
+                            throw new InvalidOperationException("downsample-target-missing:" + i);
+                        if (ReferenceEquals(source, destination))
+                            throw new InvalidOperationException("downsample-source-equals-destination:" + i);
+
+                        if (trackSrgbWrite)
+                            GL.sRGBWrite = GraphicsFormatUtility.IsSRGBFormat(destination.graphicsFormat);
+
+                        Graphics.Blit(source, destination);
+                        source = destination;
+                    }
+
+                    RenderTexture readback = ReadbackTarget;
+                    if (readback == null)
+                        throw new InvalidOperationException("readback-target-missing");
+
+                    if (trackSrgbWrite)
+                        GL.sRGBWrite = GraphicsFormatUtility.IsSRGBFormat(readback.graphicsFormat);
+
+                    RenderTexture.active = readback;
+                    _texture.ReadPixels(new Rect(0, 0, _outputWidth, _outputHeight), 0, 0);
+                }
+                catch (Exception ex)
+                {
+                    pipelineError = ex.Message;
+                }
+
+                // ---- 4) 两个 token 独立恢复 ----
+                bool activeRestored = true;
+                if (_activeStateOwned)
+                {
+                    try
+                    {
+                        RenderTexture.active = _savedActiveState;
+                        _activeStateOwned = false;
+                        _savedActiveState = null;
+                    }
+                    catch (Exception ex)
+                    {
+                        activeRestored = false;
+                        Log.Exception("FrameCaptureDriver: 恢复 RenderTexture.active 失败，保留 ownership 供重试", ex);
+                    }
+                }
+
+                bool srgbRestored = true;
+                if (_srgbWriteOwned)
+                {
+                    try
+                    {
+                        GL.sRGBWrite = _savedSrgbWrite;
+                        _srgbWriteOwned = false;
+                    }
+                    catch (Exception ex)
+                    {
+                        srgbRestored = false;
+                        Log.Exception("FrameCaptureDriver: 恢复 GL.sRGBWrite 失败，保留 ownership 供重试", ex);
+                    }
+                }
+
+                if (!activeRestored || !srgbRestored)
+                {
+                    error = "gpu-state-restore-failed";
+                    return false;
+                }
+
+                if (pipelineError != null)
+                {
+                    error = pipelineError;
+                    return false;
+                }
+
+                return true;
+            }
+
             private void EnsureTexture()
             {
-                // 必须基于本 session 冻结的 capture 尺寸，而不是每帧读取 Screen。
-                if (_texture != null && _texture.width == _captureWidth && _texture.height == _captureHeight)
+                // 必须基于本 session 冻结的**最终输出**尺寸，而不是每帧读取 Screen，
+                // 也不是 Source RT 的 render 尺寸（超采样时两者不同）。
+                if (_texture != null && _texture.width == _outputWidth && _texture.height == _outputHeight)
                 {
                     return;
                 }
@@ -1117,7 +1680,7 @@ namespace ADOFAI.Renderist.Export
                 }
 
                 // RGB24：只读 CPU 纹理，EncodeToPNG 前不触发 GPU 上传依赖。
-                _texture = new Texture2D(_captureWidth, _captureHeight, TextureFormat.RGB24, false);
+                _texture = new Texture2D(_outputWidth, _outputHeight, TextureFormat.RGB24, false);
             }
 
             /// <summary>

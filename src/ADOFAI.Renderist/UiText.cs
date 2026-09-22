@@ -88,6 +88,15 @@ namespace ADOFAI.Renderist
             "已关闭自定义分辨率：沿用当前游戏窗口渲染分辨率（与既有行为一致）。";
         public const string GuiCustomResolutionHint =
             "导出期间三台谱面 Camera 统一使用该宽高比；异常时以 fail-closed 拒绝启动。";
+        // ---- Phase 3.7.0 第二闭环: 超采样 ----
+        public const string GuiSupersamplingScaleLabel = "超采样倍率：";
+        public const string GuiSupersamplingEffectivePrefix = "实际渲染：";
+        public const string GuiSupersamplingInvalid =
+            "超采样倍率输入无效：必须是大于等于 1 的正整数，且渲染尺寸不得超过硬件上限；设置未被修改，导出保持阻断。";
+        public const string GuiSupersamplingHint =
+            "渲染尺寸 = 输出尺寸 × 倍率，再经多级 bilinear 降采样。倍率 1 为关闭。";
+        public const string GuiSupersamplingDisabledHint =
+            "倍率 1：不启用超采样（与既有行为一致）。";
         public const string GuiReadinessInvalidOutputGeometry = "输出分辨率非法";
         public const string GuiEnvChartCameraAspectPrefix = "谱面相机 aspect：";
         public const string GuiMasterTimelineHandoffBtnStart = "启动 MasterTimeline Deterministic Gameplay Handoff";

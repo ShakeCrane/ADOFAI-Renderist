@@ -132,8 +132,15 @@ namespace ADOFAI.Renderist.Export
         private static bool _geometryCustomResolutionEnabled;
         private static int _geometryConfiguredWidth;
         private static int _geometryConfiguredHeight;
+        private static int _geometryConfiguredSupersamplingScale =
+            OutputGeometryPolicy.DefaultSupersamplingScale;
         private static int _outputWidth;
         private static int _outputHeight;
+        // 第二闭环：render = output × scale；scale=1 时与 output 相同。
+        private static int _supersamplingScale = OutputGeometryPolicy.DefaultSupersamplingScale;
+        private static int _renderWidth;
+        private static int _renderHeight;
+        private static int _downsampleLevelCount;
 
         /// <summary>session 开始时采集的只读运行时渲染环境 inventory（metadata 用）。</summary>
         private static RenderEnvironmentInventory _environmentInventory;
@@ -322,13 +329,23 @@ namespace ADOFAI.Renderist.Export
         public static int GeometryConfiguredWidth => _geometryConfiguredWidth;
         /// <summary>Settings 里 persisted 的自定义高度（诊断用，未解析）。</summary>
         public static int GeometryConfiguredHeight => _geometryConfiguredHeight;
-        /// <summary>本 session 冻结的输出宽度（= capture RenderTexture 宽度）。</summary>
+        /// <summary>Settings 里 persisted 的超采样倍率（诊断用，未解析）。</summary>
+        public static int GeometryConfiguredSupersamplingScale => _geometryConfiguredSupersamplingScale;
+        /// <summary>本 session 冻结的最终输出宽度（= PNG / ReadPixels 尺寸）。</summary>
         public static int OutputWidth => _outputWidth;
-        /// <summary>本 session 冻结的输出高度（= capture RenderTexture 高度）。</summary>
+        /// <summary>本 session 冻结的最终输出高度（= PNG / ReadPixels 尺寸）。</summary>
         public static int OutputHeight => _outputHeight;
         /// <summary>本 session 冻结的统一输出 aspect（三台原生 Camera 与 capture RT 共用）。</summary>
         public static double OutputAspect =>
             _outputHeight > 0 ? (double)_outputWidth / _outputHeight : 0.0;
+        /// <summary>本 session 冻结的超采样倍率；1 = 关闭。</summary>
+        public static int SupersamplingScale => _supersamplingScale;
+        /// <summary>本 session 冻结的 Source RenderTexture 宽度（= OutputWidth × SupersamplingScale）。</summary>
+        public static int RenderWidth => _renderWidth;
+        /// <summary>本 session 冻结的 Source RenderTexture 高度（= OutputHeight × SupersamplingScale）。</summary>
+        public static int RenderHeight => _renderHeight;
+        /// <summary>本 session 冻结的降采样级数（不含 source）；scale=1 时为 0。</summary>
+        public static int DownsampleLevelCount => _downsampleLevelCount;
         /// <summary>session 开始时采集的运行时渲染环境 inventory；未启动时为 null。</summary>
         public static RenderEnvironmentInventory EnvironmentInventory => _environmentInventory;
         public static bool CanonicalCompletionCallbackSeen => _canonicalCompletionCallbackSeen;
@@ -408,6 +425,7 @@ namespace ADOFAI.Renderist.Export
                     return "output-geometry-invalid:" + geometryError;
                 }
 
+
                 _status = SchedulerStatus.Preparing;
                 _running = true;
                 _restored = false;
@@ -426,8 +444,13 @@ namespace ADOFAI.Renderist.Export
                 _geometryCustomResolutionEnabled = geometryInput.CustomResolutionEnabled;
                 _geometryConfiguredWidth = geometryInput.Width;
                 _geometryConfiguredHeight = geometryInput.Height;
+                _geometryConfiguredSupersamplingScale = geometryInput.SupersamplingScale;
                 _outputWidth = geometry.Width;
                 _outputHeight = geometry.Height;
+                _supersamplingScale = geometry.Scale;
+                _renderWidth = geometry.RenderWidth;
+                _renderHeight = geometry.RenderHeight;
+                _downsampleLevelCount = geometry.DownsampleLevelCount;
                 // 环境 inventory 只在 session 开始时采集一次；capture target 形态在
                 // source activation 成功后补填（见 FrameCaptureDriver.CaptureRenderTargetInventory）。
                 _environmentInventory = RenderEnvironmentInventory.Capture();
@@ -582,6 +605,20 @@ namespace ADOFAI.Renderist.Export
                          _geometryConfiguredHeight.ToString(CultureInfo.InvariantCulture) +
                          " maxTextureSize=" +
                          OutputGeometryPolicy.TryReadMaxTextureSize().ToString(CultureInfo.InvariantCulture));
+                // 第二闭环：仅在真正启用超采样时额外输出一行，避免 scale=1 的第一闭环
+                // 日志文本发生变化（该文本是既有验收判据的一部分）。
+                if (_supersamplingScale > 1)
+                {
+                    Log.Info("DeterministicFrameScheduler frozen supersampling: scale=" +
+                             _supersamplingScale.ToString(CultureInfo.InvariantCulture) +
+                             " renderSize=" +
+                             _renderWidth.ToString(CultureInfo.InvariantCulture) + "x" +
+                             _renderHeight.ToString(CultureInfo.InvariantCulture) +
+                             " downsampleLevels=" +
+                             _downsampleLevelCount.ToString(CultureInfo.InvariantCulture) +
+                             " downsampleAlgorithm=" + OutputGeometryPolicy.DownsampleAlgorithmLabel +
+                             " renderTargetMode=" + (_imageOutputEnabled ? "png-sequence" : "log-only"));
+                }
                 Log.Info("DeterministicFrameScheduler render environment inventory: " +
                          (_environmentInventory == null
                              ? RenderEnvironmentInventory.UnavailableLabel
@@ -712,6 +749,11 @@ namespace ADOFAI.Renderist.Export
             _geometryCustomResolutionEnabled = false;
             _geometryConfiguredWidth = 0;
             _geometryConfiguredHeight = 0;
+            _geometryConfiguredSupersamplingScale = OutputGeometryPolicy.DefaultSupersamplingScale;
+            _supersamplingScale = OutputGeometryPolicy.DefaultSupersamplingScale;
+            _renderWidth = 0;
+            _renderHeight = 0;
+            _downsampleLevelCount = 0;
             _outputWidth = 0;
             _outputHeight = 0;
             _environmentInventory = null;
@@ -779,6 +821,10 @@ namespace ADOFAI.Renderist.Export
             return _ownsPlayback || _ownsUnityTiming || _handoff != null ||
                    _captureGeneration != 0 || FrameCaptureDriver.IsRunning ||
                    FrameCaptureDriver.HasActiveCameraSource ||
+                   // 第二闭环：降采样链与 GPU 状态（RenderTexture.active / GL.sRGBWrite）
+                   // 也是 residual ownership —— 未收敛前绝不允许开始下一 session。
+                   FrameCaptureDriver.HasOwnedDownsampleChain ||
+                   FrameCaptureDriver.HasResidualGpuState ||
                    _inputGuardHooks.Count > 0 ||
                    EditorVisualClock.HasTrackedHooks ||
                    _patchedConductorUpdate != null || _patchedAsyncInputAdjustAngle != null ||
@@ -994,7 +1040,9 @@ namespace ADOFAI.Renderist.Export
                              preEntryCandidate + "");
 
                     if (!FrameCaptureDriver.TryActivateCameraSource(
-                            _captureGeneration, _outputWidth, _outputHeight, out string earlyCameraSourceError))
+                            _captureGeneration, _renderWidth, _renderHeight,
+                            _outputWidth, _outputHeight, _supersamplingScale,
+                            out string earlyCameraSourceError))
                     {
                         Log.Warn("PreEntry source activation failed: " +
                                  (earlyCameraSourceError ?? "unknown") + "");
@@ -1167,7 +1215,9 @@ namespace ADOFAI.Renderist.Export
             // 不重复写 Camera targetTexture。
             if (!FrameCaptureDriver.HasActiveCameraSource &&
                 !FrameCaptureDriver.TryActivateCameraSource(
-                    _captureGeneration, _outputWidth, _outputHeight, out string cameraSourceError))
+                    _captureGeneration, _renderWidth, _renderHeight,
+                    _outputWidth, _outputHeight, _supersamplingScale,
+                    out string cameraSourceError))
             {
                 Log.Warn("DeterministicFrameScheduler: capture source activation failed: " +
                          (cameraSourceError ?? "unknown"));

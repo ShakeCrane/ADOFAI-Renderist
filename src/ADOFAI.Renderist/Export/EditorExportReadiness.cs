@@ -117,8 +117,25 @@ namespace ADOFAI.Renderist.Export
 
         public int? ConfiguredCustomHeight { get; set; }
 
+        /// <summary>Settings 中 persisted 的超采样倍率（诊断用，未经解析）。</summary>
+        public int? ConfiguredSupersamplingScale { get; set; }
+
         /// <summary>输出几何校验失败原因；null 表示合法。</summary>
         public string GeometryValidationError { get; set; }
+
+        // ---- Phase 3.7.0 第二闭环: 超采样 render 尺寸 ----
+
+        /// <summary>解析后的超采样倍率；几何非法时为 null。</summary>
+        public int? SupersamplingScale { get; set; }
+
+        /// <summary>Source RenderTexture 宽度（= OutputWidth × SupersamplingScale）；几何非法时为 null。</summary>
+        public int? RenderWidth { get; set; }
+
+        /// <summary>Source RenderTexture 高度（= OutputHeight × SupersamplingScale）；几何非法时为 null。</summary>
+        public int? RenderHeight { get; set; }
+
+        /// <summary>降采样级数（不含 source）；scale=1 时为 0。</summary>
+        public int? DownsampleLevelCount { get; set; }
 
         // ---- Phase 3.7.0: 三台原生谱面 Camera 的 aspect 诊断 ----
         //

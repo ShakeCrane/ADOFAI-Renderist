@@ -54,7 +54,11 @@ namespace ADOFAI.Renderist
         // 非法 / 越界输入不会写回 Settings，因此非法 persisted 值不会被 sanitize。
         private static string _customResolutionWidthText;
         private static string _customResolutionHeightText;
+        // 超采样倍率编辑缓冲（Phase 3.7.0 第二闭环）。Settings.EditorSupersamplingScale
+        // 仍是唯一配置来源；非法输入不会写回 Settings。
+        private static string _supersamplingScaleText;
         private static bool _geometryInputValid = true;
+        private static bool _supersamplingInputValid = true;
 
         /// <summary>
         /// UMM entry method, invoked via Info.json's "EntryMethod".
@@ -70,6 +74,7 @@ namespace ADOFAI.Renderist
                 ResetEndTailGuiState();
                 ResetOutputFpsGuiState();
                 ResetGeometryGuiState();
+                ResetSupersamplingGuiState();
 
                 modEntry.OnToggle = OnToggle;
                 modEntry.OnGUI = OnGUI;
@@ -607,13 +612,39 @@ namespace ADOFAI.Renderist
 
             GUI.enabled = previousEnabled;
 
+            EnsureGeometryGuiState();
+
+            // 超采样倍率与自定义分辨率开关**互相独立**（legacy-window 模式下同样生效），
+            // 因此该输入行在自定义分辨率关闭时也必须可见、可编辑。
+            bool scaleEnabled = GUI.enabled;
+            GUI.enabled = scaleEnabled && !EditorExportController.IsBusy;
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(UiText.GuiSupersamplingScaleLabel, GUI.skin.label, GUILayout.Width(82f));
+            string changedScale = GUILayout.TextField(
+                _supersamplingScaleText ?? string.Empty, GUILayout.Width(110f));
+            if (!string.Equals(changedScale, _supersamplingScaleText, StringComparison.Ordinal))
+            {
+                _supersamplingScaleText = changedScale;
+                ApplySupersamplingTextInput();
+            }
+            GUILayout.EndHorizontal();
+
+            // 始终显示当前真正生效的 persisted 倍率：输入非法时它与输入框内容不一致。
+            GUILayout.Label(UiText.GuiSupersamplingEffectivePrefix +
+                Settings.EditorSupersamplingScale.ToString(CultureInfo.InvariantCulture),
+                GUI.skin.label);
+            GUILayout.Label(
+                _supersamplingInputValid ? UiText.GuiSupersamplingHint : UiText.GuiSupersamplingInvalid,
+                GUI.skin.label);
+
+            GUI.enabled = scaleEnabled;
+
             if (!Settings.EditorCustomResolutionEnabled)
             {
                 GUILayout.Label(UiText.GuiCustomResolutionDisabledHint, GUI.skin.label);
                 return;
             }
-
-            EnsureGeometryGuiState();
 
             bool inputEnabled = GUI.enabled;
             GUI.enabled = inputEnabled && !EditorExportController.IsBusy;
@@ -671,6 +702,54 @@ namespace ADOFAI.Renderist
         {
             if (_customResolutionWidthText == null || _customResolutionHeightText == null)
                 ResetGeometryGuiState();
+            if (_supersamplingScaleText == null)
+                ResetSupersamplingGuiState();
+        }
+
+        /// <summary>
+        /// 从 persisted Settings 重建超采样倍率 GUI 视图。**不 sanitize、不写回**：
+        /// 非法 persisted 值（含 0 / 负数）如实显示，并由 preflight fail-closed 阻断导出。
+        /// </summary>
+        private static void ResetSupersamplingGuiState()
+        {
+            _supersamplingScaleText =
+                Settings.EditorSupersamplingScale.ToString(CultureInfo.InvariantCulture);
+            _supersamplingInputValid = ValidateSupersamplingText(out _);
+        }
+
+        private static void ApplySupersamplingTextInput()
+        {
+            // 与 preflight / scheduler 共用同一范围规则（OutputGeometryPolicy）。
+            if (!ValidateSupersamplingText(out int scale))
+            {
+                _supersamplingInputValid = false;
+                return; // 非法输入：不写 Settings。
+            }
+
+            _supersamplingInputValid = true;
+
+            if (scale == Settings.EditorSupersamplingScale)
+                return;
+
+            Settings.EditorSupersamplingScale = scale;
+            _lastReadinessCacheRealtime = float.NegativeInfinity;
+        }
+
+        /// <summary>
+        /// 超采样倍率输入必须通过 OutputGeometryPolicy 的同一条规则（≥ 1 的正整数）。
+        /// 渲染尺寸的硬件上限由 preflight / scheduler 在 session 开始时统一判定。
+        /// </summary>
+        private static bool ValidateSupersamplingText(out int scale)
+        {
+            scale = Settings.EditorSupersamplingScale;
+            if (!OutputGeometryPolicy.TryParseSupersamplingScale(
+                    _supersamplingScaleText, out int parsedScale, out _))
+            {
+                return false;
+            }
+
+            scale = parsedScale;
+            return true;
         }
 
         private static void ApplyGeometryTextInput()

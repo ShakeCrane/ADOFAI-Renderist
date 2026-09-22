@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using UnityEngine;
 using ADOFAI.Renderist.Logging;
 
@@ -30,7 +31,8 @@ namespace ADOFAI.Renderist.Export
             var geometryInput = new GeometryInput(
                 settings.EditorCustomResolutionEnabled,
                 settings.EditorCustomResolutionWidth,
-                settings.EditorCustomResolutionHeight);
+                settings.EditorCustomResolutionHeight,
+                settings.EditorSupersamplingScale);
 
             if (!settings.EditorExportEnabled)
             {
@@ -192,7 +194,12 @@ namespace ADOFAI.Renderist.Export
                 OutputAspect = geometry?.Aspect,
                 ConfiguredCustomWidth = geometryInput?.Width,
                 ConfiguredCustomHeight = geometryInput?.Height,
+                ConfiguredSupersamplingScale = geometryInput?.SupersamplingScale,
                 GeometryValidationError = geometryError,
+                SupersamplingScale = geometry?.Scale,
+                RenderWidth = geometry?.RenderWidth,
+                RenderHeight = geometry?.RenderHeight,
+                DownsampleLevelCount = geometry?.DownsampleLevelCount,
             };
 
             CaptureChartCameraAspectDiagnostics(report, env);

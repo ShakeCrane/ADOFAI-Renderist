@@ -41,6 +41,10 @@ namespace ADOFAI.Renderist.Export
         internal int? RenderTextureWidth;
         internal int? RenderTextureHeight;
 
+        // ---- 降采样链首级的实际形态（scale>1 时填）----
+        internal string DownsampleRenderTextureFormat;
+        internal string DownsampleRenderTextureGraphicsFormat;
+
         /// <summary>采集不依赖 capture target 的环境事实。无副作用。</summary>
         internal static RenderEnvironmentInventory Capture()
         {
@@ -77,6 +81,19 @@ namespace ADOFAI.Renderist.Export
         }
 
         /// <summary>
+        /// 记录降采样链首级的实际形态，用于核对「各级与 source 的 graphicsFormat /
+        /// sRGB 语义一致」。只读；异常折成 unavailable。scale=1 时不调用。
+        /// </summary>
+        internal void CaptureDownsampleTarget(RenderTexture target)
+        {
+            if (target == null)
+                return;
+
+            DownsampleRenderTextureFormat = ReadString(() => target.format.ToString());
+            DownsampleRenderTextureGraphicsFormat = ReadString(() => target.graphicsFormat.ToString());
+        }
+
+        /// <summary>
         /// 一行 key=value 摘要，供 session 启动 / capture source activation 日志使用。
         /// 不逐帧调用。
         /// </summary>
@@ -96,6 +113,8 @@ namespace ADOFAI.Renderist.Export
             sb.Append(" renderTextureAntiAliasing=").Append(Value(RenderTextureAntiAliasing));
             sb.Append(" renderTextureUseMipMap=").Append(Value(RenderTextureUseMipMap));
             sb.Append(" renderTextureSize=").Append(Value(RenderTextureWidth)).Append("x").Append(Value(RenderTextureHeight));
+            sb.Append(" downsampleRenderTextureFormat=").Append(Value(DownsampleRenderTextureFormat));
+            sb.Append(" downsampleRenderTextureGraphicsFormat=").Append(Value(DownsampleRenderTextureGraphicsFormat));
             return sb.ToString();
         }
 

@@ -84,6 +84,28 @@ namespace ADOFAI.Renderist
         /// <summary>自定义输出高度（像素）。语义同 <see cref="EditorCustomResolutionWidth"/>。</summary>
         public int EditorCustomResolutionHeight = OutputGeometryPolicy.DefaultCustomHeight;
 
+        // ---------------- Phase 3.7.0: supersampling ----------------
+
+        /// <summary>
+        /// 超采样倍率（Phase 3.7.0 第二闭环）。默认 1 = 不启用，与第一闭环行为完全一致。
+        ///
+        /// render = output × 本值：Source RenderTexture 以 render 尺寸渲染，
+        /// 再经多级 bilinear 降采样到 output 尺寸后写出 PNG。
+        /// 与自定义分辨率开关**互相独立**：legacy-window 模式下同样生效
+        /// （此时 output = 冻结窗口尺寸）。
+        ///
+        /// 必须是 ≥ 1 的正整数。合法性只有两类真实约束：int 表达能力（render 尺寸的
+        /// checked 乘法不得溢出）与 SystemInfo.maxTextureSize（对实际 render 尺寸生效）。
+        /// **没有产品级上限**：像素总数 / 显存估算 / 编码耗时 / 文件体积都不是判定条件。
+        ///
+        /// **非法 persisted 值不自动修复**：保持非法并 fail-closed，直到用户显式改成
+        /// 合法值（与 persisted End Tail / persisted 宽高 的方案 A 语义一致）。
+        /// OutputGeometryPolicy 是唯一判定点。
+        ///
+        /// 该值在 session 开始时一次性冻结；运行中修改 GUI 不影响当前 session。
+        /// </summary>
+        public int EditorSupersamplingScale = OutputGeometryPolicy.DefaultSupersamplingScale;
+
         /// <summary>
         /// Optional safety-only output-frame limit for a session that never reaches
         /// native completion. 0 (default) and the historical default 36000 both mean
