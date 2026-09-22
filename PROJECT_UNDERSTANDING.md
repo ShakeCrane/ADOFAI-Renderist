@@ -41,9 +41,9 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 | --- | --- |
 | 产品版本 | `0.3.7.0` |
 | Phase | `Phase 3.7.0 Custom Resolution & Supersampling` |
-| 版本定位 | `0.3.7.0` = **第一闭环 Custom Resolution（自定义分辨率，supersampling scale 固定为 1）**；其上 `0.3.6.4` = **Log-only Frame Transactions（image output disabled）** |
-| 稳定实机基线 | `0.3.6.4`：同一基准谱面的 PNG 与 Log-only 均已完整跑通（见 §9.1）。`0.3.7.0` 第一闭环 Custom Resolution **已通过用户实机验收并完成实机产物批量分析**（见 §9.1），因此其**第一闭环范围**可作为稳定实机基线；但第二闭环 supersampling 未实现，整个 `0.3.7.0` 阶段仍**未**标记完成。 |
-| 当前开发方向 | `0.3.7.0` 第一闭环（custom resolution + 三台原生 Camera 的 aspect ownership）已实现、已构建打包、**已通过实机验收**（证据分级见 §9.1）。第二闭环 supersampling 未开始。 |
+| 版本定位 | `0.3.7.0` = **第一闭环 Custom Resolution（已实机验收）+ 第二闭环 Supersampling（已实现，未实机验收）**；其上 `0.3.6.4` = **Log-only Frame Transactions（image output disabled）** |
+| 稳定实机基线 | `0.3.6.4`：同一基准谱面的 PNG 与 Log-only 均已完整跑通（见 §9.1）。`0.3.7.0` 第一闭环 Custom Resolution **已通过用户实机验收并完成实机产物批量分析**（见 §9.1），其**第一闭环范围**可作为稳定实机基线。第二闭环 supersampling **已实现、已构建打包、已部署，但尚未实机验收**（scale=1 之外的路径），整个 `0.3.7.0` 阶段仍**未**标记完成。 |
+| 当前开发方向 | `0.3.7.0` 第一闭环（custom resolution + 三台原生 Camera 的 aspect ownership）**已通过实机验收**（证据分级见 §9.1）。第二闭环 **Supersampling & Downsampling 已实现并通过非实机 harness 验证**（见 §9.7），**等待用户实机验收**；实机通过前不宣称第二闭环完成。 |
 
 `0.3.6.2` 相对 `0.3.6.1` 的四个 hardening 点（功能语义不变，只收敛异常路径与输入判定）：
 
@@ -73,6 +73,19 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 3. **三台原生 Camera 统一 aspect ownership**：激活前先只读检查三台 Camera 的实际 aspect（可读 / 有限 / 为正 / 三台互相兼容），不通过即 fail-closed 且**尚未写入任何 Camera**；通过后在同一 ownership transaction 内先登记 `targetTexture` + aspect 的全部可恢复状态，再写入统一的输出 aspect。cleanup 只在当前值仍等于 Renderist 写入值时才 `ResetAspect()` 恢复 Unity 自动行为；已被外部流程改写的值不覆盖。
 4. **单 RenderTexture 基线与 EOF 帧事务不变**：仍只有一个 capture RT（ARGB32 / depth 24 / MSAA 1 / 无 mipmap），仍走同一个 `WaitForEndOfFrame` 与唯一 `CommitFrame`；PNG 与 log-only 共用同一尺寸、同一 RT、同一 aspect。**未引入 Blit、downsample RT 链或第二套 scheduler / driver，也未新增任何 ADOFAI Hook。**
 5. **metadata 与运行时 inventory**：session metadata 新增输出几何（模式 / persisted 配置宽高 / 冻结宽高 / 统一 aspect）与只读运行时渲染环境 inventory（`colorSpace`、GPU 型号与版本、`maxTextureSize`、capture RT 的 format / graphicsFormat / MSAA / mipmap）。`phase` 文案同步为 `Phase 3.7.0 Custom Resolution & Supersampling`。
+
+`0.3.7.0` 第二闭环 —— **Supersampling & Downsampling**（提交 `2585664` + `7efcacd`；**已实现、已构建打包、已部署，未实机验收**）：
+
+1. **整数倍率 + 多级 bilinear 降采样**：`OutputGeometryPolicy` 扩展出 `SupersamplingScale`（默认 `1` = 关闭）。`render = output × scale`，用 `checked` 乘法计算，溢出即 fail-closed（不 clamp、不降级）。`SystemInfo.maxTextureSize` 对**实际 render 尺寸**生效；scale=1 时 render == output，因此硬件判定与第一闭环完全等价（错误码也保持 `geometry-width-exceeds-hardware-max`）。**没有产品级倍率 / 像素数 / 显存 / 耗时 / 体积上限**。
+2. **降采样链规划器（`multi-stage-bilinear`）**：级别按**相对 output 的整数倍率**递减：`nextFactor = factor / 2 + factor % 2`（= `ceil(factor/2)`），每级尺寸 = `(outputWidth × nextFactor, outputHeight × nextFactor)`。因此 **1 → 空链；2 → [1]；3 → [2,1]；4 → [2,1]；5 → [3,2,1]**，每相邻两级比例 ≤ 2:1（逐级 bilinear 等价于 2×2 box 平均），**每级精确保持宽高比**（不使用宽高分别 ceil-halving），末级精确等于 output。规划器是纯函数，可被 harness 全覆盖。
+3. **Source RT 与降采样链的 ownership**：Source RT 仍是 ARGB32 / depth 24 / MSAA 1 / 无 mipmap；降采样各级由**已创建的 Source descriptor 派生**，只改尺寸 / depth（0）/ MSAA / mipmap / dynamic scale / bindMS / random-write，**不改 graphicsFormat 与 sRGB 语义**（构造性一致）。Source 与每一级都在**构造成功后立即登记** ownership，之后才做属性设置 / `Create` / `IsCreated` 校验；**全部 RT 准备成功后**才接管 Camera。不使用 `RenderTexture.GetTemporary`（池化生命周期无法与 residual / Stop 重试语义共存）。
+4. **降采样只在 PNG 且 scale>1 时创建**：链在 activation 时一次性创建、逐帧复用；每级 `filterMode=Bilinear` / `wrapMode=Clamp`；Blit 前断言 source ≠ destination。**最终 `ReadPixels` 与 `Texture2D` 恒为 output 尺寸**（Source 是 render 尺寸，两者分离）。
+5. **Log-only 与 scale>1**：仍使用相同 `renderWidth/renderHeight` 创建高分辨率 Source RT、维持相同 Camera aspect ownership 与同一个 EOF 事务，但**不创建降采样 RT、不 Blit、不 ReadPixels、不建 Texture2D、不写文件**（并在 log-only 分支断言链为空）。
+6. **scale=1 完全绕过降采样路径**：不规划链、不建额外 RT、不调用 `Graphics.Blit`、不触碰 `GL.sRGBWrite`、直接从 Source RT ReadPixels ⇒ 第一闭环行为不变。
+7. **GPU 状态 ownership（`RenderTexture.active` / `GL.sRGBWrite`）**：两者各自登记独立 restore token 并**独立恢复**。**Gamma 下不触碰 `GL.sRGBWrite`**；**Linear 下每次 Blit 按 destination 的实际 sRGB 语义（`GraphicsFormatUtility.IsSRGBFormat(destination.graphicsFormat)`）设置它**。保存失败且尚未修改任何状态时**不产生虚假 residual**。任一 token 未恢复 ⇒ 当前帧失败（不 `Apply` / 不 `EncodeToPNG` / 不写盘 / 不 commit），并保留 residual 由下一次 `Stop()` 分别重试；**GPU 状态未全部恢复前绝不 Release / Destroy 任何可能仍被其引用的 RT**。CPU 侧的 `Apply` / 编码 / 写盘严格发生在 GPU 状态全部恢复之后。
+8. **residual gate 扩展**：`FrameCaptureDriver.HasOwnedDownsampleChain` 与 `HasResidualGpuState` 并入 `DeterministicFrameScheduler.HasResidualOwnership()`，因此未收敛时下一个 session 仍会在创建目录前被 residual gate 拒绝。
+9. **metadata**：新增 8 键 —— `geometryConfiguredSupersamplingScale`、`supersamplingScale`、`renderWidth`、`renderHeight`、`downsampleLevelCount`、`downsampleAlgorithm`、`downsampleRenderTextureFormat`、`downsampleRenderTextureGraphicsFormat`（实测 `0.3.6.x` 39 键 → 第一闭环 58 键 → 本闭环 **66 键**，无键被删除）。语义边界：`outputWidth/Height` = **最终 PNG 尺寸**；`renderWidth/Height` = Source RT 尺寸；`captureWidth/Height` = 三台 Camera 实际渲染进入的 Source RT 尺寸。scale=1 时三者相等；scale>1 时 capture/render 大于 output。
+10. **未新增 Harmony Patch、未新增 ADOFAI 内部 API、未新增程序集引用**（`Graphics.Blit` / `GL.sRGBWrite` / `GraphicsFormatUtility` 都在已引用的 `UnityEngine.CoreModule`），单一 scheduler / 单一 driver / 单一 `WaitForEndOfFrame` / 唯一 `CommitFrame` 全部保持。
 
 版本同步事实：
 
@@ -190,6 +203,9 @@ Esc 不经过 `TogglePauseGame`，因此 guard 不阻断 Esc cancellation。
   - 已可能写入过 Camera 的失败（partial Camera assignment）→ 因为 `_captureTarget` / capture dimensions / camera refs / saved old targets 在**第一次 Camera 写入之前**就已登记，`_sourceActive` 表示"ownership transaction 已开始（可能 partial）"，失败即走同一个 `RestoreCameraSource`（不新增第二套 partial cleanup）；rollback 写失败时保留全部 refs 作为 residual，下一次 `Stop()` 重试；
   - **只有 `IsCaptureTargetStillReferenced() == false` 时才 Release / Destroy RT**：partial 状态下即使 cleanup 失败也**不会**销毁仍可能被 live Camera 引用的 RenderTexture。
 - 若 Camera 已 relinquish、host 已销毁，但 capture target 销毁失败，scheduler 的 `_captureGeneration` 与 `FrameCaptureDriver.HasOwnedCaptureTarget` 仍构成 residual ownership；下一次 cleanup 只需重试资源销毁，不会重新改写 Camera。
+- **降采样链 ownership（0.3.7.0 第二闭环，durable invariant）**：Source RT 与降采样各级使用同一套规则 —— **构造成功后立即登记**（`_captureTarget` / `_downsampleTargets[i]`），之后才执行可能抛异常的属性设置 / `Create` / `IsCreated` 校验；**所有 RT 准备成功后**才允许接管 Camera。释放按**叶子 → 根**，每级都必须 `Release` + `Destroy` 全成功才清空该槽位，任一失败即保留 residual（`HasOwnedDownsampleChain`）并由下一次 `Stop()` 重试。**不使用 `RenderTexture.GetTemporary`**：池化 RT 的生命周期不由本模块独占，无法与 residual / 重试语义共存。
+- **GPU 状态 ownership（0.3.7.0 第二闭环，durable invariant）**：`RenderTexture.active` 与 `GL.sRGBWrite` 是**两个独立的 restore token**，独立恢复；任一未恢复 ⇒ 当前帧失败（不 `Apply` / 不 `EncodeToPNG` / 不写盘 / 不 commit）且保留 residual（`HasResidualGpuState`）。**保存失败且尚未发生任何状态修改时不产生虚假 residual**。**GPU 状态未全部恢复前绝不 Release / Destroy 任何可能仍被该状态引用的 RT**（`RestoreCameraSource` 在 GPU 状态未恢复时直接返回 false，不释放链与 Source）。CPU 侧的 `Apply` / 编码 / 写盘严格发生在 GPU 状态全部恢复**之后**。
+- **residual gate 覆盖新增 ownership**：`HasOwnedDownsampleChain` 与 `HasResidualGpuState` 已并入 `DeterministicFrameScheduler.HasResidualOwnership()`（见 §3.5 开头的统一原则），因此这些未收敛状态同样会在创建 session 目录前 fail-closed。
 - `RestoreAll` 不短路：各项尽量恢复并收集 failures；有任何 failure 时 residual token 不应被提前清空。下一次 Start / Stop / Mod disable 会先补做 cleanup。
 - 0.3.5.1 已实机确认 residual ownership 可跨调用保留并在下一次入口补做；本轮 hardening 针对的是此前未覆盖到的 host Destroy / RT Release/Destroy 异常分支。该异常分支仍缺真实 Unity fault injection。
 
@@ -299,8 +315,8 @@ Seconds / Beats 换算得到的 raw frame count 属于计算结果，不等同�
 - `PlaybackLifecycleHandoff`：关联本次 Renderist-owned `editor.Play()`；ready 需要 Start + OnMusicScheduled + Countdown + PlayerControl + playerAlive + !paused。
 - `EditorVisualClock`：强制视觉 songposition，并精确撤销 hooks。
 - `RenderistAutoPlay`：due-floor helper，复用官方 Hit。
-- `FrameCaptureDriver`：generation 隔离、两阶段 Camera source activation（创建 target → 读并校验三台 aspect baseline → 登记 targetTexture + aspect ownership → 逐 Camera 接管 targetTexture 并写入统一 aspect）、同步帧末事务（PNG 写盘 / log-only 仅校验并以 `imageWritten=false` 成功返回）、ownership-aware cleanup（activation 窗口内也不丢 ownership；aspect 与 targetTexture 独立释放、合并收敛）。捕获尺寸与统一 aspect 由 scheduler 在 session 开始时冻结后传入，驱动**不读 Screen**；模式由 `Start` 一次性冻结（`_imageOutputEnabled`），session 期间不再读 Settings。
-- `OutputGeometryPolicy`：输出分辨率模式、合法性判定与解析的唯一单点（legacy-window / custom-resolution）；只做 int 表达能力 + `SystemInfo.maxTextureSize` 硬件能力检查，不定义产品级上限。GUI 文本解析（正整数）也走这里，因此 GUI 与 preflight / scheduler 的合法集合完全一致。
+- `FrameCaptureDriver`：generation 隔离、两阶段 Camera source activation（创建 Source RT → **PNG 且 scale>1 时创建降采样链** → 读并校验三台 aspect baseline → 登记 targetTexture + aspect ownership → 逐 Camera 接管 targetTexture 并写入统一 aspect）、同步帧末事务（PNG：可选降采样链 → ReadPixels → **GPU 状态全部恢复** → Apply/编码/写盘；log-only：仅校验并以 `imageWritten=false` 成功返回）、ownership-aware cleanup（activation 窗口内也不丢 ownership；targetTexture / aspect / **降采样链** / **GPU 状态** 各自独立释放、合并收敛）。Source 与各级 RT 的尺寸、最终 output 尺寸与统一 aspect 由 scheduler 在 session 开始时冻结后传入，驱动**不读 Screen**；模式由 `Start` 一次性冻结（`_imageOutputEnabled`），session 期间不再读 Settings。**scale=1 时完全不进入降采样 / Blit / sRGBWrite 路径。**
+- `OutputGeometryPolicy`：输出分辨率模式、**超采样倍率**、合法性判定、解析与**降采样链规划**的唯一单点（legacy-window / custom-resolution；`multi-stage-bilinear`）；只做 int 表达能力（`checked` 乘法）+ `SystemInfo.maxTextureSize` 硬件能力检查（作用于**实际 render 尺寸**），不定义产品级上限。GUI 文本解析（正整数 / 倍率）也走这里，因此 GUI 与 preflight / scheduler 的合法集合完全一致。
 - `RenderEnvironmentInventory`：只读运行时渲染环境 inventory（色彩空间 / GPU / capture RT 形态），供 session metadata 与启动日志核对；任何单项读取失败折成 null / `unavailable`，绝不阻断导出。
 - `EndTailPolicy`：Frames / Seconds / Beats 校验与 output-frame 解析。
 - `OutputFpsPolicy`：正整数 Output FPS 与 targetFrameRate 安全派生。
@@ -573,6 +589,44 @@ harness 覆盖的关键证据（全部 PASS）：
 
 **harness 与其它临时验证资产在结论记录后已删除**（`temp/` 为 gitignored）；上表结果是删除前实测所得。
 
+### 9.7 `0.3.7.0` 第二闭环 Supersampling 的非实机验证结果（**已执行；实机未验收**）
+
+> 与第一闭环不同，本节结果**只**证明非实机部分。**第二闭环尚未取得任何实机结果**，不得据此宣称通过。
+
+| 验证 | 方式 | 结果 |
+| --- | --- | --- |
+| 生产源码 harness（几何 / 规划器 / Settings XML / RT 与链 fault injection / Blit / GPU 状态 / 帧事务 / metadata / 静态不变量） | 生产源文件（`OutputGeometryPolicy.cs`、`FrameCaptureDriver.cs`、`EditorExportSession.cs`、`Settings.cs`、`Log.cs`、`EditorExportState.cs`）+ 最小 Unity stub（含 `RenderTextureDescriptor` / `Graphics.Blit` / `GL.sRGBWrite` / `GraphicsFormatUtility` 与可注入故障）+ 真实 `XmlSerializer`，临时控制台 harness（net10.0；net8.0 targeting pack 在本机离线不可还原） | **5083 PASS / 0 FAIL**，exit code 0 |
+| Release Rebuild | `dotnet build -c Release -t:Rebuild` | **0 error**；2 个 `NU1900`（离线无法加载 nuget.org 漏洞数据，既有环境噪声，非代码/非回归） |
+| package + verify | `scripts/package-release.ps1 -Configuration Release -Version 0.3.7.0 -Force` + 独立 `verify-release-package.ps1` | 两次均 **PASS 11 checks / 0 failures**；独立解包确认包内仅 3 个顶层文件、无目录，包内 DLL 与 `bin\Release` 逐字节一致 |
+| `git diff --check` | — | clean（exit 0） |
+
+harness 覆盖的关键证据（全部 PASS，均针对生产源文件）：
+
+- **规划器**：`1→空`、`2→[1]`、`3→[2,1]`、`4→[2,1]`、`5→[3,2,1]`、`9→[5,3,2,1]`；对 `scale = 2..200` 逐步验证「严格递减 + 比例 ≤ 2:1 + 末级精确等于 output」；对 6 组**奇数输出尺寸**（含 `1×1`、`1×7`、`999×1`、`1919×1079`）验证每级 `W·H` 交叉相乘精确保持宽高比。
+- **checked 乘法与硬件门**：`16384 × 200000` → `geometry-supersampling-scale-overflow`；`render 尺寸 > maxTextureSize` → `geometry-render-width-exceeds-hardware-max`；`maxTextureSize = 0`（读不到）→ 跳过判定、不发明上限；scale=1 时 output 越界仍返回第一闭环的 `geometry-width-exceeds-hardware-max`。
+- **scale 合法集合**：`0` / 负数 / 空白 / `"+2"` / `"1.5"` / `"1e3"` / `"abc"` / int 溢出均拒绝；`" 3 "` 按 trim 接受（与宽高同规则）。scale 在**自定义分辨率关闭时同样参与校验**。
+- **Settings XML 兼容**：旧 `Settings.xml`（不含新元素）→ `EditorSupersamplingScale = 1`，且 `EditorImageOutputEnabled` / safety `36000` / VerboseLogging 不受影响；显式值往返不变；persisted `0` / `-3` **保持原值不被 sanitize** 且 fail-closed。
+- **RT 与链 fault injection**：Source `ctor` 抛异常 / `Create` 抛异常 / `IsCreated()==false` / `Release` 抛异常 / `Destroy` 抛异常 / **descriptor 读取抛异常** / 第 k 级 `Create` 抛异常 → 全部 fail-closed 且**保留可重试 ownership**；清除故障后 `Stop()` 收敛；正常路径 `created == destroyed`、无泄漏、`Stop()` 幂等。
+- **GPU 状态**：`RenderTexture.active` 恢复失败 → residual 保留 + 帧失败 + 不 encode，`Stop()` 重试后收敛；`GL.sRGBWrite` 恢复失败同理；**保存失败且未修改状态时不产生 residual**；Gamma 与 scale=1 **完全不读写 `GL.sRGBWrite`**；Linear 下按 destination sRGB 语义设置；**`Apply` 严格发生在 GPU 状态恢复之后**。
+- **帧事务**：scale=2 恰好 1 次 Blit、`ReadPixels` 矩形 = output 尺寸、`Texture2D` = output 尺寸；scale=1 **0 次 Blit**、0 次 sRGBWrite；log-only **0 次 Blit / ReadPixels / Texture2D / encode** 且 `imageWritten=false` / `filePath=null`；Blit 中途抛异常 → 帧失败、无 encode、GPU 状态仍恢复。
+- **Camera aspect ownership 回归**：三台 `ResetAspect()` 各一次；外部改写的 aspect **不被覆盖**；aspect 不可读 / 三台不一致 → fail-closed 且**零 Camera 写入**；`ResetAspect` 抛异常 → residual 保留、重试收敛。
+- **metadata**：新键齐全、**无重复键**、`System.Text.Json` 严格可解析；`mode` 取值不变；scale=1 时 `captureWidth == renderWidth == outputWidth`，scale=3 时 `outputWidth=1080` / `renderWidth=3240` / `captureWidth=3240`。
+- **静态不变量（注释与字符串剔除后计数）**：`Graphics.Blit(` **1 处**调用点；`new WaitForEndOfFrame()` **1 处**；`Observe()` **1 处**；`camera.ResetAspect(` **1 处**；`camera.aspect =` **3 处**；`new RenderTexture(` **2 处**（Source ctor + descriptor 链 ctor）；`FrameCaptureDriver` **0 处** `Screen.` 读取；`GetTemporary` **0 处**；scheduler `CommitFrame(...)` 调用 **1 处**、`CommitFrame` 定义 **1 处**、`_outputFrameIndex++` **1 处**、scheduler `0 处` Blit / EOF wait；`Screen.width/height` 仅在 `OutputGeometryPolicy` 各 1 处。
+
+harness 发现并已修复的实现缺陷（**1 项**）：
+
+- `TryCreateDownsampleChain` 中 `_captureTarget.descriptor` 的读取原本位于 try/catch **之外**，descriptor 读取抛异常会**逃逸**出 `TryActivateCameraSource`（而非 fail-closed）。已改为返回 `downsample-chain-descriptor-unavailable:<msg>`，由既有 ownership 收敛路径处理（提交 `7efcacd`）。这正是 harness 的价值所在：该路径在纯静态审查中未暴露。
+
+**harness 与其它临时验证资产在结论记录后已删除**（`temp/ss-harness/`，`temp/` 为 gitignored）；上表结果是删除前实测所得。
+
+**仍未验证（必须由实机或独立 Unity 环境确认）**：
+
+- `Graphics.Blit` 的真实 GPU 行为与多级降采样的**实际图像质量**（边缘平滑度、是否出现渗色/暗边）。
+- **色彩正确性**：scale=1 与 scale>1 在同一逻辑帧下的均值/直方图不得出现系统性色相/gamma 漂移。
+- 真实 `maxTextureSize` 边界附近的行为；大 scale 下的实际显存分配与失败表现；连续导出后**跨帧 GPU 状态污染**。
+- `scale=1` 对第一闭环产物的实机回归（判据：与 `0.3.7.0` 第一闭环已验收产物同谱面同设置的 MAE 落在既有会话间噪声 0.18–0.26 之内；**不要求逐字节一致**）。
+- **Linear 色彩空间路径**：当前受测 ADOFAI 环境为 **Gamma / Direct3D11**。Linear 分支（`GL.sRGBWrite` 按 destination 设置）**未经任何实机验证**，不得把 Gamma 结果推广为 Linear 已通过。
+
 ---
 
 ## 10. 当前 ADOFAI 内部关键事实（Assembly-CSharp 0.4.3.0）
@@ -651,7 +705,7 @@ harness 覆盖的关键证据（全部 PASS）：
 7. **native Esc teardown 警告**：曾见 Unity `Coroutine couldn't be started ... Conductor is inactive`，静态证据更像 native teardown；未做 disable-mod A/B。
 8. **custom resolution / supersampling、audio、FFmpeg、replay、Preview Bridge**：
    - **custom resolution：第一闭环已实现、已构建打包、并已通过用户实机验收与实机产物批量分析（`0.3.7.0`）**（结论与证据分级见 §9.1）。实现见 §2 / §3.1 / §3.5 / §7 / §8.2。
-   - **supersampling、降采样、`Graphics.Blit`、downsample RT 链：仍未实现**，且明确不属于第一闭环；整个 `0.3.7.0` 阶段**未**标记完成。
+   - **supersampling、降采样、`Graphics.Blit`、downsample RT 链：已实现（`2585664` + `7efcacd`）并通过非实机 harness 验证（§9.7），但尚未实机验收**；整个 `0.3.7.0` 阶段**未**标记完成。仍是**单一** scheduler / driver / EOF 事务 / 唯一 `CommitFrame`，未引入第二套渲染架构。
    - audio、FFmpeg、replay、Preview Bridge 均未实现。
 9. **`0.3.7.0` 第一闭环：实机验收已通过（见 §9.1）**；下列为该闭环的**残余/边界项**，不再作为阻断条件，但保留准确状态：
    - **Camera aspect 在实机中的真实基线语义**：8/8 session 实测三台 Camera 在接管前的 `baselineAspect` 均为 `1.6`（= 当前窗口自动值），三台始终互相一致；当前实现的判据（可读 / 有限 / 为正 / 三台互相兼容）**在实机上未出现误杀**。实现**刻意没有**用「是否等于屏幕 aspect」推断自动模式。仍未直接确认该自动值的**内部来源**（屏幕 or 游戏 `camRT`）。
@@ -672,14 +726,20 @@ harness 覆盖的关键证据（全部 PASS）：
 
 ## 12. 发布与部署
 
-- 当前产品版本为 `0.3.7.0`（**第一闭环 Custom Resolution**，Phase `Phase 3.7.0 Custom Resolution & Supersampling`）；其上的 `0.3.6.4` 为 Log-only Frame Transactions。前三位 `0.3.6` → `0.3.7` 与 Phase 文案本轮**均已变更**（用户明确批准）。
+- 当前产品版本为 `0.3.7.0`（**第一闭环 Custom Resolution（已实机验收）+ 第二闭环 Supersampling（已实现、未实机验收）**，Phase `Phase 3.7.0 Custom Resolution & Supersampling`）；其上的 `0.3.6.4` 为 Log-only Frame Transactions。前三位 `0.3.6` → `0.3.7` 与 Phase 文案本轮**均已变更**（用户明确批准）。
 - 本轮（0.3.7.0 第一闭环）相对基线 `70df55b` 的改动：新增 `OutputGeometryPolicy.cs`、`RenderEnvironmentInventory.cs`；修改 `Settings.cs`、`UiText.cs`、`ModEntry.cs`、`EditorExportReadiness.cs`、`EditorExportPreflight.cs`、`EditorExportController.cs`、`EditorExportSession.cs`、`DeterministicFrameScheduler.cs`、`FrameCaptureDriver.cs`；版本点 `mod/Info.json`、csproj `<Version>`、`ModEntry.ModVersion` 与 `ModEntry` 启动日志，外加**人工同步**的 `EditorExportSession.PhaseLabel` 与类注释 phase 文案（`set-version.ps1` 的已知范围限制，见 §2）。
 - 本轮**未**新增 Harmony Patch、未新增 ADOFAI 内部 API 依赖、未修改 README。
 - 发布包：`Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` ignored。本轮以 `scripts/package-release.ps1 -Configuration Release -Version 0.3.7.0 -Force` 打包，并在发布提交 `05a3b4a` 之后重新 Release Rebuild 并以 `-SkipBuild` 重新打包，产出 `dist/ADOFAI.Renderist.zip`（zip SHA256 `B251B6A4631401E44F96130E152FB834B70B47CE6E75CA45304DC43380A4155F`，sidecar `dist/ADOFAI.Renderist.zip.sha256` 同值）；`verify-release-package.ps1` 结果 **PASS 11 checks / 0 failures**，独立解包复核确认包内仅有 3 个顶层文件、无目录，且包内 DLL 与 `bin\Release` 逐字节一致。
 - 发布包内 DLL 的 `ProductVersion` 形如 `<version>+<HEAD 短哈希>`：该 `+hash` 是 SourceLink/InformationalVersion 在构建时记录的 **HEAD 提交**，不是工作区改动。`0.3.7.0` 的最终发布包在发布提交 `05a3b4a` 之后重建，因此 `ProductVersion = 0.3.7.0+05a3b4adda0fb5d9ce89c5ca29af1a6f496d75f3`（`FileVersion = 0.3.7.0`，DLL SHA256 `14D335FD2E2C051DBCE43BF1DB414F8ED177BEB221846EFB4FB50D761DBFBBBA`），即包内构建标识精确指向承载本版本的提交。注意：若在打包后再提交任何改动，`+hash` 不会自动更新；应避免在打包后 `amend` 发布提交（会改变哈希并使包内标识失效）。`verify-release-package.ps1` 比较版本时会剥离 `+hash` 后缀。
-- 历史：`0.3.6.1`（Output FPS 无上限、safety 默认 unbounded、long frame chain、autoplay fail-closed、paused 阶段修正）→ `8bceeef` + `1af1205` hardening → `0.3.6.2` → native pre-entry 正式化 + persisted End Tail semantic fix → `0.3.6.3` → Log-only Frame Transactions → `0.3.6.4` → `05a3b4a` Custom Resolution（**第一闭环；已通过实机验收；supersampling 未实现**）。
+- 历史：`0.3.6.1`（Output FPS 无上限、safety 默认 unbounded、long frame chain、autoplay fail-closed、paused 阶段修正）→ `8bceeef` + `1af1205` hardening → `0.3.6.2` → native pre-entry 正式化 + persisted End Tail semantic fix → `0.3.6.3` → Log-only Frame Transactions → `0.3.6.4` → `05a3b4a` Custom Resolution（**第一闭环；已通过实机验收**）→ `2585664` + `7efcacd` Supersampling & Downsampling（**第二闭环；已实现、未实机验收**）。
+- **`0.3.7.0` 存在两个不同的发布包身份（重要，勿混用）**：版本号未变（用户明确要求本轮不递增第四位），因此 `0.3.7.0` 的 `dist/ADOFAI.Renderist.zip` 被**重建覆盖**过两次：
+  - **第一闭环（仅 Custom Resolution）**：`05a3b4a` 构建，DLL SHA256 `14D335FD2E2C051DBCE43BF1DB414F8ED177BEB221846EFB4FB50D761DBFBBBA`，`ProductVersion = 0.3.7.0+05a3b4a…`，zip SHA256 `B251B6A4631401E44F96130E152FB834B70B47CE6E75CA45304DC43380A4155F`（**已实机验收的那一份**）。
+  - **第二闭环（含 Supersampling）**：`7efcacd` 构建，DLL SHA256 `E16954C57718F1424BC067985DB6BAEF490987C72064A0B46D591313A3815404`，`ProductVersion = 0.3.7.0+7efcacd5a0af2f3e736987057f0218e55f21a32c`，zip SHA256 `F667A0C740636D4A6920EF2AEBD1C2C753A1B80A98C17C783A310C30C3C9F466`（**当前 dist 内容；该构建尚无实机验收**）。
+  - 因此**不能**再用「0.3.7.0 的包哈希」唯一指代某个构建；引用时必须同时给出 DLL SHA256 或 `ProductVersion` 的 `+hash`。`verify-release-package.ps1` 比较版本时会剥离 `+hash` 后缀。
+- 第二闭环的 Release Rebuild / package / verify：**0 error / PASS 11 checks / 0 failures**（细节见 §9.7）。
+- 部署使用 `scripts/copy-to-mods.ps1`，只更新 `Mods\ADOFAI.Renderist\`；路径来自本地 ignored `build/local.props`，未配置时不得猜测。当前已部署**第二闭环**构建（DLL SHA256 `E16954C57718…`，与 `bin\Release` 及发布包内 DLL 逐字节一致，`ProductVersion=0.3.7.0+7efcacd…`）；目录内的 `ADOFAI.Renderist.dll.<pid>.cache` 是 UMM/Mono 通用运行时缓存（`AdofaiTweaks` 同样存在），脚本默认保留。**部署本身不等于实机验收**：第一闭环的实机项目已完成验收并逐项记录于 §9.1（其中窗口 resize 后 aspect 自动跟随与最终视觉观感属用户观察证据）；**第二闭环 supersampling 已实现并部署，但尚未实机验收**（scale=1 之外的路径）。
 - 自动验证链：
   `dotnet build src/ADOFAI.Renderist/ADOFAI.Renderist.csproj -c Release -t:Rebuild`
   → `scripts/package-release.ps1 -Configuration Release -Force`
   → `scripts/verify-release-package.ps1 -ZipPath dist/ADOFAI.Renderist.zip`。
-- 部署使用 `scripts/copy-to-mods.ps1`，只更新 `Mods\ADOFAI.Renderist\`；路径来自本地 ignored `build/local.props`，未配置时不得猜测。本轮已部署 `0.3.7.0` 发布构建（DLL SHA256 `14D335FD2E2C…`，与 `bin\Release` 及发布包内 DLL 逐字节一致，`ProductVersion=0.3.7.0+05a3b4a…`）；目录内的 `ADOFAI.Renderist.dll.<pid>.cache` 是 UMM/Mono 通用运行时缓存（`AdofaiTweaks` 同样存在），脚本默认保留。**部署本身不等于实机验收**：本轮 `0.3.7.0` 第一闭环的实机项目**已完成验收并逐项记录于 §9.1**（其中窗口 resize 后 aspect 自动跟随与最终视觉观感属用户观察证据）；第二闭环 supersampling 未实现、未验收。
+- 部署使用 `scripts/copy-to-mods.ps1`，只更新 `Mods\ADOFAI.Renderist\`；路径来自本地 ignored `build/local.props`，未配置时不得猜测。当前已部署**第二闭环**构建（DLL SHA256 `E16954C57718…`，与 `bin\Release` 及发布包内 DLL 逐字节一致，`ProductVersion=0.3.7.0+7efcacd…`）；目录内的 `ADOFAI.Renderist.dll.<pid>.cache` 是 UMM/Mono 通用运行时缓存（`AdofaiTweaks` 同样存在），脚本默认保留。**部署本身不等于实机验收**：第一闭环的实机项目已完成验收并逐项记录于 §9.1（其中窗口 resize 后 aspect 自动跟随与最终视觉观感属用户观察证据）；**第二闭环 supersampling 已实现并部署，但尚未实机验收**（scale=1 之外的路径）。
