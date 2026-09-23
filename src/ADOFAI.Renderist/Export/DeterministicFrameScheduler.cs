@@ -140,7 +140,17 @@ namespace ADOFAI.Renderist.Export
         private static int _supersamplingScale = OutputGeometryPolicy.DefaultSupersamplingScale;
         private static int _renderWidth;
         private static int _renderHeight;
-        private static int _downsampleLevelCount;
+        /// <summary>
+        /// 规划器给出的**计划**降采样级数（仅用于 session 启动时的 frozen 日志行）。
+        /// 它不代表链真的被创建了：log-only 与 scale=1 的计划值也可能 > 0 / = 0。
+        /// </summary>
+        private static int _downsamplePlannedLevelCount;
+        /// <summary>
+        /// **实际创建**的降采样级数：只在 Source 成功激活之后由 FrameCaptureDriver 快照。
+        /// 未激活（含 activation 失败）时为 0，因此 metadata 绝不会在链不存在时声称已创建。
+        /// 该值在 cleanup 释放链之后仍然保留，直到下一次 ResetRunStateForStart。
+        /// </summary>
+        private static int _downsampleActualLevelCount;
 
         /// <summary>session 开始时采集的只读运行时渲染环境 inventory（metadata 用）。</summary>
         private static RenderEnvironmentInventory _environmentInventory;
@@ -344,8 +354,11 @@ namespace ADOFAI.Renderist.Export
         public static int RenderWidth => _renderWidth;
         /// <summary>本 session 冻结的 Source RenderTexture 高度（= OutputHeight × SupersamplingScale）。</summary>
         public static int RenderHeight => _renderHeight;
-        /// <summary>本 session 冻结的降采样级数（不含 source）；scale=1 时为 0。</summary>
-        public static int DownsampleLevelCount => _downsampleLevelCount;
+        /// <summary>
+        /// 本 session **实际创建**的降采样级数（不含 source）；metadata 的唯一来源。
+        /// 未成功激活 Source（含 activation 失败、scale=1、log-only）时为 0。
+        /// </summary>
+        public static int DownsampleLevelCount => _downsampleActualLevelCount;
         /// <summary>session 开始时采集的运行时渲染环境 inventory；未启动时为 null。</summary>
         public static RenderEnvironmentInventory EnvironmentInventory => _environmentInventory;
         public static bool CanonicalCompletionCallbackSeen => _canonicalCompletionCallbackSeen;
@@ -450,7 +463,7 @@ namespace ADOFAI.Renderist.Export
                 _supersamplingScale = geometry.Scale;
                 _renderWidth = geometry.RenderWidth;
                 _renderHeight = geometry.RenderHeight;
-                _downsampleLevelCount = geometry.DownsampleLevelCount;
+                _downsamplePlannedLevelCount = geometry.DownsampleLevelCount;
                 // 环境 inventory 只在 session 开始时采集一次；capture target 形态在
                 // source activation 成功后补填（见 FrameCaptureDriver.CaptureRenderTargetInventory）。
                 _environmentInventory = RenderEnvironmentInventory.Capture();
@@ -615,7 +628,7 @@ namespace ADOFAI.Renderist.Export
                              _renderWidth.ToString(CultureInfo.InvariantCulture) + "x" +
                              _renderHeight.ToString(CultureInfo.InvariantCulture) +
                              " downsampleLevels=" +
-                             _downsampleLevelCount.ToString(CultureInfo.InvariantCulture) +
+                             _downsamplePlannedLevelCount.ToString(CultureInfo.InvariantCulture) +
                              " downsampleAlgorithm=" + OutputGeometryPolicy.DownsampleAlgorithmLabel +
                              " renderTargetMode=" + (_imageOutputEnabled ? "png-sequence" : "log-only"));
                 }
@@ -753,7 +766,8 @@ namespace ADOFAI.Renderist.Export
             _supersamplingScale = OutputGeometryPolicy.DefaultSupersamplingScale;
             _renderWidth = 0;
             _renderHeight = 0;
-            _downsampleLevelCount = 0;
+            _downsamplePlannedLevelCount = 0;
+            _downsampleActualLevelCount = 0;
             _outputWidth = 0;
             _outputHeight = 0;
             _environmentInventory = null;
@@ -1055,6 +1069,9 @@ namespace ADOFAI.Renderist.Export
                     _captureSource = FrameCaptureDriver.CameraSourceLabel;
                     _captureWidth = FrameCaptureDriver.CaptureWidth;
                     _captureHeight = FrameCaptureDriver.CaptureHeight;
+                    // 只在 activation 成功之后才快照**实际创建**的降采样级数；
+                    // 失败路径不写该值，因此 metadata 不会伪称链已创建。
+                    _downsampleActualLevelCount = FrameCaptureDriver.DownsampleLevelCount;
                     FrameCaptureDriver.CaptureRenderTargetInventory(_environmentInventory);
                     _preEntryCapturing = true;
                     _preEntryLastCaptureUnityFrame = -1;
@@ -1228,6 +1245,8 @@ namespace ADOFAI.Renderist.Export
             _captureSource = FrameCaptureDriver.CameraSourceLabel;
             _captureWidth = FrameCaptureDriver.CaptureWidth;
             _captureHeight = FrameCaptureDriver.CaptureHeight;
+            // 只在 activation 成功之后才快照**实际创建**的降采样级数（log-only 恒为 0）。
+            _downsampleActualLevelCount = FrameCaptureDriver.DownsampleLevelCount;
             FrameCaptureDriver.CaptureRenderTargetInventory(_environmentInventory);
 
             _activationUnityFrame = Time.frameCount + 1;

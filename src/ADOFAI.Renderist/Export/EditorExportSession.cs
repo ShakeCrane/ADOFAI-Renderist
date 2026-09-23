@@ -108,7 +108,12 @@ namespace ADOFAI.Renderist.Export
         public long RenderWidth;
         /// <summary>Source RenderTexture 高度 = OutputHeight × SupersamplingScale。</summary>
         public long RenderHeight;
-        /// <summary>降采样级数（不含 source）；scale=1 时为 0。</summary>
+        /// <summary>
+        /// **实际创建**的降采样级数（不含 source）。语义（Phase 3.7.0 第二闭环）：
+        /// 只有 Source 成功激活、链真的被创建时才 &gt; 0；因此
+        /// scale=1 / log-only / 未激活 / activation 失败 均为 0。
+        /// 计划级数可由 SupersamplingScale 与 OutputGeometryPolicy 的规划器推算，不另设字段。
+        /// </summary>
         public long DownsampleLevelCount;
         /// <summary>降采样算法标识；scale=1 时为空字符串。</summary>
         public string DownsampleAlgorithm;

@@ -209,8 +209,10 @@ namespace ADOFAI.Renderist.Export
                     SupersamplingScale = geometry.Scale,
                     RenderWidth = geometry.RenderWidth,
                     RenderHeight = geometry.RenderHeight,
-                    DownsampleLevelCount = geometry.DownsampleLevelCount,
                     DownsampleAlgorithm = OutputGeometryPolicy.DownsampleAlgorithmLabel,
+                    // DownsampleLevelCount 刻意不在此处写入：本方法的初值 0 才真实
+                    // （此刻尚未激活 Source，链也尚未创建）。实际级数由 scheduler 在
+                    // activation 成功后快照，并在终态 metadata 中回填。
                     OutputWidth = geometry.Width,
                     OutputHeight = geometry.Height,
                     OutputAspect = geometry.Aspect,

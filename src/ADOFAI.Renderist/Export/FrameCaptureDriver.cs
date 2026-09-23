@@ -259,8 +259,25 @@ namespace ADOFAI.Renderist.Export
         /// <summary>本 session 冻结的超采样倍率；1 = 关闭。</summary>
         public static int SupersamplingScale => _supersamplingScale;
 
-        /// <summary>降采样级数（不含 source）；scale=1 时为 0。</summary>
-        public static int DownsampleLevelCount => _downsampleTargets == null ? 0 : _downsampleTargets.Length;
+        /// <summary>
+        /// **实际已创建**的降采样级数（不含 source）：只统计确实持有 RT 的槽位，
+        /// 因此 partial failure 留下的 null 槽位不会被计入；scale=1 或 log-only 时为 0。
+        /// 这是 metadata `downsampleLevelCount` 的唯一来源（区别于 OutputGeometryPolicy
+        /// 给出的“计划级数”）。
+        /// </summary>
+        public static int DownsampleLevelCount
+        {
+            get
+            {
+                if (_downsampleTargets == null) return 0;
+                int count = 0;
+                for (int i = 0; i < _downsampleTargets.Length; i++)
+                {
+                    if (_downsampleTargets[i] != null) count++;
+                }
+                return count;
+            }
+        }
 
         /// <summary>
         /// 本 session 写入三台 Camera 的统一输出 aspect（width / height）；

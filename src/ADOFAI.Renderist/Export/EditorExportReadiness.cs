@@ -134,7 +134,12 @@ namespace ADOFAI.Renderist.Export
         /// <summary>Source RenderTexture 高度（= OutputHeight × SupersamplingScale）；几何非法时为 null。</summary>
         public int? RenderHeight { get; set; }
 
-        /// <summary>降采样级数（不含 source）；scale=1 时为 0。</summary>
+        /// <summary>
+        /// **计划**降采样级数（不含 source），由冻结几何的规划器推算；scale=1 时为 0。
+        /// 这是 session 开始**之前**的 GUI 就绪展示值，不代表链已被创建
+        /// （log-only 下计划值 &gt; 0 而实际创建 0 级）。session metadata 的
+        /// `downsampleLevelCount` 记录的是**实际创建**级数，两者语义不同。
+        /// </summary>
         public int? DownsampleLevelCount { get; set; }
 
         // ---- Phase 3.7.0: 三台原生谱面 Camera 的 aspect 诊断 ----
