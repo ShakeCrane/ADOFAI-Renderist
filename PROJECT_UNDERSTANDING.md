@@ -39,11 +39,11 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 产品版本 | `0.3.7.0` |
-| Phase | `Phase 3.7.0 Custom Resolution & Supersampling` |
-| 版本定位 | `0.3.7.0` = **第一闭环 Custom Resolution（已实机验收）+ 第二闭环 Supersampling（已实现，未实机验收）**；其上 `0.3.6.4` = **Log-only Frame Transactions（image output disabled）** |
-| 稳定实机基线 | `0.3.6.4`：同一基准谱面的 PNG 与 Log-only 均已完整跑通（见 §9.1）。`0.3.7.0` 第一闭环 Custom Resolution **已通过用户实机验收并完成实机产物批量分析**（见 §9.1），其**第一闭环范围**可作为稳定实机基线。第二闭环 supersampling **已实现、已构建打包、已部署，但尚未实机验收**（scale=1 之外的路径），整个 `0.3.7.0` 阶段仍**未**标记完成。 |
-| 当前开发方向 | `0.3.7.0` 第一闭环（custom resolution + 三台原生 Camera 的 aspect ownership）**已通过实机验收**（证据分级见 §9.1）。第二闭环 **Supersampling & Downsampling 已实现并通过非实机 harness 验证**（见 §9.7），**等待用户实机验收**；实机通过前不宣称第二闭环完成。 |
+| 产品版本 | `0.3.7.1` |
+| Phase | `Phase 3.7.0 Custom Resolution & Supersampling`（收敛第四位时 **Phase 保持不变**） |
+| 版本定位 | `0.3.7.1` = **Custom Resolution + Supersampling 双闭环稳定性收敛版**（`0.3.7.0` 功能不变，仅第四位递增）。第一闭环 Custom Resolution 与第二闭环 Supersampling **均已在当前 Gamma / Direct3D11 环境通过实机验收**；其下 `0.3.6.4` = **Log-only Frame Transactions（image output disabled）** |
+| 稳定实机基线 | **`0.3.7.1`**（= `0.3.7.0` 双闭环 + `ce34ad4` metadata 语义修正；构建身份见 §12）。`0.3.7.0` 第一闭环（Custom Resolution）与第二闭环（Supersampling，含 **scale=4 完整导出**）均已实机通过：第一闭环见 §9.1；第二闭环见 §9.7.1 + §9.7.3。更早的稳定基线 `0.3.6.4`（PNG 与 Log-only 同谱面跑通）仍见 §9.1。**未覆盖边界**（Linear 色彩空间、极端资源失败）见 §9.7.3。 |
+| 当前开发方向 | 双闭环均已收敛；**未开始**音频 / FFmpeg / replay / 外部视频编码。第二闭环仍然**未覆盖** Unity **Linear** 色彩空间与极端资源失败路径（详见 §9.7.3），不得由 Gamma 结果外推。 |
 
 `0.3.6.2` 相对 `0.3.6.1` 的四个 hardening 点（功能语义不变，只收敛异常路径与输入判定）：
 
@@ -74,7 +74,7 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 4. **单 RenderTexture 基线与 EOF 帧事务不变**：仍只有一个 capture RT（ARGB32 / depth 24 / MSAA 1 / 无 mipmap），仍走同一个 `WaitForEndOfFrame` 与唯一 `CommitFrame`；PNG 与 log-only 共用同一尺寸、同一 RT、同一 aspect。**未引入 Blit、downsample RT 链或第二套 scheduler / driver，也未新增任何 ADOFAI Hook。**
 5. **metadata 与运行时 inventory**：session metadata 新增输出几何（模式 / persisted 配置宽高 / 冻结宽高 / 统一 aspect）与只读运行时渲染环境 inventory（`colorSpace`、GPU 型号与版本、`maxTextureSize`、capture RT 的 format / graphicsFormat / MSAA / mipmap）。`phase` 文案同步为 `Phase 3.7.0 Custom Resolution & Supersampling`。
 
-`0.3.7.0` 第二闭环 —— **Supersampling & Downsampling**（提交 `2585664` + `7efcacd`；**已实现、已构建打包、已部署，未实机验收**）：
+`0.3.7.0` 第二闭环 —— **Supersampling & Downsampling**（提交 `2585664` + `7efcacd`，metadata 语义修正 `ce34ad4`；**已实机验收**，见 §9.7.1 / §9.7.3）：
 
 1. **整数倍率 + 多级 bilinear 降采样**：`OutputGeometryPolicy` 扩展出 `SupersamplingScale`（默认 `1` = 关闭）。`render = output × scale`，用 `checked` 乘法计算，溢出即 fail-closed（不 clamp、不降级）。`SystemInfo.maxTextureSize` 对**实际 render 尺寸**生效；scale=1 时 render == output，因此硬件判定与第一闭环完全等价（错误码也保持 `geometry-width-exceeds-hardware-max`）。**没有产品级倍率 / 像素数 / 显存 / 耗时 / 体积上限**。
 2. **降采样链规划器（`multi-stage-bilinear`）**：级别按**相对 output 的整数倍率**递减：`nextFactor = factor / 2 + factor % 2`（= `ceil(factor/2)`），每级尺寸 = `(outputWidth × nextFactor, outputHeight × nextFactor)`。因此 **1 → 空链；2 → [1]；3 → [2,1]；4 → [2,1]；5 → [3,2,1]**，每相邻两级比例 ≤ 2:1（逐级 bilinear 等价于 2×2 box 平均），**每级精确保持宽高比**（不使用宽高分别 ceil-halving），末级精确等于 output。规划器是纯函数，可被 harness 全覆盖。
@@ -593,7 +593,7 @@ harness 覆盖的关键证据（全部 PASS）：
 
 **harness 与其它临时验证资产在结论记录后已删除**（`temp/` 为 gitignored）；上表结果是删除前实测所得。
 
-### 9.7 `0.3.7.0` 第二闭环 Supersampling 的非实机验证结果（**已执行；实机未验收**）
+### 9.7 `0.3.7.0` 第二闭环 Supersampling 的验证结果（非实机 harness **已执行**；实机验收见 §9.7.3）
 
 > 与第一闭环不同，本节结果**只**证明非实机部分。**第二闭环尚未取得任何实机结果**，不得据此宣称通过。
 
@@ -642,13 +642,38 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 **harness 与其它临时验证资产在结论记录后已删除**（`temp/ss-harness/`、`temp/md-harness/`，`temp/` 为 gitignored）；上表结果是删除前实测所得。
 
-**仍未验证（必须由实机或独立 Unity 环境确认）**：
+**仍未验证（该清单在 §9.7.3 已更新）**：本节原先列出的「Blit 真实 GPU 行为 / 色彩正确性 / scale=1 实机回归」已由后续实机轮次覆盖，结论见 §9.7.1 与 **§9.7.3**；当前仍然未覆盖的项以 §9.7.3 的「未覆盖边界」为准（**Linear 色彩空间**、**极端资源失败**、逐帧 GPU 状态读回、跨会话 residual gate、画质全序列目视）。
 
-- `Graphics.Blit` 的真实 GPU 行为与多级降采样的**实际图像质量**（边缘平滑度、是否出现渗色/暗边）。
-- **色彩正确性**：scale=1 与 scale>1 在同一逻辑帧下的均值/直方图不得出现系统性色相/gamma 漂移。
-- 真实 `maxTextureSize` 边界附近的行为；大 scale 下的实际显存分配与失败表现；连续导出后**跨帧 GPU 状态污染**。
-- `scale=1` 对第一闭环产物的实机回归（判据：与 `0.3.7.0` 第一闭环已验收产物同谱面同设置的 MAE 落在既有会话间噪声 0.18–0.26 之内；**不要求逐字节一致**）。
-- **Linear 色彩空间路径**：当前受测 ADOFAI 环境为 **Gamma / Direct3D11**。Linear 分支（`GL.sRGBWrite` 按 destination 设置）**未经任何实机验证**，不得把 Gamma 结果推广为 Linear 已通过。
+#### 9.7.3 第二闭环最终实机验收（scale=4 完整导出首次通过）
+
+| 项 | 实测 |
+| --- | --- |
+| Session | **`editor_20260923_093423`**（2026-09-23 09:34:24–09:34:38） |
+| 受测构建 | `ce34ad4` 构建，DLL SHA256 `E6747B520FD0C2844238901361251CD127B675041222A0BB1F6A0E8782D6E6E1`，`ProductVersion=0.3.7.0+ce34ad4…` |
+| 模式 / 几何 | PNG（`editor-export-png-sequence`，`imageOutputEnabled=true`）；自定义 1080×1080；**scale=4** |
+| Source / Capture RT | **4320×4320**（`renderWidth/Height` 与 `captureWidth/Height` 均为 4320） |
+| 实际 Downsample RT | **2 级**（`downsampleLevelCount=2`；链首级 `downsampleRenderTextureFormat=ARGB32` / `R8G8B8A8_UNorm`，与 Source 逐字段一致） |
+| 逻辑帧 | **254**（`frameTransactionRequestCount = logicalFrameCount = captureRequestCount = writtenPngFrameCount = capturedFrameCount = 254`） |
+| PNG | **254 张，全部实测 1080×1080**，编号 `frame_000000…000253` **连续无缺号**；磁盘 / 日志 `wrote` / metadata **三方均为 254** |
+| completion | `completionFrameIndex=241`，`tailFramesCommitted=12`，`tailFramesCaptured=12`，`resolvedTailFrames=12` |
+| 终态 | `state=Completed`，`stopReason=canonical-completion-tail-drained`，`terminationKind=canonical-completion` |
+| 时间线签名 | `B=60`、`previousBoundaryTime=1.796667`、`canonicalStart=1.8`、`partialFraction=0.1`、`outputFps=30`、`completionBpm=100`、`pitch=1`、End Tail 12 Frames —— 与既有 BPM=100 基准组一致 |
+| 失败面 | **无已观察到的**捕获失败 / `cleanup-failed` / residual / GPU 状态异常 / watchdog / safety-limit；`restored captureFramerate` 1 次；唯一 `WaitForEndOfFrame`、唯一 `CommitFrame` 在实机上各 1 次；全文仅 2 条既有无关 Exception（Discord 初始化、`Mods detected! Disabling exception capturing`） |
+| 跨 scale 一致性（像素） | 该 session 与同时间线的 `085216`(scale1)/`085258`(scale2)/`085334`(scale3) 同帧直接比对 MAE：vs scale1 **0.550–0.850**、vs scale2 **0.485–0.699**、**vs scale3 0.354–0.573（最近）** ⇒ 亚像素级一致、无构图偏移/拉伸 |
+| 颜色（像素） | 全帧通道均值 Δ(scale4 − scale1) = **(−0.171, −0.131, −0.124)**，三通道同向等量（≤0.75%），**无偏色/色相漂移**；轻微压暗的**具体因果归因未经验证**，不得写成既定事实 |
+| 画质观感 | 用户确认**完整导出已完成**；**网页版 GPT 仅对 `frame_000058`–`000062` 五张抽样**目视未见明显拉伸 / 过度模糊 / 亮边 / 暗边 / 渗色 ⇒ **只覆盖该 5 帧抽样，不得推广为全序列逐帧目视通过**，也不得据此宣称「高倍率普遍优于低倍率」 |
+
+**未覆盖边界（继续不得记为通过）**：
+
+1. **Linear 色彩空间**：历次实机均为 **Gamma / Direct3D11**；`GL.sRGBWrite` 按 destination 设置的 Linear 分支**从未实机运行**。Gamma 结论不得外推。
+2. **极端资源失败**：本轮最大 render 为 4320×4320，**远低于** `maxTextureSize=16384`；接近硬件上限的 render 尺寸、极大 scale 的显存分配失败及失败时的 fail-closed / residual 表现**均未实机测**（harness 只覆盖 stub 语义，不构成 GPU 实机证据）。
+3. **GPU 状态逐帧读回**：`RenderTexture.active` / `GL.sRGBWrite` 的**成功恢复不写日志**，实机只能得到「未观察到恢复失败」这一侧结论；**不得**把无错误日志写成每帧状态值均已独立验证。
+4. **跨会话 residual gate**：`editor_20260923_093423` 所在 run **只有一个 session**，未取得新增证据；该结论仍沿用第一闭环轮次的记录（三次取消后下一 session 均正常启动）。
+5. **画质全序列目视**：中段 gameplay、completion 与 End Tail 区间**未目视**。
+
+#### 9.7.4 算法命名与等价性（durable）
+
+实现名称为 **`multi-stage-bilinear`**（逐级 bilinear 采样）。**只有相邻两级比例恰为 2:1 时**，该级 bilinear 采样才近似 2×2 box 平均；`3W→2W`（1.5:1，出现在 scale=3/5/6 的首级）**不是** box 平均。因此**不得**把本算法普遍等价为 box filtering / box downsample。Gamma 空间对伽马编码值求平均是该实现的已知性质，**不是**对 box filter 的等价声明。
 
 ---
 
@@ -728,7 +753,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 7. **native Esc teardown 警告**：曾见 Unity `Coroutine couldn't be started ... Conductor is inactive`，静态证据更像 native teardown；未做 disable-mod A/B。
 8. **custom resolution / supersampling、audio、FFmpeg、replay、Preview Bridge**：
    - **custom resolution：第一闭环已实现、已构建打包、并已通过用户实机验收与实机产物批量分析（`0.3.7.0`）**（结论与证据分级见 §9.1）。实现见 §2 / §3.1 / §3.5 / §7 / §8.2。
-   - **supersampling、降采样、`Graphics.Blit`、downsample RT 链：已实现（`2585664` + `7efcacd`）并通过非实机 harness 验证（§9.7），但尚未实机验收**；整个 `0.3.7.0` 阶段**未**标记完成。仍是**单一** scheduler / driver / EOF 事务 / 唯一 `CommitFrame`，未引入第二套渲染架构。
+   - **supersampling、降采样、`Graphics.Blit`、downsample RT 链：已实现（`2585664` + `7efcacd`、metadata 语义修正 `ce34ad4`）并已通过实机验收（当前 Gamma / Direct3D11 环境；含 scale=4 完整导出，见 §9.7.3）**。仍是**单一** scheduler / driver / EOF 事务 / 唯一 `CommitFrame`，未引入第二套渲染架构。**未覆盖边界**（Linear 色彩空间、极端资源失败、逐帧 GPU 状态读回、跨会话 residual gate、画质全序列目视）见 §9.7.3；**不得由 Gamma 结果外推 Linear**。
    - audio、FFmpeg、replay、Preview Bridge 均未实现。
 9. **`0.3.7.0` 第一闭环：实机验收已通过（见 §9.1）**；下列为该闭环的**残余/边界项**，不再作为阻断条件，但保留准确状态：
    - **Camera aspect 在实机中的真实基线语义**：8/8 session 实测三台 Camera 在接管前的 `baselineAspect` 均为 `1.6`（= 当前窗口自动值），三台始终互相一致；当前实现的判据（可读 / 有限 / 为正 / 三台互相兼容）**在实机上未出现误杀**。实现**刻意没有**用「是否等于屏幕 aspect」推断自动模式。仍未直接确认该自动值的**内部来源**（屏幕 or 游戏 `camRT`）。
@@ -749,21 +774,40 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 ## 12. 发布与部署
 
-- 当前产品版本为 `0.3.7.0`（**第一闭环 Custom Resolution（已实机验收）+ 第二闭环 Supersampling（已实现、未实机验收）**，Phase `Phase 3.7.0 Custom Resolution & Supersampling`）；其上的 `0.3.6.4` 为 Log-only Frame Transactions。前三位 `0.3.6` → `0.3.7` 与 Phase 文案本轮**均已变更**（用户明确批准）。
+- 当前产品版本为 **`0.3.7.1`**（**Custom Resolution + Supersampling 双闭环稳定性收敛版**；`0.3.7.0` 功能不变，**仅第四位递增**，Phase 保持 `Phase 3.7.0 Custom Resolution & Supersampling`）；其下的 `0.3.7.0` = 双闭环功能版，`0.3.6.4` = Log-only Frame Transactions。前三位 `0.3.6` → `0.3.7` 与 Phase 文案在 `0.3.7.0` 轮次**均已变更**（用户明确批准）；`0.3.7.0` → `0.3.7.1` 未改 Phase。
 - 本轮（0.3.7.0 第一闭环）相对基线 `70df55b` 的改动：新增 `OutputGeometryPolicy.cs`、`RenderEnvironmentInventory.cs`；修改 `Settings.cs`、`UiText.cs`、`ModEntry.cs`、`EditorExportReadiness.cs`、`EditorExportPreflight.cs`、`EditorExportController.cs`、`EditorExportSession.cs`、`DeterministicFrameScheduler.cs`、`FrameCaptureDriver.cs`；版本点 `mod/Info.json`、csproj `<Version>`、`ModEntry.ModVersion` 与 `ModEntry` 启动日志，外加**人工同步**的 `EditorExportSession.PhaseLabel` 与类注释 phase 文案（`set-version.ps1` 的已知范围限制，见 §2）。
 - 本轮**未**新增 Harmony Patch、未新增 ADOFAI 内部 API 依赖、未修改 README。
 - 发布包：`Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` ignored。本轮以 `scripts/package-release.ps1 -Configuration Release -Version 0.3.7.0 -Force` 打包，并在发布提交 `05a3b4a` 之后重新 Release Rebuild 并以 `-SkipBuild` 重新打包，产出 `dist/ADOFAI.Renderist.zip`（zip SHA256 `B251B6A4631401E44F96130E152FB834B70B47CE6E75CA45304DC43380A4155F`，sidecar `dist/ADOFAI.Renderist.zip.sha256` 同值）；`verify-release-package.ps1` 结果 **PASS 11 checks / 0 failures**，独立解包复核确认包内仅有 3 个顶层文件、无目录，且包内 DLL 与 `bin\Release` 逐字节一致。
 - 发布包内 DLL 的 `ProductVersion` 形如 `<version>+<HEAD 短哈希>`：该 `+hash` 是 SourceLink/InformationalVersion 在构建时记录的 **HEAD 提交**，不是工作区改动。`0.3.7.0` 的最终发布包在发布提交 `05a3b4a` 之后重建，因此 `ProductVersion = 0.3.7.0+05a3b4adda0fb5d9ce89c5ca29af1a6f496d75f3`（`FileVersion = 0.3.7.0`，DLL SHA256 `14D335FD2E2C051DBCE43BF1DB414F8ED177BEB221846EFB4FB50D761DBFBBBA`），即包内构建标识精确指向承载本版本的提交。注意：若在打包后再提交任何改动，`+hash` 不会自动更新；应避免在打包后 `amend` 发布提交（会改变哈希并使包内标识失效）。`verify-release-package.ps1` 比较版本时会剥离 `+hash` 后缀。
-- 历史：`0.3.6.1`（Output FPS 无上限、safety 默认 unbounded、long frame chain、autoplay fail-closed、paused 阶段修正）→ `8bceeef` + `1af1205` hardening → `0.3.6.2` → native pre-entry 正式化 + persisted End Tail semantic fix → `0.3.6.3` → Log-only Frame Transactions → `0.3.6.4` → `05a3b4a` Custom Resolution（**第一闭环；已通过实机验收**）→ `2585664` + `7efcacd` Supersampling & Downsampling（**第二闭环；已实现、未实机验收**）→ `ce34ad4` metadata `downsampleLevelCount` 实际级数语义修正（**未改变任何渲染/计数/ownership 行为**）。
+- 历史：`0.3.6.1`（Output FPS 无上限、safety 默认 unbounded、long frame chain、autoplay fail-closed、paused 阶段修正）→ `8bceeef` + `1af1205` hardening → `0.3.6.2` → native pre-entry 正式化 + persisted End Tail semantic fix → `0.3.6.3` → Log-only Frame Transactions → `0.3.6.4` → `05a3b4a` Custom Resolution（**第一闭环；已通过实机验收**）→ `2585664` + `7efcacd` Supersampling & Downsampling（**第二闭环；已通过实机验收**，见 §9.7.3）→ `ce34ad4` metadata `downsampleLevelCount` 实际级数语义修正（**未改变任何渲染/计数/ownership 行为**）→ **`0.3.7.1` 稳定性收敛**（仅第四位递增 + 一处算法注释勘误，见下）。
 - **`0.3.7.0` 存在三个不同的发布包身份（重要，勿混用）**：版本号始终为 `0.3.7.0`（用户明确要求不递增第四位），`dist/ADOFAI.Renderist.zip` 已被**重建覆盖三次**：
   - **第一闭环（仅 Custom Resolution）**：`05a3b4a` 构建，DLL SHA256 `14D335FD2E2C051DBCE43BF1DB414F8ED177BEB221846EFB4FB50D761DBFBBBA`，`ProductVersion = 0.3.7.0+05a3b4a…`，zip SHA256 `B251B6A4631401E44F96130E152FB834B70B47CE6E75CA45304DC43380A4155F`（**已实机验收的那一份**）。
   - **第二闭环（含 Supersampling，首轮实机受测）**：`7efcacd` 构建，DLL SHA256 `E16954C57718F1424BC067985DB6BAEF490987C72064A0B46D591313A3815404`，`ProductVersion = 0.3.7.0+7efcacd5a0af2f3e736987057f0218e55f21a32c`，zip SHA256 `F667A0C740636D4A6920EF2AEBD1C2C753A1B80A98C17C783A310C30C3C9F466`（已完成首轮 6 session 实机；**metadata `downsampleLevelCount` 为计划级数**的旧语义）。
-  - **第二闭环 + metadata 语义修正（当前 `dist`，待 scale=4 复测）**：`ce34ad4` 构建，DLL SHA256 `E6747B520FD0C2844238901361251CD127B675041222A0BB1F6A0E8782D6E6E1`，`ProductVersion = 0.3.7.0+ce34ad49ae8d80d791a06887ece55fce31b3efbf`，zip SHA256 `99CF5ACBE735F1D5A5922A2C0CEE791C80B815F85C8B2BAB2FA1142DC23B93D1`（**尚无实机验收**）。
-  - 因此**不能**再用「0.3.7.0 的包哈希」唯一指代某个构建；引用时必须同时给出 DLL SHA256 或 `ProductVersion` 的 `+hash`。`verify-release-package.ps1` 比较版本时会剥离 `+hash` 后缀。
-  - **受测构建的自我判别**：`ce34ad4` 起，log-only + scale>1 的 session metadata `downsampleLevelCount` 为 **0**；`7efcacd`（及更早）为**计划级数**（如 scale=4 时为 2）。因此**仅凭一个 log-only scale>1 session 的 metadata 即可判定实际运行的是哪个构建**，不必依赖 DLL 哈希。
-- 第二闭环的 Release Rebuild / package / verify：**0 error / PASS 11 checks / 0 failures**（细节见 §9.7）。
-- 部署使用 `scripts/copy-to-mods.ps1`，只更新 `Mods\ADOFAI.Renderist\`；路径来自本地 ignored `build/local.props`，未配置时不得猜测。当前已部署 **`ce34ad4`** 构建（DLL SHA256 `E6747B52…`，与 `bin\Release` 及发布包内 DLL 逐字节一致，`ProductVersion=0.3.7.0+ce34ad4…`）；目录内的 `ADOFAI.Renderist.dll.<pid>.cache` 是 UMM/Mono 按**进程 id** 命名的运行时缓存（`AdofaiTweaks` 同样存在），脚本默认保留、可用 `-CleanRuntimeCache` 清除；它**不是**被加载的产物（DLL 才是），且历史观测显示每次游戏运行都会重新生成并淘汰旧 pid 的缓存。保险做法仍是：如对「下一轮究竟跑了哪个构建」有疑问，直接读该轮 metadata 的 `downsampleLevelCount`（见上）。**部署本身不等于实机验收**：第一闭环的实机项目已完成验收并逐项记录于 §9.1；**第二闭环 supersampling 已实现并部署，但尚未实机验收**（scale=1 之外的路径）。
+  - **第二闭环 + metadata 语义修正**：`ce34ad4` 构建，DLL SHA256 `E6747B520FD0C2844238901361251CD127B675041222A0BB1F6A0E8782D6E6E1`，`ProductVersion = 0.3.7.0+ce34ad49ae8d80d791a06887ece55fce31b3efbf`（**scale=4 完整导出实机验收的那一份**，见 §9.7.3）。
+  - **`0.3.7.1` 稳定性收敛（当前稳定版本）**：构建身份见本文件末尾「最终发布身份」段（DLL / zip / `ProductVersion +hash` 以该处为准）。
+  - 因此**不能**再用「0.3.7.0 的包哈希」唯一指代某个构建；引用时必须同时给出**版本号 + DLL SHA256 或 `ProductVersion` 的 `+hash`**。`verify-release-package.ps1` 比较版本时会剥离 `+hash` 后缀。
+  - **受测构建的自我判别**：`ce34ad4` 起，log-only + scale>1 的 session metadata `downsampleLevelCount` 为 **0**；`7efcacd`（及更早）为**计划级数**（如 scale=4 时为 2）。但 **PNG + scale>4 等场景下该字段在新旧构建下取值相同**（例如 PNG+scale=4 两版都是 2），因此该判别法**只适用于 log-only + scale>1**；其余情况须依赖部署时间序或 DLL 哈希。
+- 各轮 Release Rebuild / package / verify：**0 error / PASS 11 checks / 0 failures**（细节见 §9.7）。
+- 部署使用 `scripts/copy-to-mods.ps1`，只更新 `Mods\ADOFAI.Renderist\`；路径来自本地 ignored `build/local.props`，未配置时不得猜测。目录内的 `ADOFAI.Renderist.dll.<pid>.cache` 是 UMM/Mono 按**进程 id** 命名的运行时缓存（`AdofaiTweaks` 同样存在），脚本默认保留、可用 `-CleanRuntimeCache` 清除；它**不是**被加载的产物（DLL 才是），且历史观测显示每次游戏运行都会重新生成并淘汰旧 pid 的缓存。**部署本身不等于实机验收**：第一闭环见 §9.1，第二闭环（含 scale=4 完整导出）见 §9.7.3；当前仍未覆盖的边界（Linear、极端资源失败等）见 §9.7.3。
 - 自动验证链：
   `dotnet build src/ADOFAI.Renderist/ADOFAI.Renderist.csproj -c Release -t:Rebuild`
   → `scripts/package-release.ps1 -Configuration Release -Force`
   → `scripts/verify-release-package.ps1 -ZipPath dist/ADOFAI.Renderist.zip`。
+
+### 12.1 最终发布身份（`0.3.7.1` 稳定性收敛）
+
+| 项 | 值 |
+| --- | --- |
+| 发布源码提交（release source commit） | **`647b1d7188850150cca5709e9b092765fb78888d`**（`chore(release): 0.3.7.1`） |
+| 产品版本 / FileVersion | `0.3.7.1` |
+| **ProductVersion（含 `+hash`）** | **`0.3.7.1+647b1d7188850150cca5709e9b092765fb78888d`** ⇒ 精确指向上述发布源码提交 |
+| DLL SHA256 | **`80B2402BECB83075C1ECDCBED14E4D273D3AE6B6FD0289AB5A88B8DDF1F9E5C9`** |
+| 发布包 | `dist/ADOFAI.Renderist.zip`（`dist/` 为 gitignored，不入库） |
+| ZIP SHA256 | **`D6B40EBD326F2640C56AA8B18B32F2E5C326CD38C9B9FFBC02A9C3301FEBDE3A`**（sidecar 同值） |
+| 包内容 | 仅 3 个顶层文件（`Info.json` / `ADOFAI.Renderist.dll` / `LICENSE`），**0 个嵌套目录，无 banned 内容** |
+| 一致性 | 部署 DLL == `bin\Release` == 包内 DLL（三者 SHA256 相同），逐字节一致 |
+| 构建/验证 | Release Rebuild **0 error**；package + verify（内置与独立各一次）**PASS 11 checks / 0 failures** |
+| 本轮源码改动 | 仅：三个版本点（`Info.json` / csproj `<Version>` / `ModEntry.ModVersion` + 启动日志）+ `OutputGeometryPolicy` 规划器注释勘误；**Phase 未变** |
+
+**关于 `+hash` 与 HEAD 的关系（顺序说明）**：DLL 的 `ProductVersion +hash` 记录**构建时的 HEAD**。由于该 hash 嵌在 DLL 字节里，`DLL SHA256` 只能在提交之后才能算出，因此本仓库采用（与 `0.3.7.0` 相同）的顺序：**先提交发布源码（`647b1d7`）→ 从该提交 Rebuild / package → 再用一个 docs-only 提交记录最终身份**。因此 `+hash` 指向 `647b1d7`（**最终源码提交**），而 HEAD 可能比它多一个 docs-only 提交 —— 这不影响产物身份。若在打包之后又产生任何**源码**改动，必须重新 Rebuild + 重新打包并更新本节。
+
