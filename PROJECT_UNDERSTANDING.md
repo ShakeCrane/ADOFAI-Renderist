@@ -44,6 +44,7 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 | 版本定位 | `0.3.7.1` = **Custom Resolution + Supersampling 双闭环稳定性收敛版**（`0.3.7.0` 功能不变，仅第四位递增）。第一闭环 Custom Resolution 与第二闭环 Supersampling **均已在当前 Gamma / Direct3D11 环境通过实机验收**；其下 `0.3.6.4` = **Log-only Frame Transactions（image output disabled）** |
 | 稳定实机基线 | **`0.3.7.1`**（= `0.3.7.0` 双闭环 + `ce34ad4` metadata 语义修正；构建身份见 §12）。`0.3.7.0` 第一闭环（Custom Resolution）与第二闭环（Supersampling，含 **scale=4 完整导出**）均已实机通过：第一闭环见 §9.1；第二闭环见 §9.7.1 + §9.7.3。更早的稳定基线 `0.3.6.4`（PNG 与 Log-only 同谱面跑通）仍见 §9.1。**未覆盖边界**（Linear 色彩空间、极端资源失败）见 §9.7.3。 |
 | 当前开发方向 | 双闭环均已收敛；**未开始**音频 / FFmpeg / replay / 外部视频编码。第二闭环仍然**未覆盖** Unity **Linear** 色彩空间与极端资源失败路径（详见 §9.7.3），不得由 Gamma 结果外推。 |
+| 下一阶段设计状态 | 用户已批准目标版本 `0.3.8.0`、名称 `FFmpeg Video Export Pipeline` 及准确 Phase 文案 `Phase 3.8.0 FFmpeg Video Export Pipeline`。截至本次架构调查，产品及源码仍为 `0.3.7.1`；视频管线**待实现、待验证**，本节批准不表示版本已变更。 |
 
 `0.3.6.2` 相对 `0.3.6.1` 的四个 hardening 点（功能语义不变，只收敛异常路径与输入判定）：
 
@@ -100,6 +101,17 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 - `Assembly-CSharp.dll` 只作为当前游戏内部行为调查基线，不是 compile-time reference。
 
 ---
+
+### 2.1 Event-Driven A+ 视频导出设计（待实施）
+
+**调查依据**：本次在干净工作区核对 HEAD `01555e2300d38c938801d69d6d4387691ee96b58`、版本点、`MasterTimeline`、`DeterministicFrameScheduler`、`FrameCaptureDriver`、`OutputGeometryPolicy`、`EditorExportController`、`EditorExportSession`、Settings / GUI / preflight / metadata。以下“已确认”均指当前 `0.3.7.1` 源码静态事实，不是 MP4 实机验收。
+
+- **已确认基线**：唯一 `MasterTimeline` 用已提交的 `_outputFrameIndex` 映射输出/谱面时间；PNG / Log-only 共用一个 EOF coroutine 和 `OnCaptureResult` → 唯一 `CommitFrame`。当前捕获回调在 Unity 主线程同步执行；PNG 在 ReadPixels、GPU 状态恢复、`Texture2D.Apply`、PNG 编码及写盘成功后提交，Log-only 在帧末校验后提交。Source RT 与下采样链由冻结几何驱动；当前链只在 PNG 且 scale>1 时创建。metadata 的 `imageOutputEnabled` 是旧两模式布尔语义，不足以表示独立 MP4 类型。
+- **已确认的改造点**：`PrepareFrame` 与 `PreparePreEntryFrame` 把跨 Unity 帧 `_pendingCapture` 视为失败；视频等待 IO 时不能沿用该判断。现有捕获/进展 watchdog 均为 30 秒 wall-clock deadline；合法的编码背压须从 EOF 捕获超时中分离。`CommitFrame` 内包含 B−1 / G timeScale 转换、End Tail 完成判断，不能另设视频提交点。`EditorExportController.FinalizeFromScheduler` 当前把 scheduler Completed 直接记为 session Completed；视频须增加 FFmpeg 封装确认关口。
+- **已确定路线（用户批准，尚未实现）**：保留 PNG 与 Log-only，新增互斥的 MP4 输出类型；PNG 与 MP4 在 GUI 中平级，Log-only 可继续作为独立验证选项。一个 session 冻结输出类型、几何、FPS、编码参数及 FFmpeg 可执行文件身份。MP4 沿用现有 Camera / EOF / scale>1 降采样链，从最终 output 尺寸读回，复制到由视频管线独占的完整 CPU 帧缓冲；不编码/写入中间 PNG，不建立 Renderist 主动管理的多帧队列。主线程只做 Unity / GPU 操作和短暂交付，后台异步写 FFmpeg stdin；保持至多一帧在途，完整帧写入成功的完成事件回到 Unity 主线程并通过 session generation + pending index 校验后才调用原 `CommitFrame`。下一帧的准备和逻辑时间推进必须等待该提交；IO 慢则自然背压，不能用固定单帧时限或性能估算拒绝合法工作。等待 FFmpeg 不使用 Update / Coroutine / 固定间隔轮询；Unity 既有 Tick 仍负责既有环境与生命周期观察，不充当视频 IO 探测器。
+- **终态与隔离（待实现）**：FFmpeg stdin 完整写入只说明帧已交付，**不是 MP4 成功**。canonical completion / End Tail 排空后关闭 stdin、异步等待进程退出及 stderr 完成，确认退出码 0 和临时 MP4 有效，再将同卷临时文件发布为最终文件，随后标记 session Completed。取消/失败时废弃当前 generation、关闭管道、终止并回收进程、清理或隔离临时文件；迟到回调不能提交新 session 帧，cleanup residual 未收敛不得重开。后台线程不接触 Unity 对象。Unity 主线程完成通知采用事件驱动调度（需验证当前 Unity 的 SynchronizationContext 可用性），不得用定期轮询 IO 代替。
+- **安装路线（待实现）**：优先级建议为用户明确指定路径 → Renderist 私有安装 → 系统 PATH → 提供用户主动触发的一键安装；明确指定的路径失效时提示修复，不能静默换用其他候选。首选来源倾向 Gyan.dev 的 Windows Release Essentials **ZIP**（免 7z 解压依赖），BtbN 为备选；这只是选源倾向，**具体版本、URL、资产 SHA-256 尚未锁定**。安装须使用审核并钉住的资产清单，经 HTTPS 下载到独立用户可写目录、哈希校验、限制归档解压路径并原子安装；不修改 PATH、不要求管理员权限、不覆盖现有安装、不进入三文件发布 ZIP。MP4 + H.264 / `libx264` 软件编码是初期**建议采用**的具体方案，尚需能力、奇数尺寸与许可证验证；硬件编码不属于首批前提。用户点击前不自动下载，FFmpeg 缺失不阻断 PNG / Log-only。
+- **未解决 / 待验证**：Unity RGB24 CPU 像素缓冲的长度、行顺序与生命周期；MP4 像素格式/奇数尺寸的真实 codec 支持；等待编码器时 native Update、pre-entry lifecycle 与 visual clock 是否严格停在同一已渲染帧；主线程 SynchronizationContext 投递与取消竞态；FFmpeg 提前退出、管道半写、卡住时的取消、封装及发布失败、跨会话 residual；Gamma / Linear 色彩差异。实施验证应拆为静态不变量、独立进程故障注入、Unity 实机三层；当前均**未做 MP4 验证**。
 
 ## 3. 正式导出架构
 
