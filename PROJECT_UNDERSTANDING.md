@@ -77,7 +77,7 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 `0.3.7.0` 第二闭环 —— **Supersampling & Downsampling**（提交 `2585664` + `7efcacd`，metadata 语义修正 `ce34ad4`；**已实机验收**，见 §9.7.1 / §9.7.3）：
 
 1. **整数倍率 + 多级 bilinear 降采样**：`OutputGeometryPolicy` 扩展出 `SupersamplingScale`（默认 `1` = 关闭）。`render = output × scale`，用 `checked` 乘法计算，溢出即 fail-closed（不 clamp、不降级）。`SystemInfo.maxTextureSize` 对**实际 render 尺寸**生效；scale=1 时 render == output，因此硬件判定与第一闭环完全等价（错误码也保持 `geometry-width-exceeds-hardware-max`）。**没有产品级倍率 / 像素数 / 显存 / 耗时 / 体积上限**。
-2. **降采样链规划器（`multi-stage-bilinear`）**：级别按**相对 output 的整数倍率**递减：`nextFactor = factor / 2 + factor % 2`（= `ceil(factor/2)`），每级尺寸 = `(outputWidth × nextFactor, outputHeight × nextFactor)`。因此 **1 → 空链；2 → [1]；3 → [2,1]；4 → [2,1]；5 → [3,2,1]**，每相邻两级比例 ≤ 2:1（逐级 bilinear 等价于 2×2 box 平均），**每级精确保持宽高比**（不使用宽高分别 ceil-halving），末级精确等于 output。规划器是纯函数，可被 harness 全覆盖。
+2. **降采样链规划器（`multi-stage-bilinear`）**：级别按**相对 output 的整数倍率**递减：`nextFactor = factor / 2 + factor % 2`（= `ceil(factor/2)`），每级尺寸 = `(outputWidth × nextFactor, outputHeight × nextFactor)`。因此 **1 → 空链；2 → [1]；3 → [2,1]；4 → [2,1]；5 → [3,2,1]**，**每相邻两级比例 ≤ 2:1**，**每级精确保持宽高比**（不使用宽高分别 ceil-halving），末级精确等于 output。规划器是纯函数，可被 harness 全覆盖。（该比例关系**不等于**「普遍等价于 2×2 box 平均」——等价性边界见第 11 项。）
 3. **Source RT 与降采样链的 ownership**：Source RT 仍是 ARGB32 / depth 24 / MSAA 1 / 无 mipmap；降采样各级由**已创建的 Source descriptor 派生**，只改尺寸 / depth（0）/ MSAA / mipmap / dynamic scale / bindMS / random-write，**不改 graphicsFormat 与 sRGB 语义**（构造性一致）。Source 与每一级都在**构造成功后立即登记** ownership，之后才做属性设置 / `Create` / `IsCreated` 校验；**全部 RT 准备成功后**才接管 Camera。不使用 `RenderTexture.GetTemporary`（池化生命周期无法与 residual / Stop 重试语义共存）。
 4. **降采样只在 PNG 且 scale>1 时创建**：链在 activation 时一次性创建、逐帧复用；每级 `filterMode=Bilinear` / `wrapMode=Clamp`；Blit 前断言 source ≠ destination。**最终 `ReadPixels` 与 `Texture2D` 恒为 output 尺寸**（Source 是 render 尺寸，两者分离）。
 5. **Log-only 与 scale>1**：仍使用相同 `renderWidth/renderHeight` 创建高分辨率 Source RT、维持相同 Camera aspect ownership 与同一个 EOF 事务，但**不创建降采样 RT、不 Blit、不 ReadPixels、不建 Texture2D、不写文件**（并在 log-only 分支断言链为空）。
@@ -89,7 +89,7 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
    - 早期构建（`7efcacd` 及更早）该字段写的是**计划级数**，因此 log-only + scale>1 会显示 `2` 而实际链为 0 级 —— 这是**历史语义**，`ce34ad4` 已修正。
    - `EditorExportReadiness.DownsampleLevelCount`（GUI 就绪报告）仍是**计划**值，属 session 开始前的展示；它与 session metadata 的字段同名但语义不同，不要互相引用。
 10. **未新增 Harmony Patch、未新增 ADOFAI 内部 API、未新增程序集引用**（`Graphics.Blit` / `GL.sRGBWrite` / `GraphicsFormatUtility` 都在已引用的 `UnityEngine.CoreModule`），单一 scheduler / 单一 driver / 单一 `WaitForEndOfFrame` / 唯一 `CommitFrame` 全部保持。
-11. **算法命名与等价性**：实现名称为 **`multi-stage-bilinear`**（逐级 bilinear 采样）。**不要**把它普遍等价为 "box filtering"：只有相邻两级恰为 2:1 时，bilinear 采样才近似 2×2 box 平均；`3W→2W`（1.5:1）一类比例并不等价于 box。色彩统计中观察到的极小整体压暗与「在 Gamma 空间对伽马编码值求平均」有关，属该实现的已知性质，**不是**对 box filter 的等价声明。
+11. **算法命名与等价性**：实现名称为 **`multi-stage-bilinear`**（逐级 bilinear 采样）。**不要**把它普遍等价为 "box filtering"：只有相邻两级恰为 2:1 时，bilinear 采样才近似 2×2 box 平均；`3W→2W`（1.5:1）一类比例并不等价于 box。色彩统计中已实测到**轻微整体压暗**（scale=4 vs scale=1：Δ ≈ (−0.171, −0.131, −0.124)/255，三通道同向等量，无偏色）；该现象的**具体因果归因尚未验证**，不得把 Gamma 空间平均写成唯一或已确定的原因（证据边界见 §9.7.3）。以上均**不是**对 box filter 的等价声明。
 
 版本同步事实：
 
