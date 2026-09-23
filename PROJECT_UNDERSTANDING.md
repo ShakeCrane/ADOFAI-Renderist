@@ -85,7 +85,11 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 7. **GPU 状态 ownership（`RenderTexture.active` / `GL.sRGBWrite`）**：两者各自登记独立 restore token 并**独立恢复**。**Gamma 下不触碰 `GL.sRGBWrite`**；**Linear 下每次 Blit 按 destination 的实际 sRGB 语义（`GraphicsFormatUtility.IsSRGBFormat(destination.graphicsFormat)`）设置它**。保存失败且尚未修改任何状态时**不产生虚假 residual**。任一 token 未恢复 ⇒ 当前帧失败（不 `Apply` / 不 `EncodeToPNG` / 不写盘 / 不 commit），并保留 residual 由下一次 `Stop()` 分别重试；**GPU 状态未全部恢复前绝不 Release / Destroy 任何可能仍被其引用的 RT**。CPU 侧的 `Apply` / 编码 / 写盘严格发生在 GPU 状态全部恢复之后。
 8. **residual gate 扩展**：`FrameCaptureDriver.HasOwnedDownsampleChain` 与 `HasResidualGpuState` 并入 `DeterministicFrameScheduler.HasResidualOwnership()`，因此未收敛时下一个 session 仍会在创建目录前被 residual gate 拒绝。
 9. **metadata**：新增 8 键 —— `geometryConfiguredSupersamplingScale`、`supersamplingScale`、`renderWidth`、`renderHeight`、`downsampleLevelCount`、`downsampleAlgorithm`、`downsampleRenderTextureFormat`、`downsampleRenderTextureGraphicsFormat`（实测 `0.3.6.x` 39 键 → 第一闭环 58 键 → 本闭环 **66 键**，无键被删除）。语义边界：`outputWidth/Height` = **最终 PNG 尺寸**；`renderWidth/Height` = Source RT 尺寸；`captureWidth/Height` = 三台 Camera 实际渲染进入的 Source RT 尺寸。scale=1 时三者相等；scale>1 时 capture/render 大于 output。
+   - **`downsampleLevelCount` 语义（`ce34ad4` 起确定）**：= **实际创建**的 Downsample RT 级数（不含 source），只在 Source 成功激活之后由 scheduler 从 `FrameCaptureDriver` 快照，并在终态 metadata 回填。因此：scale=1 PNG → `0`；scale=2 PNG → `1`；scale=3 PNG → `2`；scale=4 PNG → `2`；**scale=4 log-only → `0`**（高分辨率 Source 仍照常报告，`renderWidth/Height` 仍为 4320）；未激活 / activation 失败 → `0`。**计划级数不另设字段**，可由 `supersamplingScale` 与 `OutputGeometryPolicy.TryBuildDownsampleSteps` 推算。
+   - 早期构建（`7efcacd` 及更早）该字段写的是**计划级数**，因此 log-only + scale>1 会显示 `2` 而实际链为 0 级 —— 这是**历史语义**，`ce34ad4` 已修正。
+   - `EditorExportReadiness.DownsampleLevelCount`（GUI 就绪报告）仍是**计划**值，属 session 开始前的展示；它与 session metadata 的字段同名但语义不同，不要互相引用。
 10. **未新增 Harmony Patch、未新增 ADOFAI 内部 API、未新增程序集引用**（`Graphics.Blit` / `GL.sRGBWrite` / `GraphicsFormatUtility` 都在已引用的 `UnityEngine.CoreModule`），单一 scheduler / 单一 driver / 单一 `WaitForEndOfFrame` / 唯一 `CommitFrame` 全部保持。
+11. **算法命名与等价性**：实现名称为 **`multi-stage-bilinear`**（逐级 bilinear 采样）。**不要**把它普遍等价为 "box filtering"：只有相邻两级恰为 2:1 时，bilinear 采样才近似 2×2 box 平均；`3W→2W`（1.5:1）一类比例并不等价于 box。色彩统计中观察到的极小整体压暗与「在 Gamma 空间对伽马编码值求平均」有关，属该实现的已知性质，**不是**对 box filter 的等价声明。
 
 版本同步事实：
 
@@ -617,7 +621,26 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 - `TryCreateDownsampleChain` 中 `_captureTarget.descriptor` 的读取原本位于 try/catch **之外**，descriptor 读取抛异常会**逃逸**出 `TryActivateCameraSource`（而非 fail-closed）。已改为返回 `downsample-chain-descriptor-unavailable:<msg>`，由既有 ownership 收敛路径处理（提交 `7efcacd`）。这正是 harness 的价值所在：该路径在纯静态审查中未暴露。
 
-**harness 与其它临时验证资产在结论记录后已删除**（`temp/ss-harness/`，`temp/` 为 gitignored）；上表结果是删除前实测所得。
+#### 9.7.1 首轮实机验收（6 个 session）与随之的勘误（`ce34ad4`）
+
+首轮第二闭环实机有 **6 个 session**（`editor_20260923_0852xx/0853xx/0854xx/0855xx`），受测构建为 `7efcacd`（DLL `E16954C57718…`）。**产物侧统计已复核无误**，但当时的**分析报告有三处表述错误**，此处以实测更正，避免后续 agent 沿用：
+
+1. **PNG 总数 = 961，不是 879**。逐文件重新读取 IHDR 确认：254 + 254 + 254 + 123 + 76 = **961**，且 **961 张全部经过尺寸扫描**（`085216/085258/085334/085430/085451` 五个目录），全部严格为 1080×1080、编号连续；`metadata` 之和、日志 `wrote` 之和、磁盘文件数**三方均为 961**。此前报告中的 "879" 属算术/笔误。
+2. **`frozen supersampling` 日志为 5 条，不是 6 条**；且 **scale=1 的 session 确实没有该行**。代码上该行由 `if (_supersamplingScale > 1)` 门控（`DeterministicFrameScheduler`），5 条分别对应 scale=2 / 3 / 4 / 4 / **4(log-only)** 这 5 个 session。此前报告「6 条」与「scale=1 无该行」并存，前者错误、后者正确。
+3. **跨构建（第一闭环 ↔ 第二闭环）scale=1 比较不得称为「严格逐帧等价」**。两批次的 pre-entry 边界与 partial timestep 不同（`B=57`/`partialFraction=0.64` vs `B=60`/`partialFraction=0.1`），`completionFrameIndex` 因此为 238 vs 241。偏移扫描（`MAE(2nd-loop f(N+off), 1st-loop f(N))`）显示**每帧最优 off 会漂移**：`N=0 → off=1`、`N=20/30/40 → off=2`（0.722/0.728/0.742）、`N≥60 → off=3`（0.543–0.619）。因此正确表述是「**在最佳对齐下内容一致、差异与同一 run 内跨 scale 同量级**」，而**不是**「off=3 是唯一最小值」或严格逐帧等价。
+4. **画质观感当时被标为 `USER PASS` 是错误的**：用户**未**对画质作出确认。像素统计证据（几何亚像素一致、颜色 ≤0.33% 且无系统性漂移、`stepRetained≈1.00` 即边缘对比度零流失、硬边像素 −43%…−98.7%）**保留**，但「观感是否可接受 / 是否更好」当前状态是 **待用户目视确认**。同时不得宣称「所有倍率都普遍优于较低倍率」：硬边减少幅度**非单调**（frame 40：scale2=26、scale3=8、scale4=23；frame 100：126/140/194），该现象**尚未解释**。
+5. **`RenderTexture.active` 的实机结论只能是**：「正常帧事务与 cleanup 中**未观察到恢复失败**」（`gpu-state` / `capture-failed` / `cleanup-failed` 均 0，且 961 次写盘与 commit 一一对应）。成功的恢复**不写日志**，因此**不能**把「无错误日志」说成「每一帧的状态值都已独立读回验证」。**Linear 路径**（`GL.sRGBWrite` 按 destination 设置）在本轮 Gamma 环境下**完全未实机覆盖**，继续记为未验证。
+
+#### 9.7.2 `downsampleLevelCount` 实际级数语义修正（`ce34ad4`）的非实机验证
+
+| 验证 | 结果 |
+| --- | --- |
+| 生产源 + Unity stub harness（net10.0，临时） | **139 PASS / 0 FAIL**，exit 0 |
+
+覆盖：Driver 实际级数 —— scale=1 PNG `0`、scale=2 PNG `1`、scale=3 PNG `2`、scale=4 PNG `2`、scale=4/2 log-only `0`，且 `Stop()` 后 live 计数回到 0；activation 失败（链级 `Create` 抛异常 / descriptor 读取抛异常 / Source ctor 抛异常）均 fail-closed 且**不声称任何级数**、无 residual；metadata 严格可解析、**无重复键**、5 种场景的级数取值正确、**既有键全部保留**；静态不变量 —— activation 成功路径上**恰好 2 处**快照（均紧邻 `_captureWidth` 成功块）、每 run **1 处**归零、accessor 返回实际值、controller **不再**预写计划值、driver 只统计非 null 槽位；既有不变量 —— `Graphics.Blit(` 1 处、`new WaitForEndOfFrame()` 1 处、`camera.ResetAspect(` 1 处、`new RenderTexture(` 2 处、`GetTemporary` 0 处、driver `Screen.` 0 处、`CommitFrame` 1 处调用 + 1 处定义、`_outputFrameIndex++` 1 处、residual gate 仍覆盖链与 GPU 状态。
+该 harness **未**改变 PNG/Log-only 逻辑计数、RT ownership、Camera aspect、Blit 与色彩算法（diff 仅 5 文件 +59/−11）。
+
+**harness 与其它临时验证资产在结论记录后已删除**（`temp/ss-harness/`、`temp/md-harness/`，`temp/` 为 gitignored）；上表结果是删除前实测所得。
 
 **仍未验证（必须由实机或独立 Unity 环境确认）**：
 
@@ -731,15 +754,16 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 - 本轮**未**新增 Harmony Patch、未新增 ADOFAI 内部 API 依赖、未修改 README。
 - 发布包：`Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` ignored。本轮以 `scripts/package-release.ps1 -Configuration Release -Version 0.3.7.0 -Force` 打包，并在发布提交 `05a3b4a` 之后重新 Release Rebuild 并以 `-SkipBuild` 重新打包，产出 `dist/ADOFAI.Renderist.zip`（zip SHA256 `B251B6A4631401E44F96130E152FB834B70B47CE6E75CA45304DC43380A4155F`，sidecar `dist/ADOFAI.Renderist.zip.sha256` 同值）；`verify-release-package.ps1` 结果 **PASS 11 checks / 0 failures**，独立解包复核确认包内仅有 3 个顶层文件、无目录，且包内 DLL 与 `bin\Release` 逐字节一致。
 - 发布包内 DLL 的 `ProductVersion` 形如 `<version>+<HEAD 短哈希>`：该 `+hash` 是 SourceLink/InformationalVersion 在构建时记录的 **HEAD 提交**，不是工作区改动。`0.3.7.0` 的最终发布包在发布提交 `05a3b4a` 之后重建，因此 `ProductVersion = 0.3.7.0+05a3b4adda0fb5d9ce89c5ca29af1a6f496d75f3`（`FileVersion = 0.3.7.0`，DLL SHA256 `14D335FD2E2C051DBCE43BF1DB414F8ED177BEB221846EFB4FB50D761DBFBBBA`），即包内构建标识精确指向承载本版本的提交。注意：若在打包后再提交任何改动，`+hash` 不会自动更新；应避免在打包后 `amend` 发布提交（会改变哈希并使包内标识失效）。`verify-release-package.ps1` 比较版本时会剥离 `+hash` 后缀。
-- 历史：`0.3.6.1`（Output FPS 无上限、safety 默认 unbounded、long frame chain、autoplay fail-closed、paused 阶段修正）→ `8bceeef` + `1af1205` hardening → `0.3.6.2` → native pre-entry 正式化 + persisted End Tail semantic fix → `0.3.6.3` → Log-only Frame Transactions → `0.3.6.4` → `05a3b4a` Custom Resolution（**第一闭环；已通过实机验收**）→ `2585664` + `7efcacd` Supersampling & Downsampling（**第二闭环；已实现、未实机验收**）。
-- **`0.3.7.0` 存在两个不同的发布包身份（重要，勿混用）**：版本号未变（用户明确要求本轮不递增第四位），因此 `0.3.7.0` 的 `dist/ADOFAI.Renderist.zip` 被**重建覆盖**过两次：
+- 历史：`0.3.6.1`（Output FPS 无上限、safety 默认 unbounded、long frame chain、autoplay fail-closed、paused 阶段修正）→ `8bceeef` + `1af1205` hardening → `0.3.6.2` → native pre-entry 正式化 + persisted End Tail semantic fix → `0.3.6.3` → Log-only Frame Transactions → `0.3.6.4` → `05a3b4a` Custom Resolution（**第一闭环；已通过实机验收**）→ `2585664` + `7efcacd` Supersampling & Downsampling（**第二闭环；已实现、未实机验收**）→ `ce34ad4` metadata `downsampleLevelCount` 实际级数语义修正（**未改变任何渲染/计数/ownership 行为**）。
+- **`0.3.7.0` 存在三个不同的发布包身份（重要，勿混用）**：版本号始终为 `0.3.7.0`（用户明确要求不递增第四位），`dist/ADOFAI.Renderist.zip` 已被**重建覆盖三次**：
   - **第一闭环（仅 Custom Resolution）**：`05a3b4a` 构建，DLL SHA256 `14D335FD2E2C051DBCE43BF1DB414F8ED177BEB221846EFB4FB50D761DBFBBBA`，`ProductVersion = 0.3.7.0+05a3b4a…`，zip SHA256 `B251B6A4631401E44F96130E152FB834B70B47CE6E75CA45304DC43380A4155F`（**已实机验收的那一份**）。
-  - **第二闭环（含 Supersampling）**：`7efcacd` 构建，DLL SHA256 `E16954C57718F1424BC067985DB6BAEF490987C72064A0B46D591313A3815404`，`ProductVersion = 0.3.7.0+7efcacd5a0af2f3e736987057f0218e55f21a32c`，zip SHA256 `F667A0C740636D4A6920EF2AEBD1C2C753A1B80A98C17C783A310C30C3C9F466`（**当前 dist 内容；该构建尚无实机验收**）。
+  - **第二闭环（含 Supersampling，首轮实机受测）**：`7efcacd` 构建，DLL SHA256 `E16954C57718F1424BC067985DB6BAEF490987C72064A0B46D591313A3815404`，`ProductVersion = 0.3.7.0+7efcacd5a0af2f3e736987057f0218e55f21a32c`，zip SHA256 `F667A0C740636D4A6920EF2AEBD1C2C753A1B80A98C17C783A310C30C3C9F466`（已完成首轮 6 session 实机；**metadata `downsampleLevelCount` 为计划级数**的旧语义）。
+  - **第二闭环 + metadata 语义修正（当前 `dist`，待 scale=4 复测）**：`ce34ad4` 构建，DLL SHA256 `E6747B520FD0C2844238901361251CD127B675041222A0BB1F6A0E8782D6E6E1`，`ProductVersion = 0.3.7.0+ce34ad49ae8d80d791a06887ece55fce31b3efbf`，zip SHA256 `99CF5ACBE735F1D5A5922A2C0CEE791C80B815F85C8B2BAB2FA1142DC23B93D1`（**尚无实机验收**）。
   - 因此**不能**再用「0.3.7.0 的包哈希」唯一指代某个构建；引用时必须同时给出 DLL SHA256 或 `ProductVersion` 的 `+hash`。`verify-release-package.ps1` 比较版本时会剥离 `+hash` 后缀。
+  - **受测构建的自我判别**：`ce34ad4` 起，log-only + scale>1 的 session metadata `downsampleLevelCount` 为 **0**；`7efcacd`（及更早）为**计划级数**（如 scale=4 时为 2）。因此**仅凭一个 log-only scale>1 session 的 metadata 即可判定实际运行的是哪个构建**，不必依赖 DLL 哈希。
 - 第二闭环的 Release Rebuild / package / verify：**0 error / PASS 11 checks / 0 failures**（细节见 §9.7）。
-- 部署使用 `scripts/copy-to-mods.ps1`，只更新 `Mods\ADOFAI.Renderist\`；路径来自本地 ignored `build/local.props`，未配置时不得猜测。当前已部署**第二闭环**构建（DLL SHA256 `E16954C57718…`，与 `bin\Release` 及发布包内 DLL 逐字节一致，`ProductVersion=0.3.7.0+7efcacd…`）；目录内的 `ADOFAI.Renderist.dll.<pid>.cache` 是 UMM/Mono 通用运行时缓存（`AdofaiTweaks` 同样存在），脚本默认保留。**部署本身不等于实机验收**：第一闭环的实机项目已完成验收并逐项记录于 §9.1（其中窗口 resize 后 aspect 自动跟随与最终视觉观感属用户观察证据）；**第二闭环 supersampling 已实现并部署，但尚未实机验收**（scale=1 之外的路径）。
+- 部署使用 `scripts/copy-to-mods.ps1`，只更新 `Mods\ADOFAI.Renderist\`；路径来自本地 ignored `build/local.props`，未配置时不得猜测。当前已部署 **`ce34ad4`** 构建（DLL SHA256 `E6747B52…`，与 `bin\Release` 及发布包内 DLL 逐字节一致，`ProductVersion=0.3.7.0+ce34ad4…`）；目录内的 `ADOFAI.Renderist.dll.<pid>.cache` 是 UMM/Mono 按**进程 id** 命名的运行时缓存（`AdofaiTweaks` 同样存在），脚本默认保留、可用 `-CleanRuntimeCache` 清除；它**不是**被加载的产物（DLL 才是），且历史观测显示每次游戏运行都会重新生成并淘汰旧 pid 的缓存。保险做法仍是：如对「下一轮究竟跑了哪个构建」有疑问，直接读该轮 metadata 的 `downsampleLevelCount`（见上）。**部署本身不等于实机验收**：第一闭环的实机项目已完成验收并逐项记录于 §9.1；**第二闭环 supersampling 已实现并部署，但尚未实机验收**（scale=1 之外的路径）。
 - 自动验证链：
   `dotnet build src/ADOFAI.Renderist/ADOFAI.Renderist.csproj -c Release -t:Rebuild`
   → `scripts/package-release.ps1 -Configuration Release -Force`
   → `scripts/verify-release-package.ps1 -ZipPath dist/ADOFAI.Renderist.zip`。
-- 部署使用 `scripts/copy-to-mods.ps1`，只更新 `Mods\ADOFAI.Renderist\`；路径来自本地 ignored `build/local.props`，未配置时不得猜测。当前已部署**第二闭环**构建（DLL SHA256 `E16954C57718…`，与 `bin\Release` 及发布包内 DLL 逐字节一致，`ProductVersion=0.3.7.0+7efcacd…`）；目录内的 `ADOFAI.Renderist.dll.<pid>.cache` 是 UMM/Mono 通用运行时缓存（`AdofaiTweaks` 同样存在），脚本默认保留。**部署本身不等于实机验收**：第一闭环的实机项目已完成验收并逐项记录于 §9.1（其中窗口 resize 后 aspect 自动跟随与最终视觉观感属用户观察证据）；**第二闭环 supersampling 已实现并部署，但尚未实机验收**（scale=1 之外的路径）。
