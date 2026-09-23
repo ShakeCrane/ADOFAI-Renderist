@@ -10,15 +10,7 @@
 
 ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器内非实时渲染导出 Mod。
 
-当前路线：
-
-```text
-编辑器内导出
-→ 原生谱面 Camera 链接管到 Renderist-owned RenderTexture
-→ PNG 截图序列
-→ MasterTimeline 可控逐帧
-→ 更完整的非实时渲染
-```
+当前**已实现**路线：编辑器内原生 Camera → Renderist-owned RenderTexture → PNG 序列 / Log-only；`MasterTimeline` 控制逻辑帧。**下一阶段已批准、尚未实施**：`0.3.8.0 — FFmpeg Video Export Pipeline`，在保留两条现有路径的同时增加独立 MP4 输出（技术决策与待验证项见 §2.1）。
 
 硬边界：
 
@@ -127,7 +119,7 @@ scrCamera.instance
 
 - session 内把三台 ADOFAI 原生谱面 Camera 的 `targetTexture` 接管到 Renderist-owned RT。
 - 同一 session 内把三台 Camera 的 `aspect` **统一到冻结输出 aspect**（`outputWidth / outputHeight`），并登记 aspect ownership；cleanup 用 `ResetAspect()` 恢复 Unity 自动行为。
-- **输出几何（0.3.7.0）**：capture RT 尺寸与统一 aspect 都来自 session 开始时冻结的输出几何；自定义分辨率关闭时该几何 = 冻结当时的 `Screen.width/height`（保持 `0.3.6.4` 行为）。`FrameCaptureDriver` 只消费冻结值，不读 Screen。
+- **输出几何（0.3.7.0）**：session 开始时冻结最终 `outputWidth/Height`、实际 Source/Capture RT 的 `renderWidth/Height = output × scale` 与统一 Camera aspect（按 output 宽高比）。自定义分辨率关闭时 output 尺寸 = 冻结当时的 `Screen.width/height`。`FrameCaptureDriver` 只消费冻结值，不读 Screen。
 - Unity 仍走正常原生 Camera 渲染；Screen Space Editor / UMM / Renderist UI 不进入该 RT。
 - 已实机确认谱面 floor、planets、background、decorations 与测试谱面特效正常，PNG 朝向正常。
 - 不使用 `Camera.main` clone、替代 Camera、`Camera.Render()`、ScreenCapture、AsyncGPUReadback、UI SetActive/cullingMask 隐藏方案。
@@ -154,7 +146,7 @@ FrameIndex N (long)
 
 `MasterTimeline.FrameIndex` 是 export / chart timeline authority；wall clock 与 audible audio 都不推进它。`Time.captureFramerate` 负责 Unity engine timestep，不等于 MasterTimeline 拥有全部 Unity state。
 
-`0.3.6.2` 的正式 capture 从 PlayerControl / canonical start 开始。对于后续 pre-entry，必须在同一 export transaction 中增加独立的 `PreEntryClock`：Countdown 可安全识别后锁定确定性 anchor，frame 0 起按 `pitch / OutputFps` 推进，成功 commit 才允许下一逻辑帧推进；PlayerControl 边界再切入既有 MasterTimeline。不得把 source activation、PNG 写盘 wall time 或 raw DSP 推进误作 pre-entry chart-time authority。
+**当前（0.3.6.3 起已实现）pre-entry**：`PreEntryClock` 在 Countdown 可安全识别后锁定 native schedule anchor，以 `pitch / OutputFps` 为步长；pre-entry / gameplay 都只在**逻辑帧成功 Commit** 后推进，PlayerControl 边界切入既有 MasterTimeline。不得把 source activation、输出 IO wall time 或 raw DSP 推进误作 chart-time authority；边界公式与 scoped `timeScale` ownership 见 §10.5。
 
 ### 3.3 Completion 与取消
 
@@ -165,8 +157,10 @@ scrController.OnLandOnPortal Postfix 观察到完成请求
 + controller.state == Won
 + completion 当帧成功 capture/commit
 + 配置 End Tail 全部成功 commit
-= Completed
+= 当前 PNG / Log-only 导出可 Completed
 ```
+
+MP4 的计划语义另有 `Finalizing`：所有逻辑帧完成后仍需等待 FFmpeg 正常封装与最终文件发布（§2.1）；这**尚未实现**。
 
 最后一个 floor 被 `Hit(true)` 不等于完成；不能用 floor index / hit count 推导完成。
 
@@ -241,7 +235,7 @@ Time.deltaTime        = 1 / OutputFps
 
 capture transaction 中 1 个 output frame 对应 1 个连续 Unity frame。
 
-- `Time.timeScale` 不是 Renderist-owned state；Renderist 不写。
+- `Time.timeScale` **不属于全局、永久的 Renderist ownership**：普通 gameplay 不随意改写；已实现的 native pre-entry hidden phase 则会**限域保存、写为 0，并在 G 成功 Commit 后恢复原始值**。详见 §10.5；不得因“通常不写”否认这一已实施例外。
 - `controller.paused` 是 playback runtime condition，不是 editor-idle 启动前条件：editor idle / 返回编辑模式时 `paused=true` 正常；官方 `editor.Play() → scnGame.Play()` 才清为 false。只有 lifecycle 到达 `PlayerControl + playerAlive` 后仍 paused / 不可读才 fail-closed。
 - Renderist 不写 `controller.paused`、不主动调用 `TogglePauseGame`。
 
@@ -394,7 +388,7 @@ metadata 记录：版本/phase/mode/imageOutputEnabled、state/detail/reason/kin
 | `outputGeometryMode` | `legacy-window`（沿用窗口，默认）或 `custom-resolution` |
 | `geometryCustomResolutionEnabled` | session 开始时冻结的自定义分辨率开关 |
 | `geometryConfiguredWidth` / `geometryConfiguredHeight` | Settings 中 persisted 的原始宽高（**未解析、未 sanitize**，诊断用） |
-| `outputWidth` / `outputHeight` | session 开始时冻结的输出尺寸（= capture RT 尺寸） |
+| `outputWidth` / `outputHeight` | session 开始时冻结的**最终输出尺寸**；scale=1 时等于 Source/Capture RT，scale>1 时**小于** `renderWidth/Height` 与 `captureWidth/Height` |
 | `outputAspect` | 冻结的统一输出 aspect（三台原生 Camera 与 capture RT 共用） |
 
 只读运行时渲染环境 inventory（`0.3.7.0` 新增；读取失败为 `null`，绝不伪造值）：
@@ -442,7 +436,7 @@ metadata 记录：版本/phase/mode/imageOutputEnabled、state/detail/reason/kin
 - `captureSource=scrCamera-rendertexture`，3072×1920
 - 未出现 `capture-source-failed`、`capture-target-*`、`cleanup-failed`、`capture-stop`、`tick-exception`、host destroy / RT Release / RT Destroy failure、restore incomplete 或 residual retry warning
 
-**0.3.6.3 native pre-entry 正式化后的实机验证**（逐帧数值集中在 §11 第 5 项，不在此重复）：
+**0.3.6.3 native pre-entry 正式化后的实机验证**（关键时间模型见 §10.5；此处只保留验收摘要）：
 
 - 当前基准谱面（Output FPS=30、pitch=1）**连续双跑 PASS**：`B=G=44`，frame 43 为最后一个 pre-entry，frame 44 = gameplay frame 0（partial timestep），frame 45 恢复完整 timestep；Planet / Trail boundary continuity PASS；两次均 `Completed` / `canonical-completion-tail-drained` / 12 帧 End Tail。
 - 第二组谱面（Output FPS=30、BPM=100、pitch=1）**PASS**：`B=G=60`、`partialFraction=0.1`，frame 59 / 60 / 61 归属正确，Planet / Trail continuity 正常，timeScale 于 G commit 后恢复，`Completed` / 12 帧 End Tail。
@@ -460,7 +454,7 @@ metadata 记录：版本/phase/mode/imageOutputEnabled、state/detail/reason/kin
 - `cachedAngle` 的首次运行差异可在 **PNG → PNG** 中复现，因此**不属于 Log-only 独有差异**。
 - Log-only gameplay 中途取消两次：分别为 **90 成功提交帧 / 91 事务请求**、**183 / 184**；取消**没有伪提交 pending frame**；取消后 Log-only 再次完整导出成功。
 - 用户已确认 Log-only 的实际输出目录**无 PNG**。
-- 适用范围限定：上述通过只对应 `0.3.6.4` 的实现与该基准谱面 / 设置。**未直接覆盖**的场景见 §11 第 9 项（pre-entry 阶段取消 / End Tail 阶段取消 / 取消后切换 PNG），不得记为已通过。
+- 适用范围限定：上述通过只对应 `0.3.6.4` 的实现与该基准谱面 / 设置。**未直接覆盖**的场景见 §9.4 与 §11（pre-entry 阶段取消 / End Tail 阶段取消 / 取消后切换 PNG），不得记为已通过。
 
 **0.3.7.0 第一闭环 Custom Resolution 实机验收（已通过）**：
 
@@ -475,7 +469,7 @@ metadata 记录：版本/phase/mode/imageOutputEnabled、state/detail/reason/kin
   - `152602`：Esc 触发，`stopReason=native-playback-stopped`，`logicalFrameCount=186` / `frameTransactionRequestCount=187`（一个已请求但未 commit 的事务被取消，**无伪 commit**）；日志确认 native `SwitchToEditMode → SetupRTCam(false)` 已先把三台 `targetTexture` 置 null，Renderist 未覆盖、只记录；
   - `152622`：GUI 停止，`stopReason=user-stop`，127 / 127（取消落在两次请求之间）；
   - `152633`：GUI 停止，**取消发生在 pre-entry / Countdown 阶段** —— 该 session `boundaryOutputFrameIndex=57`、`logicalFrameCount=51`，逐帧为 `timeline=native-preentry controllerState=Countdown`，且 8 个 session 中唯独它**没有**出现 `回放就绪，Initialization Hold 已释放`；同样**无伪提交、cleanup 正常、后续 session（`152644`）正常启动并 Completed**。
-  - 边界提醒：上述 pre-entry 取消证据**只覆盖 PNG 模式**；Log-only 的 pre-entry 取消仍未取得实机证据（见 §9.4 与 §11 第 9 项）。
+  - 边界提醒：上述 pre-entry 取消证据**只覆盖 PNG 模式**；Log-only 的 pre-entry 取消仍未取得实机证据（见 §9.4 与 §11）。
 - **跨会话 Camera aspect 恢复正常**：8 次会话每次 `FrameCaptureDriver: capture source active` 的三台 `baselineAspect` 均为 `1.6`（= 当前窗口自动值），而前一次会话写入的是 `1` 或 `1.777778` ⇒ Completed 与 Cancelled 路径上 aspect 均已回到自动模式。结合 cleanup 侧证据（`cleanup-failed` = 0、`aspect ownership already relinquished` = 0、setter 失败 = 0，因此在写入过 aspect 的前提下 `RelinquishAspect` 唯一可成功返回的分支就是 `ResetAspect()` 成功），构成 aspect 恢复的独立日志证据。
 - **不同宽高比下的几何一致性（像素证据）**：取相同逻辑帧号抽样比对——1:1 输出与 16:9 输出的中央 1:1 裁剪、legacy 1.6 与 1:1、以及 256×256 降采样比对，平均绝对误差（MAE）落在重采样 / 抗锯齿残差量级（0.17–1.91），而错位裁剪对照为 16.5–25.8 ⇒ 排除「aspect 未接管导致拉伸 / 挤压」与「RT 尺寸与相机 aspect 不一致导致构图错位」。
 - **legacy 兼容性（像素证据）**：`0.3.7.0` legacy-window（3072×1920）与历史 PNG 基线同几何、同谱面比对，MAE **0.45–0.80** ⇒ 新增的 aspect 写入（其数值等于窗口 aspect）未改变 legacy 输出。该结果描述为**像素级高度一致**，**不是**逐像素完全相同。
@@ -555,7 +549,7 @@ metadata 记录：版本/phase/mode/imageOutputEnabled、state/detail/reason/kin
 
 ### 9.5 `0.3.7.0` 第一闭环实机验收清单（**已执行；结果与证据分级见 §9.1**）
 
-用户已按下列步骤完成实机验收**并报告通过**；本节保留原清单作为「实际执行了什么」的记录，验收结论与证据分级统一记在 §9.1，避免同一结论在本文件内出现两处互相冲突的表述。第一闭环通过**不等于**整个 `0.3.7.0` 阶段完成 —— 第二闭环 supersampling 仍未实现。
+本节记录第一闭环**当时**的实机验收步骤；结论与证据分级以 §9.1 为准。第一闭环验收时 supersampling 尚未实现；**其后第二闭环已实现并验收**，见 §9.7.1 / §9.7.3。
 
 验收步骤：
 
@@ -607,7 +601,7 @@ harness 覆盖的关键证据（全部 PASS）：
 
 ### 9.7 `0.3.7.0` 第二闭环 Supersampling 的验证结果（非实机 harness **已执行**；实机验收见 §9.7.3）
 
-> 与第一闭环不同，本节结果**只**证明非实机部分。**第二闭环尚未取得任何实机结果**，不得据此宣称通过。
+> 本节保留**当时**的非实机验证证据；不能用 harness 代替 Unity 实机。第二闭环**后来已取得实机验收结果**，见 §9.7.1 / §9.7.3，未覆盖边界以 §9.7.3 为准。
 
 | 验证 | 方式 | 结果 |
 | --- | --- | --- |
@@ -640,7 +634,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 1. **PNG 总数 = 961，不是 879**。逐文件重新读取 IHDR 确认：254 + 254 + 254 + 123 + 76 = **961**，且 **961 张全部经过尺寸扫描**（`085216/085258/085334/085430/085451` 五个目录），全部严格为 1080×1080、编号连续；`metadata` 之和、日志 `wrote` 之和、磁盘文件数**三方均为 961**。此前报告中的 "879" 属算术/笔误。
 2. **`frozen supersampling` 日志为 5 条，不是 6 条**；且 **scale=1 的 session 确实没有该行**。代码上该行由 `if (_supersamplingScale > 1)` 门控（`DeterministicFrameScheduler`），5 条分别对应 scale=2 / 3 / 4 / 4 / **4(log-only)** 这 5 个 session。此前报告「6 条」与「scale=1 无该行」并存，前者错误、后者正确。
 3. **跨构建（第一闭环 ↔ 第二闭环）scale=1 比较不得称为「严格逐帧等价」**。两批次的 pre-entry 边界与 partial timestep 不同（`B=57`/`partialFraction=0.64` vs `B=60`/`partialFraction=0.1`），`completionFrameIndex` 因此为 238 vs 241。偏移扫描（`MAE(2nd-loop f(N+off), 1st-loop f(N))`）显示**每帧最优 off 会漂移**：`N=0 → off=1`、`N=20/30/40 → off=2`（0.722/0.728/0.742）、`N≥60 → off=3`（0.543–0.619）。因此正确表述是「**在最佳对齐下内容一致、差异与同一 run 内跨 scale 同量级**」，而**不是**「off=3 是唯一最小值」或严格逐帧等价。
-4. **画质观感当时被标为 `USER PASS` 是错误的**：用户**未**对画质作出确认。像素统计证据（几何亚像素一致、颜色 ≤0.33% 且无系统性漂移、`stepRetained≈1.00` 即边缘对比度零流失、硬边像素 −43%…−98.7%）**保留**，但「观感是否可接受 / 是否更好」当前状态是 **待用户目视确认**。同时不得宣称「所有倍率都普遍优于较低倍率」：硬边减少幅度**非单调**（frame 40：scale2=26、scale3=8、scale4=23；frame 100：126/140/194），该现象**尚未解释**。
+4. **首轮画质观感曾被误标 `USER PASS`**：用户当时**未**对画质作出确认；后续仅有 §9.7.3 中五帧抽样目视记录，不能推及全序列。像素统计证据（几何亚像素一致、颜色 ≤0.33% 且无系统性漂移、`stepRetained≈1.00` 即边缘对比度零流失、硬边像素 −43%…−98.7%）**保留**，但「观感是否可接受 / 是否更好」当前状态是 **待用户目视确认**。同时不得宣称「所有倍率都普遍优于较低倍率」：硬边减少幅度**非单调**（frame 40：scale2=26、scale3=8、scale4=23；frame 100：126/140/194），该现象**尚未解释**。
 5. **`RenderTexture.active` 的实机结论只能是**：「正常帧事务与 cleanup 中**未观察到恢复失败**」（`gpu-state` / `capture-failed` / `cleanup-failed` 均 0，且 961 次写盘与 commit 一一对应）。成功的恢复**不写日志**，因此**不能**把「无错误日志」说成「每一帧的状态值都已独立读回验证」。**Linear 路径**（`GL.sRGBWrite` 按 destination 设置）在本轮 Gamma 环境下**完全未实机覆盖**，继续记为未验证。
 
 #### 9.7.2 `downsampleLevelCount` 实际级数语义修正（`ce34ad4`）的非实机验证
@@ -670,7 +664,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 | completion | `completionFrameIndex=241`，`tailFramesCommitted=12`，`tailFramesCaptured=12`，`resolvedTailFrames=12` |
 | 终态 | `state=Completed`，`stopReason=canonical-completion-tail-drained`，`terminationKind=canonical-completion` |
 | 时间线签名 | `B=60`、`previousBoundaryTime=1.796667`、`canonicalStart=1.8`、`partialFraction=0.1`、`outputFps=30`、`completionBpm=100`、`pitch=1`、End Tail 12 Frames —— 与既有 BPM=100 基准组一致 |
-| 失败面 | **无已观察到的**捕获失败 / `cleanup-failed` / residual / GPU 状态异常 / watchdog / safety-limit；`restored captureFramerate` 1 次；唯一 `WaitForEndOfFrame`、唯一 `CommitFrame` 在实机上各 1 次；全文仅 2 条既有无关 Exception（Discord 初始化、`Mods detected! Disabling exception capturing`） |
+| 失败面 | **无已观察到的**捕获失败 / `cleanup-failed` / residual / GPU 状态异常 / watchdog / safety-limit；`restored captureFramerate` 1 次；唯一 `WaitForEndOfFrame` 入口与唯一 `CommitFrame` 提交点属于**源码结构**结论，并非各自在实机仅执行一次；全文仅 2 条既有无关 Exception（Discord 初始化、`Mods detected! Disabling exception capturing`） |
 | 跨 scale 一致性（像素） | 该 session 与同时间线的 `085216`(scale1)/`085258`(scale2)/`085334`(scale3) 同帧直接比对 MAE：vs scale1 **0.550–0.850**、vs scale2 **0.485–0.699**、**vs scale3 0.354–0.573（最近）** ⇒ 亚像素级一致、无构图偏移/拉伸 |
 | 颜色（像素） | 全帧通道均值 Δ(scale4 − scale1) = **(−0.171, −0.131, −0.124)**，三通道同向等量（≤0.75%），**无偏色/色相漂移**；轻微压暗的**具体因果归因未经验证**，不得写成既定事实 |
 | 画质观感 | 用户确认**完整导出已完成**；**网页版 GPT 仅对 `frame_000058`–`000062` 五张抽样**目视未见明显拉伸 / 过度模糊 / 亮边 / 暗边 / 渗色 ⇒ **只覆盖该 5 帧抽样，不得推广为全序列逐帧目视通过**，也不得据此宣称「高倍率普遍优于低倍率」 |
@@ -732,55 +726,29 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 ### 10.5 Native pre-entry / count-in 时间 authority（当前 DLL 与正式实现基线）
 
+- **已实施 pre-entry 边界模型**：`step = pitch / OutputFps`；`B = ceil((canonicalStart - anchor) / step)`（SnapNearInteger + ULP-only grid bracket）；`[0,B-1]` 为 pre-entry、`G=B` 为 gameplay frame 0。hidden phase 保存并限域冻结 `timeScale=0`，以 `Countdown_Update` scoped beat override 过渡；G 使用 `canonicalStart - previousBoundaryTime` 的 partial scaled timestep，**G 成功 Commit 后恢复原始 timeScale**，G+1 使用完整 timestep。B/G 数值只对具体谱面和设置成立（验收见 §9.1）。
 - `scrConductor.Update` 每帧以 `AudioSettings.dspTime` 更新 `dspTime`，再按 `((dspTime - dspTimeSong - calibration_i) * song.pitch) - addoffset` 写入 `songposition_minusi`；它不是 output-frame clock。`beatNumber` 每次最多跨一个 beat；Countdown 边界条件 `beatNumber >= adjustedCountdownTicks` 使用 **1-based** 计数，因此 native 边界等同于地图时间 `floor0EntryTime + (adjustedCountdownTicks - 1) × crotchetAtStart × pitch`（实机与 `canonicalStart` 一致）。
 - 原生 Countdown 的原始 authority 是 **DSP / 实时时间**：raw DSP 驱动的早期实机中相邻 output frame 的 songposition 前进约 `0.11–0.12 s`（而非 `1/30 s`），chosen planet angle 曾约 `0.899 rad`/frame（轨迹呈 chord / polygon）。这是 `Time.captureFramerate` 单独不足、必须由 Renderist 接管 chart time 的原因。
-- 当前正式实现（见 §11 第 5 项）由 `EditorVisualClock` 对 `songposition_minusi` 的 getter/setter patch 提供 forced chart time，`scrPlanet.Update_RefreshAngles` 直接消费该值：接管后相邻 committed output frame 的 chosenPlanetAngle 增量恒为 `π × (BPM / 60) × pitch / OutputFps`（30 FPS / 140 BPM / pitch 1 时为 `0.244346 rad`），planet motion 与 trail aging 由同一个 output-frame clock 驱动。
+- 当前正式实现由 `EditorVisualClock` 对 `songposition_minusi` 的 getter/setter patch 提供 forced chart time，`scrPlanet.Update_RefreshAngles` 直接消费该值：接管后相邻 committed output frame 的 chosenPlanetAngle 增量恒为 `π × (BPM / 60) × pitch / OutputFps`（30 FPS / 140 BPM / pitch 1 时为 `0.244346 rad`），planet motion 与 trail aging 由同一个 output-frame clock 驱动。
 - IL 已确认（`Assembly-CSharp` 0.4.3.0）：`scrController.Countdown_Update` 是 `void Countdown_Update()`（无参，IL 约 123 字节），阈值比较与 `ChangeState` **都在方法体内**（`ldfld scrConductor.beatNumber` → `callvirt get_adjustedCountdownTicks` → `callvirt ChangeState`）；状态分发入口 `scrController.Update` 不引用这三者，因此不存在“调用方先判定再调用”的形态——scoped Prefix/Postfix 可直接门控这次 transition。`scrConductor.beatNumber` 是 **Int32 字段**，`adjustedCountdownTicks` 是**只读 float 属性**，故注入只能写该字段，最小满足值为 `ceil(adjustedCountdownTicks)`。`scrPlanet.Update` 的 IL 调用 `Update_RefreshAngles`。
 - 状态机链与跨 turn 行为：`StateEngine.Update` → 当前 state 的 `Update` delegate → `Countdown_Update` → `ChangeState(PlayerControl)` → `ChangeToNewStateRoutine`；Countdown 无自定义 Exit，先 `yield return StartCoroutine(DoNothingCoroutine())`，随后设置 current state 并同步执行 void `PlayerControl_Enter`。该路径没有 `WaitForSeconds` / `WaitForEndOfFrame` / `WaitForSecondsRealtime`，也不读 `deltaTime` / `timeScale`；实机确认 `timeScale = 0` 时仍可跨 scheduler turn 进入 PlayerControl。forced clock 生效时 `beatNumber` 由被强制的 `songposition_minusi` 驱动、而状态机读到的是**上一帧**写入的 beat，因此 `Countdown → PlayerControl` 比 forced clock 跨过边界晚 1 个 Unity frame——这正是需要 partial-timestep 边界处理与独立 lifecycle bridge 的原因。
-- Trail / stateful history：`TrailRenderer` point lifetime 以秒计，但 Unity 6 API **没有**公开它使用 scaled 还是 unscaled clock，故不得声称已静态确认其内部实现。实机因果证据：hidden phase 让 native 世界消费过 future chart time 时，frame G 出现 future Trail blob / kink；改为「hidden phase `timeScale = 0` + G partial timestep」后该现象消失（数值与验收见 §9.1 与 §11 第 5 项）。
+- Trail / stateful history：`TrailRenderer` point lifetime 以秒计，但 Unity 6 API **没有**公开它使用 scaled 还是 unscaled clock，故不得声称已静态确认其内部实现。实机因果证据：hidden phase 让 native 世界消费过 future chart time 时，frame G 出现 future Trail blob / kink；改为「hidden phase `timeScale = 0` + G partial timestep」后该现象消失（数值与验收见 §9.1）。
 - 遗留风险：`songposition_minusi` 的存储字段是否被 forced 值写回，取决于 conductor 的写回是否经过被 patch 的 setter（同一进程先后两次实机 session 分别观测到「始终为 raw DSP 值」与「从第 1 帧起为上一帧 forced 值」）。因此 `ReadUnforcedSongPositionValue()` / `backingSongposition` 不是稳定的 native 证据，不得作为 handoff anchor 判据；所有 reader 走 getter，forced 值仍是权威视觉时间。
 - `scrCountdown` 文本 / count-in SFX 仍直接依赖 DSP schedule；audio 不应被 Renderist 篡改。其与受控 visual clock 的一致性、以及 `lifecycleSongPosition` 的非权威差异仍待调查，不得仅凭静态结论宣称完整通过。
 ---
 
 ## 11. 未解决问题 / 风险 / 下一步
 
-1. **Persisted End Tail 语义已确定为方案 A**（保留非法 persisted 值 + fail-closed + 用户显式合法编辑后才写回）并已通过实机验证，见 §5.2；无剩余待选项。
-2. **cleanup / activation 异常注入的真实 Unity 验证**：host Destroy、RT Release/Destroy 与 partial Camera assignment 的异常路径已用 **production source + Unity stub 的确定性 fault injection** 与静态断言验证（含"仍被引用时绝不 Destroy"、"失败后 ownership 保留"、"重试后清空"）；**仍未在真实 Unity Player 内注入 `Object.Destroy` / `RenderTexture.Release` 异常**。正常路径已有历史实机基线。
-3. **显式 safety frame-limit runtime trigger**：目前主要是静态/纯计算证据。
-4. **TryPrepareHitState 故障注入**：正常路径已实机，注入失败路径主要是 IL/control-flow 证据。
-5. **native pre-entry 正式化（0.3.6.3）已完成并通过用户实机验证**：
-   正式实现基线（Release Rebuild 通过；仓库无 probe/TEMP 残留；`FrameCaptureDriver` 与 HEAD 一致）：
-   - PreEntryClock：`step = pitch / OutputFps`；anchor 取 native clock 的 schedule origin。
-   - deterministic boundary：`B = ceil((canonicalStart - anchor) / step)`，沿用现有浮点稳定化（SnapNearInteger + `Math.Ceiling`）与 grid bracket invariant（`previousBoundaryTime < canonicalStart <= boundaryForcedTime`，ULP-only 容差并封顶 `step × 1e-3`）。
-   - frame mapping：`[0, B-1]` = deterministic native pre-entry；`G = B` = gameplay frame 0，chart time 严格为 `canonicalStart`。
-   - advancement：pre-entry / output index 只在 PNG 成功写盘并 commit 后推进。
-   - hidden lifecycle boundary：visual clock 固定 `previousBoundaryTime`；scaled Unity time 冻结为 0；由 `scrController.Countdown_Update` 的 scoped beat override（Prefix 注入 `ceil(adjustedCountdownTicks)`、Postfix 恢复、Finalizer 覆盖原方法异常）推动 native lifecycle；exact conductor / FieldInfo / original beat ownership + 读回验证 + fail-closed + cleanup 重试 + residual ownership gate。
-   - gameplay boundary：`partialStep = canonicalStart - previousBoundaryTime`，G 使用 partial scaled timestep；G 成功 commit 后才恢复**实际保存的** original timeScale；G+1 使用完整 timestep；exact-grid 时 `partialFraction == 1` 合法。
-   - watchdog：initialization readiness timeout 只覆盖正式 deterministic pre-entry transaction **之前**；deterministic pre-entry 与 hidden phase 使用共享 capture / progress no-progress watchdog（`capture-timeout` / `watchdog-timeout`），无固定 5-frame boundary guard；watchdog 是 stall / no-progress 保护，不是总导出时长或总帧数限制。
-   - 实机证据（适用范围限定：**当前基准谱面、Output FPS=30、pitch=1**；其中 B/G 的绝对数值只对该谱面成立，不是通用常数）：正式化后的 working tree 已**连续双跑 PASS** —— `B=G=44`、`previousBoundaryTime=1.263333`、`canonicalStart=1.285714`、frame 43 为最后一个 pre-entry、frame 44 = gameplay frame 0（`partialFraction=0.671429`、`deltaTime=0.022381`）、frame 45 `deltaTime=0.033333`；43→44 ≈9.40°、44→45 ≈14.00°；Planet boundary continuity PASS、Trail boundary continuity PASS（future blob 与 boundary shrink 未再出现）；两次均 `state=Completed`、`stopReason=canonical-completion-tail-drained`、`completionFrameIndex=145`、`tailFramesCaptured=12`、`captureRequestCount=capturedFrameCount=158`。
-   - `lifecycleSongPosition` 两跑存在非权威差异；它当前不是 deterministic visual/chart authority，不阻塞视觉导出，留待未来 audio / countdown sync 调查。
-   - 补充验证（另一组实机导出：Output FPS=30、BPM=100、pitch=1）：`B=G=60`、`previousBoundaryTime=1.796667`、`canonicalStart=1.8`、`partialFraction=0.1`；frame 59 为最后一个 pre-entry、frame 60 = gameplay frame 0、frame 61 = gameplay frame 1；Planet / Trail continuity 正常，timeScale 在 G commit 后恢复；完整导出 metadata：`state=Completed`、`stopReason=canonical-completion-tail-drained`、`completionFrameIndex=241`、`endTailInputValue=12`、`endTailInputUnit=Frames`、`resolvedTailFrames=12`、`resolvedTailSeconds=0.4`、`tailFramesCaptured=12`、`captureRequestCount=capturedFrameCount=254`。（这些绝对数值同样只对该谱面与设置成立。）
+> 此处只列**当前未收敛事项**；已完成的 End Tail、pre-entry、Log-only、Custom Resolution 和 Supersampling 不再重复充当待办。历史验收数据见 §9，实施不变量见 §3–§8，当前 ADOFAI 内部事实见 §10。
 
-6. **更广泛谱面覆盖**：BPM change、Twirl、Midspin、event-heavy、特殊 startup、长时大规模导出。
-7. **native Esc teardown 警告**：曾见 Unity `Coroutine couldn't be started ... Conductor is inactive`，静态证据更像 native teardown；未做 disable-mod A/B。
-8. **custom resolution / supersampling、audio、FFmpeg、replay、Preview Bridge**：
-   - **custom resolution：第一闭环已实现、已构建打包、并已通过用户实机验收与实机产物批量分析（`0.3.7.0`）**（结论与证据分级见 §9.1）。实现见 §2 / §3.1 / §3.5 / §7 / §8.2。
-   - **supersampling、降采样、`Graphics.Blit`、downsample RT 链：已实现（`2585664` + `7efcacd`、metadata 语义修正 `ce34ad4`）并已通过实机验收（当前 Gamma / Direct3D11 环境；含 scale=4 完整导出，见 §9.7.3）**。仍是**单一** scheduler / driver / EOF 事务 / 唯一 `CommitFrame`，未引入第二套渲染架构。**未覆盖边界**（Linear 色彩空间、极端资源失败、逐帧 GPU 状态读回、跨会话 residual gate、画质全序列目视）见 §9.7.3；**不得由 Gamma 结果外推 Linear**。
-   - audio、FFmpeg、replay、Preview Bridge 均未实现。
-9. **`0.3.7.0` 第一闭环：实机验收已通过（见 §9.1）**；下列为该闭环的**残余/边界项**，不再作为阻断条件，但保留准确状态：
-   - **Camera aspect 在实机中的真实基线语义**：8/8 session 实测三台 Camera 在接管前的 `baselineAspect` 均为 `1.6`（= 当前窗口自动值），三台始终互相一致；当前实现的判据（可读 / 有限 / 为正 / 三台互相兼容）**在实机上未出现误杀**。实现**刻意没有**用「是否等于屏幕 aspect」推断自动模式。仍未直接确认该自动值的**内部来源**（屏幕 or 游戏 `camRT`）。
-   - **`capture-aspect-baseline-incompatible` 判据**：其定义为「三台 baseline 互相不一致」。实机 8/8 未见三台不一致，故未触发；若将来出现三台 Camera **合法地**拥有不同 aspect（例如各自 `rect` 不同）的正常基线，该判据会误杀 —— 届时需交回 GPT Work 重新确定「不兼容的显式 aspect 基线」的定义。属**未证否的理论风险**。
-   - **cleanup 后的 aspect 恢复**：已由日志（`ResetAspect()` 被调用且未抛异常）+ 跨会话 `baselineAspect` 回到 `1.6` 双重证据支持（推理链见 §9.1）。窗口 resize 后**自动跟随新窗口比例**这一动态行为主要由**用户实机观察**确认，本轮日志无 resize 事件、无法独立复核。
-   - **不同宽高比下的构图正确性**：几何一致性已有像素证据（见 §9.1）；**最终视觉观感**由用户确认（分析侧无图像可视化能力）。
-   - **取消路径覆盖边界**：PNG 模式的 pre-entry 阶段取消已取得实机证据（`152633`，见 §9.1）；**Log-only 的 pre-entry 阶段取消、End Tail 阶段取消、取消后切换 PNG 仍无实机证据，不得记为已通过**（见 §9.4）。
-9. **log-only / image-output-disabled（`0.3.6.4` Log-only Frame Transactions）：已实现、已发布收敛、并已通过用户实机验收。**
-   - 已实施：`Settings.EditorImageOutputEnabled`（默认 `true`）+ GUI「输出 PNG 图像」开关与关闭说明；模式在 session 开始时冻结；帧末结果改用显式 `imageWritten` 标志区分；逻辑帧计数与 PNG 计数拆分；completion / End Tail / safety / watchdog 全部改用逻辑 authority；metadata 增加 `imageOutputEnabled` / `mode` / `frameTransactionRequestCount` / `logicalFrameCount` / `writtenPngFrameCount` / `tailFramesCommitted`（旧字段保留）；log-only 不写 PNG、但仍写 metadata。详见 §3.2、§7、§8.1。
-   - 设计确定项：**保留** Camera source / RenderTexture 接管与 `WaitForEndOfFrame`（两种模式只在图像读回/编码/写盘处分支）；不新增 Harmony Patch、不引入新的 ADOFAI 内部 API、不新建第二套 scheduler / driver；`captureRequestCount` 在 log-only 下为 `0`，逻辑事务计数由 `frameTransactionRequestCount` 承担。
-   - **实机验收结果（用户提供，见 §9.1）**：PNG 与 Log-only 均正常完成；两模式均提交 251 个连续逻辑帧，`completionFrameIndex=238`、`tailFramesCommitted=12` 一致；`B=G=57`、`partialFraction=0.64`；两模式 Hit frame index 一致；PNG → Log-only → PNG 切换正常；`cachedAngle` 首次运行差异可在 PNG → PNG 复现（非 Log-only 独有）；Log-only gameplay 取消两次（90/91、183/184），无伪提交，取消后可再次完整导出；Log-only 输出目录确认无 PNG。
-   - **未覆盖（不得记为已通过）**：pre-entry 阶段取消、End Tail 阶段取消、取消后切换 PNG。原因是 Log-only 导出极快、难以稳定命中时机；不为此人为减慢导出或加入临时测试功能。针对这三项的**静态审查**结论见 §9.4：取消路径不含任何模式相关分支，Esc 观察者在 `InitializationHold` / `Capturing` 均可用，因此不具备模式特异性风险，但缺少实机证据。**注意**：`0.3.7.0` 轮次的 `152633` 是 **PNG 模式**的 pre-entry 取消（见 §9.1），**不能**用于勾销本节这些 **Log-only** 项。
-   - 已完成的非实机验证（最终审查 75/0、Release Rebuild、package/verify 11–0、序列化 harness 20/0）见 §9.4。
-   - 残留观察项：log-only 的 `captureRequestCount = 0` 与 PNG 模式下取消时 `captureRequestCount = capturedFrameCount + 1` 语义不同源（两者都已实机确认无伪提交）；`image-output-mode-mismatch` 守卫为保计数等式的 fail-closed 新增失败点，正常路径不触发。
-10. `set-version.ps1` phase 同步范围说明可在后续 tooling 清理时收紧，当前不阻塞产品一致性。
+1. **0.3.8.0 视频导出（尚未实施）**：Event-Driven A+ 决策见 §2.1。优先验证跨 Unity 帧的 pending、主线程完成投递与长时间 FFmpeg 背压下的原生 Update / visual state 是否漂移，再落实 FFmpeg 管理、MP4 接入、Finalizing 和完整故障收敛。静态设计**不是** MP4 运行时验收。
+2. **Linear 与极端 GPU 资源失败**：Supersampling 已在 Gamma / Direct3D11 的所述范围实机通过，**Linear 色彩空间从未实机覆盖**；接近硬件极限的 RT 分配与 GPU 状态恢复故障仍只有 stub / 静态证据。详见 §9.7.3。
+3. **真实 Unity 故障注入**：host Destroy、RT Release/Destroy、partial Camera assignment 的失败与重试，已有生产源码 + Unity stub 的确定性测试，**未在真实 Unity Player 注入这些异常**；正常路径与跨调用 residual 的既有实机结果不能替代异常证据（§3.5、§9.3）。
+4. **其余边界测试**：显式 safety frame-limit runtime trigger 与 `TryPrepareHitState` 故障注入主要依赖静态 / 纯计算证据；需要扩大 BPM change、Twirl、Midspin、event-heavy、特殊 startup、长谱面覆盖。无须为此设置人为帧数或时长上限。
+5. **Log-only 取消覆盖**：pre-entry 阶段取消、End Tail 阶段取消、取消后切换 PNG 尚无**该模式**实机证据（§9.4）。`0.3.7.0` 的 PNG pre-entry 取消（session `152633`）不能代替 Log-only 验收。
+6. **Camera aspect 边界**：当前受测环境的三台 baseline 均一致（1.6）；Unity 自动 aspect 对屏幕 / camRT 的内部来源未确认。若游戏合法出现三台 Camera 不同 aspect，现有 baseline-incompatible gate 可能误拒绝；不得将该理论风险记成已经发生（§9.1、§10.1）。
+7. **原生 lifecycle / 音频遗留**：`lifecycleSongPosition` 与 raw DSP 非视觉 authority；count-in 文本/SFX 和未来音频同步仍待独立调查（§10.5）。曾见 `Coroutine couldn't be started ... Conductor is inactive` 的 native Esc teardown 警告，尚未做 disable-mod A/B。
+8. **工具债务**：`set-version.ps1 -Phase` 不同步全部 phase 文案，后续升级必须人工核查 `EditorExportSession.PhaseLabel` 与相关注释（§2）；不阻塞当前稳定基线。
 
 ---
 
@@ -790,7 +758,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 - 本轮（0.3.7.0 第一闭环）相对基线 `70df55b` 的改动：新增 `OutputGeometryPolicy.cs`、`RenderEnvironmentInventory.cs`；修改 `Settings.cs`、`UiText.cs`、`ModEntry.cs`、`EditorExportReadiness.cs`、`EditorExportPreflight.cs`、`EditorExportController.cs`、`EditorExportSession.cs`、`DeterministicFrameScheduler.cs`、`FrameCaptureDriver.cs`；版本点 `mod/Info.json`、csproj `<Version>`、`ModEntry.ModVersion` 与 `ModEntry` 启动日志，外加**人工同步**的 `EditorExportSession.PhaseLabel` 与类注释 phase 文案（`set-version.ps1` 的已知范围限制，见 §2）。
 - 本轮**未**新增 Harmony Patch、未新增 ADOFAI 内部 API 依赖、未修改 README。
 - 发布包：`Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` ignored。本轮以 `scripts/package-release.ps1 -Configuration Release -Version 0.3.7.0 -Force` 打包，并在发布提交 `05a3b4a` 之后重新 Release Rebuild 并以 `-SkipBuild` 重新打包，产出 `dist/ADOFAI.Renderist.zip`（zip SHA256 `B251B6A4631401E44F96130E152FB834B70B47CE6E75CA45304DC43380A4155F`，sidecar `dist/ADOFAI.Renderist.zip.sha256` 同值）；`verify-release-package.ps1` 结果 **PASS 11 checks / 0 failures**，独立解包复核确认包内仅有 3 个顶层文件、无目录，且包内 DLL 与 `bin\Release` 逐字节一致。
-- 发布包内 DLL 的 `ProductVersion` 形如 `<version>+<HEAD 短哈希>`：该 `+hash` 是 SourceLink/InformationalVersion 在构建时记录的 **HEAD 提交**，不是工作区改动。`0.3.7.0` 的最终发布包在发布提交 `05a3b4a` 之后重建，因此 `ProductVersion = 0.3.7.0+05a3b4adda0fb5d9ce89c5ca29af1a6f496d75f3`（`FileVersion = 0.3.7.0`，DLL SHA256 `14D335FD2E2C051DBCE43BF1DB414F8ED177BEB221846EFB4FB50D761DBFBBBA`），即包内构建标识精确指向承载本版本的提交。注意：若在打包后再提交任何改动，`+hash` 不会自动更新；应避免在打包后 `amend` 发布提交（会改变哈希并使包内标识失效）。`verify-release-package.ps1` 比较版本时会剥离 `+hash` 后缀。
+- 发布包内 DLL 的 `ProductVersion` 形如 `<version>+<构建时 HEAD 的完整提交哈希>`：该 `+hash` 是 SourceLink/InformationalVersion 在构建时记录的 **HEAD 提交**，不是工作区改动。`0.3.7.0` 的最终发布包在发布提交 `05a3b4a` 之后重建，因此 `ProductVersion = 0.3.7.0+05a3b4adda0fb5d9ce89c5ca29af1a6f496d75f3`（`FileVersion = 0.3.7.0`，DLL SHA256 `14D335FD2E2C051DBCE43BF1DB414F8ED177BEB221846EFB4FB50D761DBFBBBA`），即包内构建标识精确指向承载本版本的提交。注意：若在打包后再提交任何改动，`+hash` 不会自动更新；应避免在打包后 `amend` 发布提交（会改变哈希并使包内标识失效）。`verify-release-package.ps1` 比较版本时会剥离 `+hash` 后缀。
 - 历史：`0.3.6.1`（Output FPS 无上限、safety 默认 unbounded、long frame chain、autoplay fail-closed、paused 阶段修正）→ `8bceeef` + `1af1205` hardening → `0.3.6.2` → native pre-entry 正式化 + persisted End Tail semantic fix → `0.3.6.3` → Log-only Frame Transactions → `0.3.6.4` → `05a3b4a` Custom Resolution（**第一闭环；已通过实机验收**）→ `2585664` + `7efcacd` Supersampling & Downsampling（**第二闭环；已通过实机验收**，见 §9.7.3）→ `ce34ad4` metadata `downsampleLevelCount` 实际级数语义修正（**未改变任何渲染/计数/ownership 行为**）→ **`0.3.7.1` 稳定性收敛**（仅第四位递增 + 一处算法注释勘误，见下）。
 - **`0.3.7.0` 存在三个不同的发布包身份（重要，勿混用）**：版本号始终为 `0.3.7.0`（用户明确要求不递增第四位），`dist/ADOFAI.Renderist.zip` 已被**重建覆盖三次**：
   - **第一闭环（仅 Custom Resolution）**：`05a3b4a` 构建，DLL SHA256 `14D335FD2E2C051DBCE43BF1DB414F8ED177BEB221846EFB4FB50D761DBFBBBA`，`ProductVersion = 0.3.7.0+05a3b4a…`，zip SHA256 `B251B6A4631401E44F96130E152FB834B70B47CE6E75CA45304DC43380A4155F`（**已实机验收的那一份**）。
@@ -798,7 +766,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
   - **第二闭环 + metadata 语义修正**：`ce34ad4` 构建，DLL SHA256 `E6747B520FD0C2844238901361251CD127B675041222A0BB1F6A0E8782D6E6E1`，`ProductVersion = 0.3.7.0+ce34ad49ae8d80d791a06887ece55fce31b3efbf`（**scale=4 完整导出实机验收的那一份**，见 §9.7.3）。
   - **`0.3.7.1` 稳定性收敛（当前稳定版本）**：构建身份见本文件末尾「最终发布身份」段（DLL / zip / `ProductVersion +hash` 以该处为准）。
   - 因此**不能**再用「0.3.7.0 的包哈希」唯一指代某个构建；引用时必须同时给出**版本号 + DLL SHA256 或 `ProductVersion` 的 `+hash`**。`verify-release-package.ps1` 比较版本时会剥离 `+hash` 后缀。
-  - **受测构建的自我判别**：`ce34ad4` 起，log-only + scale>1 的 session metadata `downsampleLevelCount` 为 **0**；`7efcacd`（及更早）为**计划级数**（如 scale=4 时为 2）。但 **PNG + scale>4 等场景下该字段在新旧构建下取值相同**（例如 PNG+scale=4 两版都是 2），因此该判别法**只适用于 log-only + scale>1**；其余情况须依赖部署时间序或 DLL 哈希。
+  - **受测构建的自我判别**：`ce34ad4` 起，log-only + scale>1 的 session metadata `downsampleLevelCount` 为 **0**；`7efcacd`（及更早）为**计划级数**（如 scale=4 时为 2）。但 **PNG + scale>1 等场景下该字段在新旧构建下取值相同**（例如 PNG+scale=4 两版都是 2），因此该判别法**只适用于 log-only + scale>1**；其余情况须依赖部署时间序或 DLL 哈希。
 - 各轮 Release Rebuild / package / verify：**0 error / PASS 11 checks / 0 failures**（细节见 §9.7）。
 - 部署使用 `scripts/copy-to-mods.ps1`，只更新 `Mods\ADOFAI.Renderist\`；路径来自本地 ignored `build/local.props`，未配置时不得猜测。目录内的 `ADOFAI.Renderist.dll.<pid>.cache` 是 UMM/Mono 按**进程 id** 命名的运行时缓存（`AdofaiTweaks` 同样存在），脚本默认保留、可用 `-CleanRuntimeCache` 清除；它**不是**被加载的产物（DLL 才是），且历史观测显示每次游戏运行都会重新生成并淘汰旧 pid 的缓存。**部署本身不等于实机验收**：第一闭环见 §9.1，第二闭环（含 scale=4 完整导出）见 §9.7.3；当前仍未覆盖的边界（Linear、极端资源失败等）见 §9.7.3。
 - 自动验证链：
