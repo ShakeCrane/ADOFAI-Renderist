@@ -74,7 +74,7 @@ namespace ADOFAI.Renderist
         private static CancellationTokenSource _ffmpegInstallCancellation;
         private static FfmpegInstallResult _lastFfmpegInstallResult;
 
-        // 本地安装包路径只是编辑缓冲，不写回 Settings（下载方案未收敛前不持久化它）。
+        // 本地安装包路径只是编辑缓冲，不写回 Settings。
         private static string _ffmpegArchivePathText;
 
         // 下载管线（UnityWebRequest 主线程驱动 + Unity-free 控制器 + 后台校验/安装）。
@@ -1274,8 +1274,6 @@ namespace ADOFAI.Renderist
             if (installing)
                 GUILayout.Label(UiText.GuiFfmpegBusyInstalling, GUI.skin.label);
 
-            GUILayout.Label(UiText.GuiFfmpegDownloadPendingHint, GUI.skin.label);
-
             FfmpegInstallResult last = _lastFfmpegInstallResult;
             if (last != null)
             {
@@ -1723,7 +1721,7 @@ namespace ADOFAI.Renderist
                     (generation, downloaded, total) =>
                     {
                         FfmpegDownloadController active = _ffmpegDownloadController;
-                        if (active != null)
+                        if (active != null && active.Generation == generation)
                             active.ReportProgress(downloaded, total);
                     },
                     (generation, response) =>
@@ -1732,7 +1730,8 @@ namespace ADOFAI.Renderist
                         if (active == null)
                             return;
 
-                        if (!active.ReportFinished(generation, response))
+                        bool accepted = active.ReportFinished(generation, response);
+                        if (!accepted)
                         {
                             // 迟到通知：控制器只清理自己那一代，绝不改动当前状态。
                             Log.Info(UiText.Format(UiText.LogFfmpegDownloadStaleIgnoredFormat, generation));

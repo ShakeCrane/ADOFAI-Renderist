@@ -9,7 +9,7 @@ namespace ADOFAI.Renderist
     ///
     /// 职责边界：
     ///   * <b>只在 Unity 主线程</b>创建请求、调用 <c>SendWebRequest()</c>、读取进度、
-    ///     收取 <c>completed</c>、<c>Abort()</c> 与 <c>Dispose()</c>。
+    ///     读取请求完成状态、<c>Abort()</c> 与 <c>Dispose()</c>。
     ///   * 只把结果整理成纯数据 <see cref="FfmpegDownloadResponse"/> 交给
     ///     <see cref="FfmpegDownloadController"/>；所有状态机、哈希校验与安装都在
     ///     控制器与后台 <c>Task</c> 中完成，后台线程不接触 Unity 对象。
@@ -33,7 +33,6 @@ namespace ADOFAI.Renderist
         private UnityWebRequest _request;
         private UnityWebRequestAsyncOperation _operation;
         private long _generation = -1;
-        private bool _completionDelivered;
         private Action<long, FfmpegDownloadResponse> _onCompleted;
         private Action<long, long, long> _onProgress;
 
@@ -93,7 +92,6 @@ namespace ADOFAI.Renderist
 
                 _request = request;
                 _generation = plan.Generation;
-                _completionDelivered = false;
                 _onProgress = onProgress;
                 _onCompleted = onCompleted;
 
@@ -118,6 +116,7 @@ namespace ADOFAI.Renderist
             if (operation == null)
                 return;
 
+            FfmpegDownloadResponse response;
             try
             {
                 if (!operation.isDone)
@@ -126,42 +125,30 @@ namespace ADOFAI.Renderist
                     return;
                 }
 
-                if (!_completionDelivered)
-                {
-                    _completionDelivered = true;
-                    FfmpegDownloadResponse response = BuildResponse();
-                    long generation = _generation;
-
-                    // 先释放请求与文件句柄，再交付结果：
-                    // 控制器可能在收到结果后立刻删除临时文件，句柄必须先关闭。
-                    DisposeRequest();
-
-                    if (_onCompleted != null)
-                        _onCompleted(generation, response);
-                    return;
-                }
+                response = BuildResponse();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // 任何驱动层异常都不能让主线程崩溃：释放资源并当作失败交付。
-                long generation = _generation;
-                DisposeRequest();
-
-                if (!_completionDelivered && _onCompleted != null)
+                // Unity 状态读取异常也必须向控制器交付失败，而非静默卡在 Downloading。
+                response = new FfmpegDownloadResponse
                 {
-                    _completionDelivered = true;
-                    _onCompleted(generation, new FfmpegDownloadResponse
-                    {
-                        ResponseCode = 0,
-                        RequestSucceeded = false,
-                        Error = "download-driver-exception",
-                    });
-                }
-                return;
+                    ResponseCode = 0,
+                    RequestSucceeded = false,
+                    Error = "download-driver-exception: " + ex.GetType().Name + ": " + ex.Message,
+                };
             }
 
+            long generation = _generation;
+            Action<long, FfmpegDownloadResponse> onCompleted = _onCompleted;
+
+            // 先释放请求与文件句柄，再交付结果；DisposeRequest 会清空字段回调，
+            // 因此必须先把本次回调保存到局部变量。
             DisposeRequest();
+            // 调用方 ModEntry.OnUpdate 捕获并报告回调异常；绝不重复交付同一结果。
+            onCompleted?.Invoke(generation, response);
         }
+
+
 
         /// <summary>
         /// 中止并释放当前请求（Unity 主线程）。

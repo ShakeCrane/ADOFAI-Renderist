@@ -141,8 +141,6 @@ namespace ADOFAI.Renderist
         public const string GuiFfmpegButtonCancelInstall = "取消安装";
         public const string GuiFfmpegBusyInspecting = "正在检查组件…";
         public const string GuiFfmpegBusyInstalling = "正在安装…";
-        public const string GuiFfmpegDownloadPendingHint =
-            "自动下载尚未启用：下载方案（Unity Mono HTTPS 客户端）仍在收敛验证中，当前只支持从本地 ZIP 安装。";
         public const string GuiFfmpegInstallResultPrefix = "上次安装：";
         public const string GuiFfmpegInstallOutcomeInstalled = "已安装";
         public const string GuiFfmpegInstallOutcomeAlready = "已存在，未覆盖";

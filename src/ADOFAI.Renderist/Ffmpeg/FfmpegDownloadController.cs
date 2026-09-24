@@ -269,8 +269,12 @@ namespace ADOFAI.Renderist.Ffmpeg
         /// 接收 Unity 侧的完成通知。
         ///
         /// 返回 true 表示该通知属于当前 generation 并已被接受；
-        /// 返回 false 表示它是**迟到通知**：只会清理它自己那一代的临时文件，
-        /// 绝不改动当前状态、绝不启动安装、绝不发布任何东西。
+        /// 返回 false 表示它不是本次活动下载的第一次完成通知，因此**不做任何推进**。
+        ///
+        /// 临时文件 ownership 规则：
+        ///   * 只有**非当前** generation（已被取消 / 失效的旧代）的迟到通知才删除那个旧文件；
+        ///   * 当前 generation 的重复通知**绝不删除**归档 —— 此时校验或安装可能正在读取它，
+        ///     删掉会把一次合法安装变成失败。终态清理由 <see cref="Pump"/> 统一负责。
         /// </summary>
         public bool ReportFinished(long generation, FfmpegDownloadResponse response)
         {
@@ -278,15 +282,15 @@ namespace ADOFAI.Renderist.Ffmpeg
             {
                 if (generation != _generation)
                 {
-                    // 迟到通知：只负责删除自己那一代的临时文件。
+                    // 旧代的迟到通知：只负责删除它自己那一代的临时文件。
                     DiscardOwnedTempFile(generation);
                     return false;
                 }
 
                 if (State != FfmpegDownloadState.Downloading)
                 {
-                    // 当前 generation 已被取消/失效：同样只做清理。
-                    DiscardOwnedTempFile(generation);
+                    // 同一代的重复 / 重复投递通知：不得重复推进校验或安装，
+                    // 也不得删除当前活动流程仍在使用的归档。
                     return false;
                 }
 
@@ -335,9 +339,9 @@ namespace ADOFAI.Renderist.Ffmpeg
                 }
 
                 // 先失效 generation：此后任何到达的通知都会被判为迟到。
+                generationToAbort = _generation;
                 _generationCounter++;
                 _generation = _generationCounter;
-                generationToAbort = _workGeneration >= 0 ? _workGeneration : _generation;
 
                 if (_cancellation != null)
                 {
