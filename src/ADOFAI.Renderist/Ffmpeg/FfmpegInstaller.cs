@@ -298,14 +298,25 @@ namespace ADOFAI.Renderist.Ffmpeg
                 if (request.ProbeAfterInstall)
                 {
                     string stagingPrimary;
-                    if (FfmpegInstallLayout.TryResolveRelative(
-                            stagingDirectory, asset.PrimaryExecutableRelativePath, out stagingPrimary) &&
-                        File.Exists(stagingPrimary))
+                    if (!FfmpegInstallLayout.TryResolveRelative(
+                            stagingDirectory, asset.PrimaryExecutableRelativePath, out stagingPrimary) ||
+                        !File.Exists(stagingPrimary))
                     {
-                        int probeTimeout = request.ProbeTimeoutSeconds > 0
-                            ? request.ProbeTimeoutSeconds
-                            : FfmpegCapabilityProbe.DefaultTimeoutSeconds;
-                        result.Capability = FfmpegCapabilityProbe.Probe(stagingPrimary, probeTimeout, cancellationToken);
+                        result.ErrorCode = "probe-executable-missing";
+                        return result;
+                    }
+
+                    int probeTimeout = request.ProbeTimeoutSeconds > 0
+                        ? request.ProbeTimeoutSeconds
+                        : FfmpegCapabilityProbe.DefaultTimeoutSeconds;
+                    result.Capability = FfmpegCapabilityProbe.Probe(stagingPrimary, probeTimeout, cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!result.Capability.IsUsableForMp4)
+                    {
+                        result.ErrorCode = "capability-probe-failed";
+                        result.ErrorDetail = result.Capability.ErrorCode ??
+                            string.Join(",", ToArray(result.Capability.MissingCapabilities));
+                        return result;
                     }
                 }
 
@@ -323,6 +334,7 @@ namespace ADOFAI.Renderist.Ffmpeg
                     return result;
                 }
 
+                cancellationToken.ThrowIfCancellationRequested();
                 Directory.Move(stagingDirectory, versionDirectory);
                 stagingDirectory = null;
                 result.TargetDirectory = versionDirectory;

@@ -235,6 +235,7 @@ namespace ADOFAI.Renderist.Ffmpeg
 
             // ---- 阶段 2：只写出白名单匹配到的条目。----
             var extracted = new List<SafeZipExtractedFile>();
+            long actualTotal = 0;
 
             for (int r = 0; r < rules.Count; r++)
             {
@@ -280,7 +281,8 @@ namespace ADOFAI.Renderist.Ffmpeg
                                targetPath, FileMode.Create, FileAccess.Write, FileShare.None, CopyBufferSize))
                     using (var sha = SHA256.Create())
                     {
-                        writtenBytes = CopyAndHash(source, target, sha, maxEntryBytes, cancellationToken);
+                        writtenBytes = CopyAndHash(source, target, sha, maxEntryBytes,
+                            maxTotalBytes, actualTotal, cancellationToken);
                         actualSha256 = FfmpegFileHash.ToHex(sha.Hash);
                     }
                 }
@@ -300,6 +302,8 @@ namespace ADOFAI.Renderist.Ffmpeg
                         rule.TargetRelativePath + " expected=" + rule.ExpectedSha256 + " actual=" + actualSha256);
                 }
 
+                actualTotal += writtenBytes;
+
                 extracted.Add(new SafeZipExtractedFile
                 {
                     RelativePath = rule.TargetRelativePath,
@@ -317,11 +321,12 @@ namespace ADOFAI.Renderist.Ffmpeg
         }
 
         /// <summary>
-        /// 复制流并同时计算哈希。同时强制真实写出字节数不超过声明上限：
-        /// 归档声明的 <c>entry.Length</c> 可能被伪造，因此运行期也要设限。
+        /// 复制流并同时计算哈希。归档声明的 <c>entry.Length</c> 可能被伪造，
+        /// 因此运行期同时限制当前条目和跨条目的真实写出总量。
         /// </summary>
         private static long CopyAndHash(
-            Stream source, Stream target, HashAlgorithm sha, long maxEntryBytes, CancellationToken cancellationToken)
+            Stream source, Stream target, HashAlgorithm sha, long maxEntryBytes,
+            long maxTotalBytes, long previousBytes, CancellationToken cancellationToken)
         {
             byte[] buffer = new byte[CopyBufferSize];
             long total = 0;
@@ -337,6 +342,8 @@ namespace ADOFAI.Renderist.Ffmpeg
                 total += read;
                 if (maxEntryBytes > 0 && total > maxEntryBytes)
                     throw new InvalidDataException("entry exceeded declared maximum while extracting");
+                if (maxTotalBytes > 0 && total > maxTotalBytes - previousBytes)
+                    throw new InvalidDataException("archive exceeded actual extraction maximum");
 
                 target.Write(buffer, 0, read);
                 sha.TransformBlock(buffer, 0, read, null, 0);
