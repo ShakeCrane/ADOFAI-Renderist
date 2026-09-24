@@ -121,12 +121,63 @@ namespace ADOFAI.Renderist.FfmpegTests
                 new FileInfo(archivePath).Length,
                 "GPLv3",
                 "https://example.invalid/license",
+                "https://example.invalid/source",
                 "synthetic fixture",
                 "bin/ffmpeg.exe",
                 new[]
                 {
                     new FfmpegAssetFile("ffmpeg.exe", "bin/ffmpeg.exe", Sha256Of(ffmpegBytes), true),
                     new FfmpegAssetFile("ffprobe.exe", "bin/ffprobe.exe", Sha256Of(ffprobeBytes), true),
+                });
+        }
+
+        /// <summary>
+        /// 合成一份"解压后真的可执行"的资产：归档内的 <c>bin/ffmpeg.exe</c> 就是本测试可执行文件，
+        /// 它在被以 <c>-hide_banner</c> 调用时会充当一个能力完整的假 FFmpeg。
+        ///
+        /// 这样就能在**离线**条件下走完
+        /// 下载 → 长度/哈希校验 → 安全解压 → 能力探测 → 原子发布 的完整链路。
+        /// </summary>
+        public static FfmpegAsset BuildSyntheticAssetWithFakeFfmpeg(
+            string workDirectory,
+            out string archivePath,
+            string assetId = "fake-ffmpeg-asset",
+            string version = "1.0.0",
+            string entryPrefix = "pkg/")
+        {
+            byte[] fakeExe = File.ReadAllBytes(FakeFfmpeg.ExecutablePath);
+
+            string assetDirectory = Path.Combine(workDirectory, "asset-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+            Directory.CreateDirectory(assetDirectory);
+            archivePath = Path.Combine(assetDirectory, "asset.zip");
+
+            BuildZip(archivePath, new[]
+            {
+                ZipEntrySpec.File(entryPrefix + "bin/ffmpeg.exe", fakeExe),
+                ZipEntrySpec.File(entryPrefix + "bin/ffprobe.exe", fakeExe),
+            });
+
+            string archiveSha256;
+            string error;
+            if (!FfmpegFileHash.TryCompute(archivePath, out archiveSha256, out error))
+                throw new Exception("failed to hash synthetic archive: " + error);
+
+            return new FfmpegAsset(
+                assetId,
+                version,
+                "synthetic fake-ffmpeg asset",
+                "https://example.invalid/fake.zip",
+                archiveSha256,
+                new FileInfo(archivePath).Length,
+                "GPLv3",
+                "https://example.invalid/license",
+                "https://example.invalid/source",
+                "synthetic fixture",
+                "bin/ffmpeg.exe",
+                new[]
+                {
+                    new FfmpegAssetFile("ffmpeg.exe", "bin/ffmpeg.exe", Sha256Of(fakeExe), true),
+                    new FfmpegAssetFile("ffprobe.exe", "bin/ffprobe.exe", Sha256Of(fakeExe), true),
                 });
         }
 

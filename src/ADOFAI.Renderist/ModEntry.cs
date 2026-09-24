@@ -77,6 +77,11 @@ namespace ADOFAI.Renderist
         // 本地安装包路径只是编辑缓冲，不写回 Settings（下载方案未收敛前不持久化它）。
         private static string _ffmpegArchivePathText;
 
+        // 下载管线（UnityWebRequest 主线程驱动 + Unity-free 控制器 + 后台校验/安装）。
+        private static UnityFfmpegDownloadDriver _ffmpegDownloadDriver;
+        private static FfmpegDownloadController _ffmpegDownloadController;
+        private static bool _ffmpegLifecycleShutdown;
+
         /// <summary>
         /// UMM entry method, invoked via Info.json's "EntryMethod".
         /// </summary>
@@ -97,6 +102,10 @@ namespace ADOFAI.Renderist
                 modEntry.OnGUI = OnGUI;
                 modEntry.OnSaveGUI = OnSaveGUI;
                 modEntry.OnUpdate = OnUpdate;
+                // UMM 的卸载入口（签名已核实为 Func<ModEntry,bool>）。
+                // 它不一定在所有退出路径都触发，因此收敛不能只依赖它 ——
+                // OnToggle(false) 与 OnUpdate 都会各自兜底。
+                modEntry.OnUnload = OnUnload;
 
                 Harmony = new Harmony(HarmonyId);
 
@@ -120,6 +129,7 @@ namespace ADOFAI.Renderist
                 if (value)
                 {
                     Log.Info(UiText.LogEnabled);
+                    _ffmpegLifecycleShutdown = false;
                 }
                 else
                 {
@@ -127,6 +137,9 @@ namespace ADOFAI.Renderist
                     EditorExportController.Cancel("mod-disabled");
                     // 最终 safety net：该 HarmonyId 只属于 Renderist。
                     Harmony?.UnpatchAll(HarmonyId);
+                    // FFmpeg 组件的下载/安装必须在禁用时立即收敛，
+                    // 不能等 OnUpdate（它在禁用后可能根本不再被调用）。
+                    ShutdownFfmpegComponent("mod-disabled");
                     Log.Info(UiText.LogDisabled);
                 }
 
@@ -1133,6 +1146,10 @@ namespace ADOFAI.Renderist
             }
 
             DrawFfmpegControls();
+
+            // 下载 / 安装子段：阶段、进度、取消与失败原因都与组件发现状态分开显示，
+            // 且始终可见（即使组件状态报告尚未就绪）。
+            DrawFfmpegDownloadGui();
         }
 
         private static void DrawFfmpegReport(FfmpegComponentReport report)
@@ -1179,6 +1196,10 @@ namespace ADOFAI.Renderist
                 GUILayout.Label(UiText.GuiFfmpegAssetSourcePrefix + asset.ArchiveUrl, GUI.skin.label);
                 GUILayout.Label(UiText.GuiFfmpegLicensePrefix + asset.LicenseName + " — " + asset.LicenseUrl,
                     GUI.skin.label);
+                if (!string.IsNullOrEmpty(asset.SourceCodeUrl))
+                {
+                    GUILayout.Label(UiText.GuiFfmpegSourceCodePrefix + asset.SourceCodeUrl, GUI.skin.label);
+                }
             }
 
             GUILayout.Label(UiText.GuiFfmpegNotBlockingHint, GUI.skin.label);
@@ -1290,6 +1311,21 @@ namespace ADOFAI.Renderist
                     InstallRoot = installRoot,
                     ProbeCapabilities = true,
                 }));
+        }
+
+        /// <summary>清理上次运行遗留的孤儿下载临时文件（只匹配本模块自己的命名前缀）。</summary>
+        private static void CleanupFfmpegOrphanDownloads()
+        {
+            FfmpegDownloadController controller = _ffmpegDownloadController;
+            if (controller == null)
+                return;
+
+            int removed = controller.CleanupOrphanDownloads();
+            if (removed > 0)
+            {
+                Log.Info(UiText.Format(UiText.LogFfmpegOrphanDownloadsRemovedFormat,
+                    removed.ToString(CultureInfo.InvariantCulture)));
+            }
         }
 
         private static void StartFfmpegInstall(string archivePath)
@@ -1535,6 +1571,304 @@ namespace ADOFAI.Renderist
             return sha256.Length <= 16 ? sha256 : sha256.Substring(0, 16);
         }
 
+        // ================= Phase 3.8.0: FFmpeg 下载与生命周期 =================
+        //
+        // 分工：
+        //   * UnityFfmpegDownloadDriver —— 唯一接触 UnityWebRequest 的地方，只在主线程。
+        //   * FfmpegDownloadController —— Unity-free 的状态机 / generation 隔离 /
+        //     临时文件 ownership / 后台校验与安装。
+        //   * 本类 —— GUI 展示与生命周期接线。
+
+        /// <summary>确保下载控制器存在；托管目录不可用时返回 null（不猜测路径）。</summary>
+        private static FfmpegDownloadController EnsureFfmpegDownloadController()
+        {
+            if (_ffmpegDownloadController != null)
+                return _ffmpegDownloadController;
+
+            FfmpegInstallLayout layout;
+            string layoutError;
+            if (!FfmpegInstallLayout.TryCreate(GetFfmpegInstallRoot(), out layout, out layoutError))
+                return null;
+
+            if (_ffmpegDownloadDriver == null)
+                _ffmpegDownloadDriver = new UnityFfmpegDownloadDriver();
+
+            _ffmpegDownloadController = new FfmpegDownloadController(
+                layout, generation => _ffmpegDownloadDriver.AbortAndDispose(generation));
+
+            // 首次创建时清理上次运行遗留的孤儿下载文件（只匹配本模块的前缀）。
+            CleanupFfmpegOrphanDownloads();
+            return _ffmpegDownloadController;
+        }
+
+        /// <summary>
+        /// 每帧推进 FFmpeg 组件生命周期。不依赖 GUI、也不依赖 Enabled 为 true。
+        /// </summary>
+        private static void PumpFfmpegComponentLifecycle()
+        {
+            // 后台组件检查 / 本地安装结果收取。
+            PumpFfmpegTasks();
+
+            FfmpegDownloadController controller = _ffmpegDownloadController;
+            if (controller == null)
+                return;
+
+            if (!Enabled || _ffmpegLifecycleShutdown)
+            {
+                // 已禁用：只做收敛，不再推进新的网络/安装活动。
+                if (controller.IsBusy || !_ffmpegLifecycleShutdown)
+                {
+                    controller.Shutdown();
+                    _ffmpegDownloadDriver?.DisposeRequest();
+                    _ffmpegReportDirty = true;
+                }
+                _ffmpegLifecycleShutdown = true;
+                return;
+            }
+
+            // 主线程推进 UnityWebRequest（进度 / 完成）。
+            _ffmpegDownloadDriver?.Pump();
+
+            // 收取后台校验与安装结果。
+            FfmpegDownloadState before = controller.State;
+            controller.Pump();
+
+            if (before != controller.State)
+            {
+                if (controller.State == FfmpegDownloadState.Succeeded)
+                {
+                    Log.Info(UiText.Format(UiText.LogFfmpegDownloadSucceededFormat,
+                        controller.InstallResult != null
+                            ? (controller.InstallResult.TargetDirectory ?? string.Empty)
+                            : string.Empty));
+                }
+                else if (controller.State == FfmpegDownloadState.Cancelled)
+                {
+                    Log.Info(UiText.LogFfmpegDownloadCancelled);
+                }
+                else if (controller.State == FfmpegDownloadState.Failed)
+                {
+                    Log.Warn(UiText.Format(UiText.LogFfmpegDownloadFailedFormat,
+                        controller.Generation, controller.ErrorCode, controller.ErrorDetail));
+                }
+
+                // 磁盘状态可能已改变：刷新组件报告。
+                if (controller.State == FfmpegDownloadState.Succeeded ||
+                    controller.State == FfmpegDownloadState.Failed)
+                {
+                    _ffmpegReportDirty = true;
+                }
+            }
+        }
+
+        /// <summary>禁用 / 卸载 / 退出时的收敛：先失效 generation，再中止并清理。</summary>
+        private static void ShutdownFfmpegComponent(string reason)
+        {
+            try
+            {
+                _ffmpegLifecycleShutdown = true;
+
+                // 本地 ZIP 安装任务同样必须取消。
+                RequestFfmpegInstallCancel();
+
+                FfmpegDownloadController controller = _ffmpegDownloadController;
+                if (controller != null)
+                    controller.Shutdown();
+
+                _ffmpegDownloadDriver?.DisposeRequest();
+                _ffmpegReportDirty = true;
+            }
+            catch (Exception ex)
+            {
+                Log.Warn(UiText.Format(UiText.LogFfmpegInspectionFailedFormat, ex.Message));
+            }
+        }
+
+        private static bool OnUnload(UnityModManager.ModEntry modEntry)
+        {
+            try
+            {
+                // 卸载不保证在所有退出路径都触发，因此这里只是三条收敛路径之一。
+                ShutdownFfmpegComponent("mod-unload");
+                EditorExportController.Cancel("mod-unload");
+            }
+            catch (Exception ex)
+            {
+                Logger?.LogException("OnUnload failed", ex);
+            }
+            return true;
+        }
+
+        private static void StartFfmpegDownload()
+        {
+            FfmpegDownloadController controller = EnsureFfmpegDownloadController();
+            if (controller == null)
+            {
+                Log.Warn(UiText.Format(UiText.LogFfmpegDownloadFailedFormat, "-", "install-root-unavailable", string.Empty));
+                return;
+            }
+
+            FfmpegAsset asset = FfmpegAssetManifest.Primary;
+            FfmpegDownloadPlan plan = controller.TryStart(asset, true, FfmpegCapabilityProbe.DefaultTimeoutSeconds);
+            if (!plan.Started)
+            {
+                Log.Warn(UiText.Format(UiText.LogFfmpegDownloadFailedFormat, "-", plan.ErrorCode, plan.ErrorDetail));
+                return;
+            }
+
+            string driverError;
+            string driverDetail;
+            if (!_ffmpegDownloadDriver.TryStart(
+                    plan,
+                    (generation, downloaded, total) =>
+                    {
+                        FfmpegDownloadController active = _ffmpegDownloadController;
+                        if (active != null)
+                            active.ReportProgress(downloaded, total);
+                    },
+                    (generation, response) =>
+                    {
+                        FfmpegDownloadController active = _ffmpegDownloadController;
+                        if (active == null)
+                            return;
+
+                        if (!active.ReportFinished(generation, response))
+                        {
+                            // 迟到通知：控制器只清理自己那一代，绝不改动当前状态。
+                            Log.Info(UiText.Format(UiText.LogFfmpegDownloadStaleIgnoredFormat, generation));
+                            return;
+                        }
+
+                        if (active.State == FfmpegDownloadState.Failed)
+                        {
+                            Log.Warn(UiText.Format(UiText.LogFfmpegDownloadFailedFormat,
+                                generation, active.ErrorCode, active.ErrorDetail));
+                        }
+                    },
+                    out driverError,
+                    out driverDetail))
+            {
+                controller.Cancel(driverError);
+                Log.Warn(UiText.Format(UiText.LogFfmpegDownloadFailedFormat, plan.Generation, driverError, driverDetail));
+                return;
+            }
+
+            Log.Info(UiText.Format(UiText.LogFfmpegDownloadStartedFormat, plan.Generation, plan.Url));
+        }
+
+        private static string FfmpegDownloadStateText(FfmpegDownloadState state)
+        {
+            switch (state)
+            {
+                case FfmpegDownloadState.Downloading:
+                    return UiText.GuiFfmpegDownloadStateDownloading;
+                case FfmpegDownloadState.Verifying:
+                    return UiText.GuiFfmpegDownloadStateVerifying;
+                case FfmpegDownloadState.Installing:
+                    return UiText.GuiFfmpegDownloadStateInstalling;
+                case FfmpegDownloadState.Succeeded:
+                    return UiText.GuiFfmpegDownloadStateSucceeded;
+                case FfmpegDownloadState.Cancelled:
+                    return UiText.GuiFfmpegDownloadStateCancelled;
+                case FfmpegDownloadState.Failed:
+                    return UiText.GuiFfmpegDownloadStateFailed;
+                default:
+                    return UiText.GuiFfmpegDownloadStateIdle;
+            }
+        }
+
+        private static string FfmpegDownloadErrorText(FfmpegDownloadController controller)
+        {
+            string code = controller.ErrorCode;
+
+            // 把最影响用户判断的失败映射成可读原因；其余显示原始机读码。
+            if (string.Equals(code, "download-request-failed", StringComparison.Ordinal))
+                return UiText.GuiFfmpegDownloadErrorRequestFailed + "（" + (controller.ErrorDetail ?? code) + "）";
+            if (string.Equals(code, "download-http-error", StringComparison.Ordinal))
+                return UiText.GuiFfmpegDownloadErrorHttp + "（" + (controller.ErrorDetail ?? code) + "）";
+            if (string.Equals(code, "download-insecure-redirect", StringComparison.Ordinal))
+                return UiText.GuiFfmpegDownloadErrorInsecure + "（" + (controller.ErrorDetail ?? code) + "）";
+            if (string.Equals(code, "download-size-mismatch", StringComparison.Ordinal))
+                return UiText.GuiFfmpegDownloadErrorSize + "（" + (controller.ErrorDetail ?? code) + "）";
+            if (string.Equals(code, "download-hash-mismatch", StringComparison.Ordinal))
+                return UiText.GuiFfmpegDownloadErrorHash + "（" + (controller.ErrorDetail ?? code) + "）";
+            if (string.Equals(code, "capability-probe-failed", StringComparison.Ordinal))
+                return UiText.GuiFfmpegDownloadErrorCapability + "（" + (controller.ErrorDetail ?? code) + "）";
+            if (string.Equals(code, "cancelled", StringComparison.Ordinal))
+                return UiText.GuiFfmpegDownloadStateCancelled;
+
+            return code + (string.IsNullOrEmpty(controller.ErrorDetail) ? string.Empty : "（" + controller.ErrorDetail + "）");
+        }
+
+        private static void DrawFfmpegDownloadGui()
+        {
+            FfmpegDownloadController controller = _ffmpegDownloadController;
+            bool controllerBusy = controller != null && controller.IsBusy;
+            bool localInstallBusy = _ffmpegInstallTask != null;
+            bool busy = controllerBusy || localInstallBusy;
+
+            GUILayout.Label(UiText.GuiFfmpegDownloadStatePrefix +
+                            FfmpegDownloadStateText(controller == null
+                                ? FfmpegDownloadState.Idle
+                                : controller.State), GUI.skin.label);
+
+            if (controller != null && controller.IsBusy)
+            {
+                long received = controller.DownloadedBytes;
+                long total = controller.ExpectedBytes;
+                GUILayout.Label(UiText.GuiFfmpegDownloadProgressPrefix +
+                                FormatByteCount(received) + " / " +
+                                (total > 0 ? FormatByteCount(total) : "?"), GUI.skin.label);
+
+                if (controller.State == FfmpegDownloadState.Downloading)
+                {
+                    // IMGUI 内置进度条：不使用自绘框架。
+                    Rect rect = GUILayoutUtility.GetRect(18f, 18f);
+                    UnityEngine.GUI.Box(rect, string.Empty);
+                    Rect fill = new Rect(rect.x, rect.y, rect.width * (float)controller.ProgressFraction, rect.height);
+                    UnityEngine.GUI.Box(fill, string.Empty);
+                }
+            }
+
+            if (controller != null &&
+                (controller.State == FfmpegDownloadState.Failed ||
+                 controller.State == FfmpegDownloadState.Cancelled))
+            {
+                GUILayout.Label(UiText.GuiFfmpegDownloadErrorPrefix + FfmpegDownloadErrorText(controller),
+                    GUI.skin.label);
+            }
+
+            bool previousEnabled = GUI.enabled;
+            GUI.enabled = previousEnabled && !busy;
+
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button(UiText.GuiFfmpegButtonDownloadAndInstall, GUI.skin.button, GUILayout.Width(200f)))
+                StartFfmpegDownload();
+            GUI.enabled = previousEnabled;
+
+            if (controllerBusy)
+            {
+                if (GUILayout.Button(UiText.GuiFfmpegButtonCancelDownload, GUI.skin.button, GUILayout.Width(140f)))
+                {
+                    controller.Cancel("user-cancel");
+                    _ffmpegDownloadDriver?.DisposeRequest();
+                }
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.Label(UiText.GuiFfmpegDownloadBusyHint, GUI.skin.label);
+            GUILayout.Label(UiText.GuiFfmpegDownloadNoTimeoutHint, GUI.skin.label);
+        }
+
+        private static string FormatByteCount(long bytes)
+        {
+            if (bytes < 1024)
+                return bytes.ToString(CultureInfo.InvariantCulture) + " B";
+            if (bytes < 1024L * 1024L)
+                return (bytes / 1024.0).ToString("0.0", CultureInfo.InvariantCulture) + " KiB";
+            return (bytes / (1024.0 * 1024.0)).ToString("0.0", CultureInfo.InvariantCulture) + " MiB";
+        }
+
         private static void OnSaveGUI(UnityModManager.ModEntry modEntry)
         {
             try
@@ -1551,10 +1885,13 @@ namespace ADOFAI.Renderist
         {
             try
             {
-                if (!Enabled) return;
+                // FFmpeg 组件生命周期先于 Enabled 判断执行：
+                //   * 启用时正常推进下载、收取后台结果；
+                //   * 禁用后仍会兜底收敛（即使 OnToggle 的清理已被其它路径绕过）。
+                // 该调用不依赖 GUI 被打开。
+                PumpFfmpegComponentLifecycle();
 
-                // 收取后台 FFmpeg 组件检查 / 安装结果（无 Unity API 参与，见 Ffmpeg 命名空间）。
-                PumpFfmpegTasks();
+                if (!Enabled) return;
 
                 // 仅推进当前编辑器确定性导出会话。
                 EditorExportController.Tick();

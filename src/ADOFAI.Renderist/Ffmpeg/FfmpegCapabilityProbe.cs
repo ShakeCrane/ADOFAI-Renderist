@@ -146,6 +146,16 @@ namespace ADOFAI.Renderist.Ffmpeg
                 return report;
             }
 
+            // 非零退出即失败：即使 stdout 里仍然出现了目标 token（例如部分输出后崩溃），
+            // 也不能把这份输出当作能力证据。
+            if (encodersExit != 0)
+            {
+                report.Status = FfmpegCapabilityStatus.ProbeFailed;
+                report.ErrorCode = "encoders-probe-nonzero-exit";
+                report.ErrorDetail = "exit=" + encodersExit;
+                return report;
+            }
+
             string formatsOut;
             string formatsErr;
             int formatsExit;
@@ -158,7 +168,17 @@ namespace ADOFAI.Renderist.Ffmpeg
                 return report;
             }
 
-            report.HasLibx264 = ContainsLineToken(encodersOut, "libx264");
+            if (formatsExit != 0)
+            {
+                report.Status = FfmpegCapabilityStatus.ProbeFailed;
+                report.ErrorCode = "formats-probe-nonzero-exit";
+                report.ErrorDetail = "exit=" + formatsExit;
+                return report;
+            }
+
+            // 能力必须来自**结构化表行**：普通文本提到 libx264 / mp4 / rawvideo
+            // 不足以证明该能力存在。
+            report.HasLibx264 = HasEncoder(encodersOut, "libx264");
             report.HasMp4Muxer = HasFormat(formatsOut, "mp4", true);
             report.HasRawvideoDemuxer = HasFormat(formatsOut, "rawvideo", false);
 
@@ -205,22 +225,55 @@ namespace ADOFAI.Renderist.Ffmpeg
             return null;
         }
 
-        private static bool ContainsLineToken(string output, string token)
+        /// <summary>
+        /// 在 <c>-encoders</c> 输出中查找编码器表行。
+        ///
+        /// 表行形如 <c> V....D libx264   libx264 H.264 / AVC ...</c>：
+        /// 第一个字段是 6 字符的 flags 列，第二个字段才是编码器名。
+        /// 之所以不直接做子串匹配：图例行、说明文字或错误信息里都可能出现
+        /// "libx264" 字样，而那些都不是"该编码器可用"的证据。
+        /// </summary>
+        private static bool HasEncoder(string encodersOutput, string name)
         {
-            if (string.IsNullOrEmpty(output))
+            if (string.IsNullOrEmpty(encodersOutput))
                 return false;
 
-            string[] lines = output.Split('\n');
+            string[] lines = encodersOutput.Split('\n');
             for (int i = 0; i < lines.Length; i++)
             {
-                string[] parts = lines[i].Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-                for (int p = 0; p < parts.Length; p++)
-                {
-                    if (string.Equals(parts[p], token, StringComparison.Ordinal))
-                        return true;
-                }
+                string line = lines[i].Trim();
+                if (line.Length == 0)
+                    continue;
+
+                string[] parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2)
+                    continue;
+
+                if (!IsEncoderFlagsField(parts[0]))
+                    continue;
+
+                if (string.Equals(parts[1], name, StringComparison.Ordinal))
+                    return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// FFmpeg <c>-encoders</c> 的 flags 列：固定 6 个字符，取自
+        /// V/A/S（类型）、F、S、X、B、D，缺省为 '.'。
+        /// </summary>
+        private static bool IsEncoderFlagsField(string token)
+        {
+            const string allowed = "VASFXBD.";
+            if (token.Length != 6)
+                return false;
+
+            for (int i = 0; i < token.Length; i++)
+            {
+                if (allowed.IndexOf(token[i]) < 0)
+                    return false;
+            }
+            return true;
         }
 
         /// <summary>

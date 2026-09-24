@@ -150,6 +150,49 @@ namespace ADOFAI.Renderist
         public const string GuiFfmpegInstallOutcomeFailed = "失败";
         public const string GuiFfmpegUnavailable = "（不可用）";
 
+        // ---- Phase 3.8.0: FFmpeg 下载（UnityWebRequest + DownloadHandlerFile）----
+
+        // 每个阶段都必须可区分，不能被混成一个"进行中"。
+        public const string GuiFfmpegDownloadStatePrefix = "下载状态：";
+        public const string GuiFfmpegDownloadStateIdle = "未开始";
+        public const string GuiFfmpegDownloadStateDownloading = "下载中";
+        public const string GuiFfmpegDownloadStateVerifying = "校验中（长度与 SHA-256）";
+        public const string GuiFfmpegDownloadStateInstalling = "安装中（解压 / 能力探测 / 发布）";
+        public const string GuiFfmpegDownloadStateSucceeded = "成功（组件可用；不代表 MP4 导出已可用）";
+        public const string GuiFfmpegDownloadStateCancelled = "已取消";
+        public const string GuiFfmpegDownloadStateFailed = "失败";
+        public const string GuiFfmpegDownloadProgressPrefix = "已接收：";
+        public const string GuiFfmpegButtonDownloadAndInstall = "下载并安装固定版本";
+        public const string GuiFfmpegButtonCancelDownload = "取消下载";
+        public const string GuiFfmpegDownloadBusyHint =
+            "下载由 Unity 主线程发起；校验与安装在其后的后台任务中完成。";
+        public const string GuiFfmpegDownloadNoTimeoutHint =
+            "不设置请求超时：慢速网络属于真实条件，卡住时请使用取消。";
+        public const string GuiFfmpegDownloadErrorPrefix = "失败原因：";
+        public const string GuiFfmpegSourceCodePrefix = "对应源码：";
+        public const string GuiFfmpegDownloadErrorBusy = "已有下载或安装在进行中。";
+        public const string GuiFfmpegDownloadErrorRequestFailed = "网络请求失败（可能是 TLS、证书或断线）。";
+        public const string GuiFfmpegDownloadErrorHttp = "服务器返回了非 200 响应。";
+        public const string GuiFfmpegDownloadErrorInsecure = "下载被重定向到非 HTTPS 地址，已拒绝。";
+        public const string GuiFfmpegDownloadErrorSize = "下载长度与固定清单不一致，已拒绝。";
+        public const string GuiFfmpegDownloadErrorHash = "下载内容 SHA-256 与固定清单不一致，已拒绝。";
+        public const string GuiFfmpegDownloadErrorCapability = "该二进制缺少必需能力，未发布安装。";
+
+        // ---------------- Log: FFmpeg 下载 ----------------
+
+        // {0}=generation, {1}=url
+        public const string LogFfmpegDownloadStartedFormat = "开始下载 FFmpeg 组件（generation {0}）：{1}";
+        // {0}=generation, {1}=errorCode, {2}=detail
+        public const string LogFfmpegDownloadFailedFormat = "FFmpeg 下载失败（generation {0}）：{1} {2}";
+        public const string LogFfmpegDownloadCancelled = "FFmpeg 下载已取消，临时文件已清理。";
+        // {0}=generation
+        public const string LogFfmpegDownloadStaleIgnoredFormat =
+            "FFmpeg 下载：忽略迟到的完成通知（generation {0}）。";
+        // {0}=directory
+        public const string LogFfmpegDownloadSucceededFormat = "FFmpeg 组件安装成功：{0}";
+        // {0}=count
+        public const string LogFfmpegOrphanDownloadsRemovedFormat = "已清理 {0} 个遗留的 FFmpeg 下载临时文件。";
+
         // ---------------- Log: FFmpeg 组件 ----------------
 
         // {0}=assetId, {1}=errorCode, {2}=detail

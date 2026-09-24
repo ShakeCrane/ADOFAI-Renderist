@@ -90,6 +90,17 @@
     -->
 
     <!--
+      UnityEngine.UnityWebRequestModule: UnityWebRequest + DownloadHandlerFile for the
+      FFmpeg component download (Phase 3.8.0). The request is created and driven on the
+      Unity main thread only; the Ffmpeg/ sources stay Unity-free and testable.
+    -->
+    <Reference Include="UnityEngine.UnityWebRequestModule">
+      <HintPath>$(AdofaiManagedDir)\UnityEngine.UnityWebRequestModule.dll</HintPath>
+      <Private>false</Private>
+      <SpecificVersion>false</SpecificVersion>
+    </Reference>
+
+    <!--
       FFmpeg component management (Phase 3.8.0) needs safe ZIP extraction only.
       System.IO.Compression.FileSystem is already an implicit SDK reference for
       net48 (>= 4.5), but both are declared explicitly so the dependency is visible

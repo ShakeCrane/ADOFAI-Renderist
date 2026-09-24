@@ -25,6 +25,10 @@ namespace ADOFAI.Renderist.Ffmpeg
     {
         public const string LockFileName = ".install.lock";
         public const string StagingDirectoryName = ".staging";
+        public const string DownloadDirectoryName = ".downloads";
+
+        /// <summary>下载临时文件名前缀。孤儿下载清理只删除匹配该前缀的文件。</summary>
+        public const string DownloadFilePrefix = "renderist-download-";
 
         /// <summary>ownership 标记文件名。删除任何目录之前都必须先确认它存在。</summary>
         public const string OwnershipMarkerFileName = ".renderist-ffmpeg-owner";
@@ -33,6 +37,7 @@ namespace ADOFAI.Renderist.Ffmpeg
         {
             InstallRoot = installRoot;
             StagingRoot = Path.Combine(installRoot, StagingDirectoryName);
+            DownloadRoot = Path.Combine(installRoot, DownloadDirectoryName);
             LockFilePath = Path.Combine(installRoot, LockFileName);
         }
 
@@ -41,6 +46,13 @@ namespace ADOFAI.Renderist.Ffmpeg
 
         /// <summary>暂存区根目录。与 InstallRoot 同卷，因此发布可用目录 Move 完成。</summary>
         public string StagingRoot { get; private set; }
+
+        /// <summary>
+        /// 下载临时文件目录。与 StagingRoot 同卷，便于安装阶段直接读取归档。
+        /// 下载临时文件的唯一 owner 是下载控制器：它负责创建与删除，
+        /// 安装器只读取该文件，绝不删除。
+        /// </summary>
+        public string DownloadRoot { get; private set; }
 
         public string LockFilePath { get; private set; }
 
@@ -110,6 +122,18 @@ namespace ADOFAI.Renderist.Ffmpeg
         public string OwnershipMarkerPath(string directory)
         {
             return Path.Combine(directory, OwnershipMarkerFileName);
+        }
+
+        /// <summary>
+        /// 一次下载尝试独占的临时归档路径。名称含 generation 与随机 token，
+        /// 因此并发或迟到的旧任务不可能与新任务共用同一个文件。
+        /// </summary>
+        public string DownloadFilePath(string assetId, long generation, string token)
+        {
+            string name = DownloadFilePrefix + RequireSegment(assetId, "assetId") + "-" +
+                          generation.ToString(System.Globalization.CultureInfo.InvariantCulture) + "-" +
+                          RequireSegment(token, "token") + ".zip";
+            return Path.Combine(DownloadRoot, name);
         }
 
         /// <summary>把资产的相对路径解析为托管安装目录内的绝对路径（已做安全校验）。</summary>

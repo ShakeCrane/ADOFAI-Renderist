@@ -52,6 +52,7 @@ namespace ADOFAI.Renderist.Ffmpeg
             long archiveSizeBytes,
             string licenseName,
             string licenseUrl,
+            string sourceCodeUrl,
             string sourceNote,
             string primaryExecutableRelativePath,
             IReadOnlyList<FfmpegAssetFile> files)
@@ -64,6 +65,7 @@ namespace ADOFAI.Renderist.Ffmpeg
             ArchiveSizeBytes = archiveSizeBytes;
             LicenseName = licenseName;
             LicenseUrl = licenseUrl;
+            SourceCodeUrl = sourceCodeUrl;
             SourceNote = sourceNote;
             PrimaryExecutableRelativePath = primaryExecutableRelativePath;
             Files = files ?? new FfmpegAssetFile[0];
@@ -89,6 +91,12 @@ namespace ADOFAI.Renderist.Ffmpeg
         public string LicenseName { get; private set; }
 
         public string LicenseUrl { get; private set; }
+
+        /// <summary>
+        /// 该构建对应的上游源码入口（GPL 告知义务用）。
+        /// 与 <see cref="SourceNote"/> 一起构成"构建方 / 版本 / 来源 / 源码"的展示信息。
+        /// </summary>
+        public string SourceCodeUrl { get; private set; }
 
         /// <summary>来源说明（构建页 / 发布页），用于向用户如实展示信任边界。</summary>
         public string SourceNote { get; private set; }
@@ -139,6 +147,7 @@ namespace ADOFAI.Renderist.Ffmpeg
                 Gyan902ArchiveSizeBytes,
                 "GPLv3",
                 "https://ffmpeg.org/legal.html",
+                "https://github.com/FFmpeg/FFmpeg/commit/946fcce07b",
                 "Gyan.dev 构建页 https://www.gyan.dev/ffmpeg/builds/ 与 GitHub 发布 " +
                 "https://github.com/GyanD/codexffmpeg/releases/tag/9.0.2 两处公布的 9.0.2 SHA-256 " +
                 "与实际下载一致。该来源对应 FFmpeg 源码提交 946fcce07b。" +

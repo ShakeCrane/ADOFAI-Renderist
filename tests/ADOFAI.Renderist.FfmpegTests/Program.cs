@@ -22,6 +22,10 @@ namespace ADOFAI.Renderist.FfmpegTests
 
         private static int Main(string[] args)
         {
+            // 被能力探测以 -hide_banner 调用时，本进程充当"假 FFmpeg"子进程。
+            if (FakeFfmpeg.IsFakeInvocation(args))
+                return FakeFfmpeg.Run(args);
+
             _workRoot = Path.Combine(Path.GetTempPath(),
                 "renderist-ffmpeg-tests-" + Guid.NewGuid().ToString("N").Substring(0, 8));
             Directory.CreateDirectory(_workRoot);
@@ -37,9 +41,11 @@ namespace ADOFAI.Renderist.FfmpegTests
                 HashTests();
                 DiscoveryTests();
                 CapabilityTests();
+                FakeFfmpegProbeTests();
                 SafeZipTests();
                 InstallLockTests();
                 InstallerTests();
+                DownloadTests();
             }
             catch (Exception ex)
             {
@@ -192,6 +198,25 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.Check(!FfmpegFileHash.TryCompute(Path.Combine(_workRoot, "nope.bin"), out sha256, out error),
                     "missing file must fail");
                 TestKit.CheckNotEmpty(error, "error code");
+            });
+
+            TestKit.Run("hash: detects same-size replacement with preserved timestamp", () =>
+            {
+                string path = Path.Combine(_workRoot, "hash-replacement.bin");
+                File.WriteAllBytes(path, Encoding.ASCII.GetBytes("abc"));
+                DateTime stamp = File.GetLastWriteTimeUtc(path);
+
+                string before;
+                string error;
+                TestKit.Check(FfmpegFileHash.TryCompute(path, out before, out error), "first hash: " + error);
+
+                File.WriteAllBytes(path, Encoding.ASCII.GetBytes("xyz"));
+                File.SetLastWriteTimeUtc(path, stamp);
+
+                string after;
+                TestKit.Check(FfmpegFileHash.TryCompute(path, out after, out error), "second hash: " + error);
+                TestKit.CheckEqual(Fixtures.Sha256Of(Encoding.ASCII.GetBytes("xyz")), after,
+                    "replacement must not reuse old hash");
             });
         }
 
@@ -420,6 +445,176 @@ namespace ADOFAI.Renderist.FfmpegTests
             return found;
         }
 
+        // ==================== capability probe (fake ffmpeg) ====================
+        //
+        // 这些回归针对一个已复现的缺陷：能力探测原先只判 -version 的退出码，
+        // -encoders / -formats 的非零退出（stdout 仍可能含目标 token）会被误判为成功。
+        // 另外"文本里出现 libx264 / mp4 / rawvideo"本身不足以证明能力存在，
+        // 必须来自结构化的表行。
+
+        private static void FakeFfmpegProbeTests()
+        {
+            TestKit.Run("probe: fake ffmpeg with full capabilities reports usable", () =>
+            {
+                WithFakeEnvironment(null, () =>
+                {
+                    FfmpegCapabilityReport report = ProbeFake();
+                    TestKit.CheckEqual(FfmpegCapabilityStatus.Probed, report.Status,
+                        "status (" + report.ErrorCode + ")");
+                    TestKit.Check(report.HasLibx264, "libx264 must be detected from the encoder table");
+                    TestKit.Check(report.HasMp4Muxer, "mp4 muxer must be detected");
+                    TestKit.Check(report.HasRawvideoDemuxer, "rawvideo demuxer must be detected");
+                    TestKit.Check(report.IsUsableForMp4, "must be usable for mp4");
+                    TestKit.CheckNotEmpty(report.VersionLine, "version line");
+                    TestKit.CheckEqual(true, report.ConfigurationEnablesGpl, "configuration enables gpl");
+                    TestKit.CheckEqual(true, report.ConfigurationEnablesLibx264, "configuration enables libx264");
+                });
+            });
+
+            TestKit.Run("probe: nonzero exit from -encoders is a failure even when stdout lists libx264", () =>
+            {
+                WithFakeEnvironment(new Dictionary<string, string>
+                {
+                    { "RENDERIST_FAKE_ENCODERS_EXIT", "3" },
+                }, () =>
+                {
+                    FfmpegCapabilityReport report = ProbeFake();
+                    TestKit.CheckEqual(FfmpegCapabilityStatus.ProbeFailed, report.Status,
+                        "nonzero -encoders exit must fail the probe");
+                    TestKit.Check(!report.IsUsableForMp4, "must not be usable for mp4");
+                    TestKit.CheckEqual("encoders-probe-nonzero-exit", report.ErrorCode, "error code");
+                });
+            });
+
+            TestKit.Run("probe: nonzero exit from -formats is a failure even when stdout lists mp4 and rawvideo", () =>
+            {
+                WithFakeEnvironment(new Dictionary<string, string>
+                {
+                    { "RENDERIST_FAKE_FORMATS_EXIT", "7" },
+                }, () =>
+                {
+                    FfmpegCapabilityReport report = ProbeFake();
+                    TestKit.CheckEqual(FfmpegCapabilityStatus.ProbeFailed, report.Status,
+                        "nonzero -formats exit must fail the probe");
+                    TestKit.Check(!report.IsUsableForMp4, "must not be usable for mp4");
+                    TestKit.CheckEqual("formats-probe-nonzero-exit", report.ErrorCode, "error code");
+                });
+            });
+
+            TestKit.Run("probe: nonzero exit from -version is still a failure", () =>
+            {
+                WithFakeEnvironment(new Dictionary<string, string>
+                {
+                    { "RENDERIST_FAKE_VERSION_EXIT", "2" },
+                }, () =>
+                {
+                    FfmpegCapabilityReport report = ProbeFake();
+                    TestKit.CheckEqual(FfmpegCapabilityStatus.ProbeFailed, report.Status, "status");
+                    TestKit.CheckEqual("version-probe-nonzero-exit", report.ErrorCode, "error code");
+                });
+            });
+
+            TestKit.Run("probe: missing libx264 is a missing capability, not Ready", () =>
+            {
+                WithFakeEnvironment(new Dictionary<string, string>
+                {
+                    { "RENDERIST_FAKE_ENCODERS_OMIT_LIBX264", "1" },
+                }, () =>
+                {
+                    FfmpegCapabilityReport report = ProbeFake();
+                    TestKit.CheckEqual(FfmpegCapabilityStatus.Probed, report.Status, "status");
+                    TestKit.Check(!report.HasLibx264, "libx264 must not be reported present");
+                    TestKit.Check(!report.IsUsableForMp4, "must not be usable for mp4");
+                    TestKit.Check(ContainsCapability(report, "encoder:libx264"),
+                        "missing capability must list encoder:libx264");
+                });
+            });
+
+            TestKit.Run("probe: libx264 mentioned outside the encoder table does not count", () =>
+            {
+                WithFakeEnvironment(new Dictionary<string, string>
+                {
+                    { "RENDERIST_FAKE_ENCODERS_NOISE", "1" },
+                }, () =>
+                {
+                    FfmpegCapabilityReport report = ProbeFake();
+                    TestKit.CheckEqual(FfmpegCapabilityStatus.Probed, report.Status, "status");
+                    TestKit.Check(!report.HasLibx264,
+                        "a passing mention of libx264 must not be treated as the encoder being present");
+                });
+            });
+
+            TestKit.Run("probe: mp4/rawvideo mentioned outside the formats table do not count", () =>
+            {
+                WithFakeEnvironment(new Dictionary<string, string>
+                {
+                    { "RENDERIST_FAKE_FORMATS_NOISE", "1" },
+                }, () =>
+                {
+                    FfmpegCapabilityReport report = ProbeFake();
+                    TestKit.CheckEqual(FfmpegCapabilityStatus.Probed, report.Status, "status");
+                    TestKit.Check(!report.HasMp4Muxer, "mp4 must come from a muxing format row");
+                    TestKit.Check(!report.HasRawvideoDemuxer, "rawvideo must come from a demuxing format row");
+                    TestKit.Check(!report.IsUsableForMp4, "must not be usable for mp4");
+                });
+            });
+        }
+
+        private static FfmpegCapabilityReport ProbeFake()
+        {
+            return FfmpegCapabilityProbe.Probe(FakeFfmpeg.ExecutablePath, 30, CancellationToken.None);
+        }
+
+        private static bool ContainsCapability(FfmpegCapabilityReport report, string name)
+        {
+            if (report.MissingCapabilities == null)
+                return false;
+
+            for (int i = 0; i < report.MissingCapabilities.Count; i++)
+            {
+                if (string.Equals(report.MissingCapabilities[i], name, StringComparison.Ordinal))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>在受控环境变量下运行一段代码，结束后恢复原值。</summary>
+        private static void WithFakeEnvironment(Dictionary<string, string> variables, Action body)
+        {
+            string[] names =
+            {
+                "RENDERIST_FAKE_VERSION_EXIT",
+                "RENDERIST_FAKE_ENCODERS_EXIT",
+                "RENDERIST_FAKE_FORMATS_EXIT",
+                "RENDERIST_FAKE_ENCODERS_OMIT_LIBX264",
+                "RENDERIST_FAKE_ENCODERS_NOISE",
+                "RENDERIST_FAKE_FORMATS_NOISE",
+            };
+
+            var previous = new Dictionary<string, string>();
+            for (int i = 0; i < names.Length; i++)
+            {
+                previous[names[i]] = Environment.GetEnvironmentVariable(names[i]);
+                Environment.SetEnvironmentVariable(names[i], null);
+            }
+
+            if (variables != null)
+            {
+                foreach (KeyValuePair<string, string> pair in variables)
+                    Environment.SetEnvironmentVariable(pair.Key, pair.Value);
+            }
+
+            try
+            {
+                body();
+            }
+            finally
+            {
+                for (int i = 0; i < names.Length; i++)
+                    Environment.SetEnvironmentVariable(names[i], previous[names[i]]);
+            }
+        }
+
         // ============================ safe zip ============================
 
         private static void SafeZipTests()
@@ -634,6 +829,41 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.Check(!result.Success, "oversized entry must be rejected");
                 TestKit.CheckEqual("entry-too-large", result.ErrorCode, "error code");
             });
+
+            TestKit.Run("zip: actual total extraction is bounded", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "zip-actual-total");
+                string archivePath = Path.Combine(work, "misstated.zip");
+                Fixtures.BuildZip(archivePath, new[]
+                {
+                    ZipEntrySpec.File("pkg/ffmpeg.exe", Fixtures.DeterministicBytes(2048, 131)),
+                    ZipEntrySpec.File("pkg/ffprobe.exe", Fixtures.DeterministicBytes(2048, 132)),
+                });
+
+                byte[] bytes = File.ReadAllBytes(archivePath);
+                int changed = 0;
+                for (int i = 0; i + 46 < bytes.Length; i++)
+                {
+                    if (bytes[i] != 0x50 || bytes[i + 1] != 0x4b ||
+                        bytes[i + 2] != 0x01 || bytes[i + 3] != 0x02)
+                        continue;
+                    byte[] smaller = BitConverter.GetBytes(1024);
+                    Buffer.BlockCopy(smaller, 0, bytes, i + 24, 4);
+                    changed++;
+                    i += 45;
+                }
+                TestKit.CheckEqual(2, changed, "central directory entries modified");
+                File.WriteAllBytes(archivePath, bytes);
+
+                var rules = new[]
+                {
+                    new SafeZipEntryRule("ffmpeg.exe", "bin/ffmpeg.exe", null, true),
+                    new SafeZipEntryRule("ffprobe.exe", "bin/ffprobe.exe", null, true),
+                };
+                SafeZipExtractionResult result = SafeZipExtractor.Extract(
+                    archivePath, Path.Combine(work, "out"), rules, 3000, 3000, CancellationToken.None);
+                TestKit.Check(!result.Success, "actual total above limit must be rejected");
+            });
         }
 
         private static IReadOnlyList<SafeZipEntryRule> SingleRule(
@@ -680,6 +910,31 @@ namespace ADOFAI.Renderist.FfmpegTests
 
         private static void InstallerTests()
         {
+            TestKit.Run("install: failed capability probe does not publish", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "install-probe-fail");
+                string archivePath;
+                FfmpegAsset asset = Fixtures.BuildSyntheticAsset(work, out archivePath);
+                FfmpegInstallLayout layout;
+                string layoutError;
+                TestKit.Check(FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"),
+                    out layout, out layoutError), "layout: " + layoutError);
+
+                FfmpegInstallResult result = FfmpegInstaller.Install(new FfmpegInstallRequest
+                {
+                    Asset = asset,
+                    Layout = layout,
+                    ArchivePath = archivePath,
+                    ProbeAfterInstall = true,
+                    ProbeTimeoutSeconds = 5,
+                }, CancellationToken.None);
+
+                TestKit.CheckEqual(FfmpegInstallOutcome.Failed, result.Outcome, "outcome");
+                TestKit.Check(!Directory.Exists(layout.VersionDirectory(asset.Id, asset.Version)),
+                    "unusable executable must not be published");
+                TestKit.CheckEqual(0, Fixtures.CountStagingDirectories(layout), "no staging leftovers");
+            });
+
             TestKit.Run("install: happy path publishes version directory", () =>
             {
                 string work = TestKit.NewWorkDirectory(_workRoot, "install-ok");
@@ -817,7 +1072,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 var strictAsset = new FfmpegAsset(
                     "strict-asset", "1.0.0", "strict test asset",
                     "https://example.invalid/strict.zip", missingSha, new FileInfo(missingZip).Length,
-                    "GPLv3", "https://example.invalid/license", "synthetic",
+                    "GPLv3", "https://example.invalid/license", "https://example.invalid/source", "synthetic",
                     "bin/ffmpeg.exe",
                     new[]
                     {
@@ -1082,6 +1337,498 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.Check(!report.Found, "must not find a component");
                 TestKit.CheckEqual(FfmpegComponentState.Invalid, report.State, "state");
             });
+        }
+
+        // ============================ download pipeline ============================
+        //
+        // 说明：UnityWebRequest 本身无法在 net48 中真实执行，因此这里测试的是
+        // Unity-free 的 FfmpegDownloadController：generation 隔离、临时文件 ownership、
+        // 长度/哈希复核、后台安装与取消语义。Unity 侧驱动只把结果整理成
+        // FfmpegDownloadResponse 交给控制器 —— 这些测试正是模拟该契约。
+        // UnityWebRequest 的真实 TLS / 重定向 / 进度 / Abort 行为**必须**留到游戏内验证。
+
+        private static void DownloadTests()
+        {
+            TestKit.Run("download: success verifies length and hash, installs, and cleans temp", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "download-ok");
+                string archivePath;
+                FfmpegAsset asset = Fixtures.BuildSyntheticAssetWithFakeFfmpeg(work, out archivePath);
+
+                FfmpegInstallLayout layout;
+                string layoutError;
+                FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
+
+                var aborts = new List<long>();
+                var controller = new FfmpegDownloadController(layout, generation => aborts.Add(generation));
+
+                FfmpegDownloadPlan plan = controller.TryStart(asset, true, 30);
+                TestKit.Check(plan.Started, "download must start: " + plan.ErrorCode);
+                TestKit.CheckEqual(FfmpegDownloadState.Downloading, controller.State, "state after start");
+
+                File.Copy(archivePath, plan.TempFilePath, true);
+                TestKit.Check(controller.ReportFinished(plan.Generation, SuccessResponse(plan)), "must accept own generation");
+                TestKit.CheckEqual(FfmpegDownloadState.Verifying, controller.State, "state after finish");
+
+                PumpUntilSettled(controller);
+
+                TestKit.CheckEqual(FfmpegDownloadState.Succeeded, controller.State,
+                    "must succeed (" + controller.ErrorCode + " " + controller.ErrorDetail + ")");
+                TestKit.Check(Directory.Exists(layout.VersionDirectory(asset.Id, asset.Version)),
+                    "version directory must be published");
+                TestKit.Check(!File.Exists(plan.TempFilePath), "temp archive must be deleted by the controller");
+                TestKit.Check(controller.Capability != null && controller.Capability.IsUsableForMp4,
+                    "capability must be reported usable");
+            });
+
+            TestKit.Run("download: duplicate request while busy is rejected", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "download-busy");
+                string archivePath;
+                FfmpegAsset asset = Fixtures.BuildSyntheticAsset(work, out archivePath);
+
+                FfmpegInstallLayout layout;
+                string layoutError;
+                FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
+
+                var controller = new FfmpegDownloadController(layout, generation => { });
+                FfmpegDownloadPlan first = controller.TryStart(asset, false, 5);
+                TestKit.Check(first.Started, "first request");
+
+                FfmpegDownloadPlan second = controller.TryStart(asset, false, 5);
+                TestKit.Check(!second.Started, "second request must be rejected");
+                TestKit.CheckEqual("busy", second.ErrorCode, "error code");
+
+                controller.Cancel("test-cleanup");
+            });
+
+            TestKit.Run("download: transport failure fails and cleans temp", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "download-transport-fail");
+                string archivePath;
+                FfmpegAsset asset = Fixtures.BuildSyntheticAsset(work, out archivePath);
+
+                FfmpegInstallLayout layout;
+                string layoutError;
+                FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
+
+                var controller = new FfmpegDownloadController(layout, generation => { });
+                FfmpegDownloadPlan plan = controller.TryStart(asset, false, 5);
+                File.Copy(archivePath, plan.TempFilePath, true);
+
+                controller.ReportFinished(plan.Generation, new FfmpegDownloadResponse
+                {
+                    ResponseCode = 0,
+                    RequestSucceeded = false,
+                    Error = "connection closed before completion",
+                });
+
+                TestKit.CheckEqual(FfmpegDownloadState.Failed, controller.State, "state");
+                TestKit.CheckEqual("download-request-failed", controller.ErrorCode, "error code");
+                TestKit.Check(!File.Exists(plan.TempFilePath), "temp must be cleaned");
+                TestKit.Check(!Directory.Exists(layout.VersionDirectory(asset.Id, asset.Version)),
+                    "nothing may be published");
+            });
+
+            TestKit.Run("download: http error response fails and cleans temp", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "download-http-fail");
+                string archivePath;
+                FfmpegAsset asset = Fixtures.BuildSyntheticAsset(work, out archivePath);
+
+                FfmpegInstallLayout layout;
+                string layoutError;
+                FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
+
+                var controller = new FfmpegDownloadController(layout, generation => { });
+                FfmpegDownloadPlan plan = controller.TryStart(asset, false, 5);
+                File.Copy(archivePath, plan.TempFilePath, true);
+
+                controller.ReportFinished(plan.Generation, new FfmpegDownloadResponse
+                {
+                    ResponseCode = 404,
+                    RequestSucceeded = true,
+                    FinalUrl = plan.Url,
+                });
+
+                TestKit.CheckEqual(FfmpegDownloadState.Failed, controller.State, "state");
+                TestKit.CheckEqual("download-http-error", controller.ErrorCode, "error code");
+                TestKit.Check(!File.Exists(plan.TempFilePath), "temp must be cleaned");
+            });
+
+            TestKit.Run("download: https redirect accepted, non-https redirect rejected", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "download-redirect");
+                string archivePath;
+                FfmpegAsset asset = Fixtures.BuildSyntheticAsset(work, out archivePath);
+
+                FfmpegInstallLayout layout;
+                string layoutError;
+                FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
+
+                // 非 HTTPS 重定向必须被拒绝（防降级）。
+                var controller = new FfmpegDownloadController(layout, generation => { });
+                FfmpegDownloadPlan plan = controller.TryStart(asset, false, 5);
+                File.Copy(archivePath, plan.TempFilePath, true);
+
+                controller.ReportFinished(plan.Generation, new FfmpegDownloadResponse
+                {
+                    ResponseCode = 200,
+                    RequestSucceeded = true,
+                    FinalUrl = "http://insecure.invalid/asset.zip",
+                });
+
+                TestKit.CheckEqual(FfmpegDownloadState.Failed, controller.State, "insecure redirect must fail");
+                TestKit.CheckEqual("download-insecure-redirect", controller.ErrorCode, "error code");
+                TestKit.Check(!File.Exists(plan.TempFilePath), "temp must be cleaned");
+
+                // HTTPS 重定向正常通过响应校验（后续由哈希决定成败）。
+                var controller2 = new FfmpegDownloadController(layout, generation => { });
+                FfmpegDownloadPlan plan2 = controller2.TryStart(asset, false, 5);
+                File.Copy(archivePath, plan2.TempFilePath, true);
+                TestKit.Check(controller2.ReportFinished(plan2.Generation, new FfmpegDownloadResponse
+                {
+                    ResponseCode = 200,
+                    RequestSucceeded = true,
+                    FinalUrl = "https://objects.githubusercontent.com/asset.zip",
+                }), "https redirect must be accepted");
+                PumpUntilSettled(controller2);
+                TestKit.CheckEqual(FfmpegDownloadState.Succeeded, controller2.State,
+                    "https redirect must reach install (" + controller2.ErrorCode + ")");
+            });
+
+            TestKit.Run("download: byte count mismatch fails and cleans temp", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "download-size");
+                string archivePath;
+                FfmpegAsset asset = Fixtures.BuildSyntheticAsset(work, out archivePath);
+
+                FfmpegInstallLayout layout;
+                string layoutError;
+                FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
+
+                var controller = new FfmpegDownloadController(layout, generation => { });
+                FfmpegDownloadPlan plan = controller.TryStart(asset, false, 5);
+
+                // 写入一个长度明确不同的文件。
+                File.WriteAllBytes(plan.TempFilePath, Fixtures.DeterministicBytes(128, 777));
+
+                controller.ReportFinished(plan.Generation, SuccessResponse(plan));
+                PumpUntilSettled(controller);
+
+                TestKit.CheckEqual(FfmpegDownloadState.Failed, controller.State, "state");
+                TestKit.CheckEqual("download-size-mismatch", controller.ErrorCode, "error code");
+                TestKit.Check(!File.Exists(plan.TempFilePath), "temp must be cleaned");
+                TestKit.Check(!Directory.Exists(layout.VersionDirectory(asset.Id, asset.Version)),
+                    "nothing may be published");
+            });
+
+            TestKit.Run("download: sha256 mismatch fails and cleans temp", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "download-hash");
+                string archivePath;
+                FfmpegAsset asset = Fixtures.BuildSyntheticAsset(work, out archivePath);
+
+                FfmpegInstallLayout layout;
+                string layoutError;
+                FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
+
+                var controller = new FfmpegDownloadController(layout, generation => { });
+                FfmpegDownloadPlan plan = controller.TryStart(asset, false, 5);
+
+                // 长度相同但内容被篡改。
+                byte[] original = File.ReadAllBytes(archivePath);
+                byte[] tampered = (byte[])original.Clone();
+                tampered[tampered.Length / 2] ^= 0xFF;
+                File.WriteAllBytes(plan.TempFilePath, tampered);
+
+                controller.ReportFinished(plan.Generation, SuccessResponse(plan));
+                PumpUntilSettled(controller);
+
+                TestKit.CheckEqual(FfmpegDownloadState.Failed, controller.State, "state");
+                TestKit.CheckEqual("download-hash-mismatch", controller.ErrorCode, "error code");
+                TestKit.Check(!File.Exists(plan.TempFilePath), "temp must be cleaned");
+                TestKit.Check(!Directory.Exists(layout.VersionDirectory(asset.Id, asset.Version)),
+                    "nothing may be published");
+            });
+
+            TestKit.Run("download: cancel aborts, cleans temp, and ignores the late completion", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "download-cancel");
+                string archivePath;
+                FfmpegAsset asset = Fixtures.BuildSyntheticAsset(work, out archivePath);
+
+                FfmpegInstallLayout layout;
+                string layoutError;
+                FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
+
+                var aborts = new List<long>();
+                var controller = new FfmpegDownloadController(layout, generation => aborts.Add(generation));
+
+                FfmpegDownloadPlan plan = controller.TryStart(asset, false, 5);
+                File.Copy(archivePath, plan.TempFilePath, true);
+
+                controller.Cancel("user-cancel");
+
+                TestKit.CheckEqual(FfmpegDownloadState.Cancelled, controller.State, "state");
+                TestKit.Check(aborts.Count == 1, "abort must be requested exactly once");
+                TestKit.Check(!File.Exists(plan.TempFilePath), "temp must be cleaned synchronously");
+
+                // 取消后迟到的完成通知：必须被忽略，且不得把会话变成成功。
+                bool accepted = controller.ReportFinished(plan.Generation, SuccessResponse(plan));
+                TestKit.Check(!accepted, "late completion must be rejected");
+                TestKit.CheckEqual(FfmpegDownloadState.Cancelled, controller.State,
+                    "late completion must not overwrite the cancelled state");
+                TestKit.Check(!Directory.Exists(layout.VersionDirectory(asset.Id, asset.Version)),
+                    "late completion must not publish anything");
+            });
+
+            TestKit.Run("download: old generation notification does not affect a newer task", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "download-generation");
+                string archivePath;
+                FfmpegAsset asset = Fixtures.BuildSyntheticAssetWithFakeFfmpeg(work, out archivePath);
+
+                FfmpegInstallLayout layout;
+                string layoutError;
+                FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
+
+                var controller = new FfmpegDownloadController(layout, generation => { });
+
+                // 第一代：启动后立即废弃。
+                FfmpegDownloadPlan first = controller.TryStart(asset, false, 5);
+                File.Copy(archivePath, first.TempFilePath, true);
+                controller.Invalidate("superseded", true);
+                TestKit.Check(!File.Exists(first.TempFilePath), "abandoned generation temp must be cleaned");
+
+                // 第二代：正常完成。
+                FfmpegDownloadPlan second = controller.TryStart(asset, false, 5);
+                TestKit.Check(second.Started, "second generation must start");
+                TestKit.Check(second.Generation > first.Generation, "generation must advance");
+                File.Copy(archivePath, second.TempFilePath, true);
+
+                // 第一代的迟到通知到达：必须被拒绝，且不得影响第二代。
+                bool accepted = controller.ReportFinished(first.Generation, SuccessResponse(first));
+                TestKit.Check(!accepted, "old generation completion must be rejected");
+                TestKit.CheckEqual(FfmpegDownloadState.Downloading, controller.State,
+                    "new task state must be untouched");
+                TestKit.Check(File.Exists(second.TempFilePath), "new task temp file must be untouched");
+
+                TestKit.Check(controller.ReportFinished(second.Generation, SuccessResponse(second)),
+                    "new generation completion must be accepted");
+                PumpUntilSettled(controller);
+                TestKit.CheckEqual(FfmpegDownloadState.Succeeded, controller.State,
+                    "new generation must still succeed (" + controller.ErrorCode + ")");
+            });
+
+            TestKit.Run("download: install failure after successful download leaves no publish", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "download-install-fail");
+
+                // 归档哈希与清单一致，但缺少必需的 ffprobe.exe → 解压阶段失败。
+                string archivePath = Path.Combine(work, "missing.zip");
+                Fixtures.BuildZip(archivePath, new[]
+                {
+                    ZipEntrySpec.File("pkg/bin/ffmpeg.exe", Fixtures.DeterministicBytes(256, 901)),
+                });
+
+                string sha;
+                string hashError;
+                TestKit.Check(FfmpegFileHash.TryCompute(archivePath, out sha, out hashError), "hash: " + hashError);
+
+                var asset = new FfmpegAsset(
+                    "missing-entry-asset", "1.0.0", "missing entry asset",
+                    "https://example.invalid/missing.zip", sha, new FileInfo(archivePath).Length,
+                    "GPLv3", "https://example.invalid/license", "https://example.invalid/source", "synthetic",
+                    "bin/ffmpeg.exe",
+                    new[]
+                    {
+                        new FfmpegAssetFile("ffmpeg.exe", "bin/ffmpeg.exe", null, true),
+                        new FfmpegAssetFile("ffprobe.exe", "bin/ffprobe.exe", null, true),
+                    });
+
+                FfmpegInstallLayout layout;
+                string layoutError;
+                FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
+
+                var controller = new FfmpegDownloadController(layout, generation => { });
+                FfmpegDownloadPlan plan = controller.TryStart(asset, false, 5);
+                File.Copy(archivePath, plan.TempFilePath, true);
+
+                controller.ReportFinished(plan.Generation, SuccessResponse(plan));
+                PumpUntilSettled(controller);
+
+                TestKit.CheckEqual(FfmpegDownloadState.Failed, controller.State, "state");
+                TestKit.CheckEqual("required-entry-missing", controller.ErrorCode, "error code");
+                TestKit.Check(!File.Exists(plan.TempFilePath), "temp must be cleaned on install failure");
+                TestKit.Check(!Directory.Exists(layout.VersionDirectory(asset.Id, asset.Version)),
+                    "failed install must not publish");
+            });
+
+            TestKit.Run("download: unusable binary fails the capability gate and is not published", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "download-capability");
+                string archivePath;
+                // 默认的合成资产里 ffmpeg.exe 是随机字节，不可执行：
+                // 安装后的能力探测必须失败，且绝不能发布。
+                FfmpegAsset asset = Fixtures.BuildSyntheticAsset(work, out archivePath);
+
+                FfmpegInstallLayout layout;
+                string layoutError;
+                FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
+
+                var controller = new FfmpegDownloadController(layout, generation => { });
+                FfmpegDownloadPlan plan = controller.TryStart(asset, true, 5);
+                File.Copy(archivePath, plan.TempFilePath, true);
+
+                controller.ReportFinished(plan.Generation, SuccessResponse(plan));
+                PumpUntilSettled(controller);
+
+                TestKit.CheckEqual(FfmpegDownloadState.Failed, controller.State, "state");
+                TestKit.CheckEqual("capability-probe-failed", controller.ErrorCode, "error code");
+                TestKit.Check(!Directory.Exists(layout.VersionDirectory(asset.Id, asset.Version)),
+                    "unusable binary must not be published");
+                TestKit.Check(!File.Exists(plan.TempFilePath), "temp must be cleaned");
+            });
+
+            TestKit.Run("download: shutdown while downloading cancels and cleans without publishing", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "download-shutdown");
+                string archivePath;
+                FfmpegAsset asset = Fixtures.BuildSyntheticAsset(work, out archivePath);
+
+                FfmpegInstallLayout layout;
+                string layoutError;
+                FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
+
+                var aborts = new List<long>();
+                var controller = new FfmpegDownloadController(layout, generation => aborts.Add(generation));
+
+                FfmpegDownloadPlan plan = controller.TryStart(asset, false, 5);
+                File.Copy(archivePath, plan.TempFilePath, true);
+
+                // 模拟 Mod 禁用 / 卸载：必须在调用内同步收敛，不能等 OnUpdate。
+                controller.Shutdown();
+
+                TestKit.CheckEqual(FfmpegDownloadState.Cancelled, controller.State, "state after shutdown");
+                TestKit.Check(!File.Exists(plan.TempFilePath), "temp must be cleaned by shutdown");
+                TestKit.Check(aborts.Count == 1, "abort must be requested");
+
+                // 禁用后迟到的完成通知不得标记成功。
+                controller.ReportFinished(plan.Generation, SuccessResponse(plan));
+                TestKit.CheckEqual(FfmpegDownloadState.Cancelled, controller.State,
+                    "late completion after shutdown must not mark success");
+                TestKit.Check(!Directory.Exists(layout.VersionDirectory(asset.Id, asset.Version)),
+                    "shutdown must not publish");
+            });
+
+            TestKit.Run("download: existing valid install is preserved and reported as succeeded", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "download-existing");
+                string archivePath;
+                FfmpegAsset asset = Fixtures.BuildSyntheticAssetWithFakeFfmpeg(work, out archivePath);
+
+                FfmpegInstallLayout layout;
+                string layoutError;
+                FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
+
+                var controller = new FfmpegDownloadController(layout, generation => { });
+
+                // 第一次安装。
+                FfmpegDownloadPlan first = controller.TryStart(asset, true, 30);
+                File.Copy(archivePath, first.TempFilePath, true);
+                controller.ReportFinished(first.Generation, SuccessResponse(first));
+                PumpUntilSettled(controller);
+                TestKit.CheckEqual(FfmpegDownloadState.Succeeded, controller.State,
+                    "first install (" + controller.ErrorCode + ")");
+
+                string primary = Path.Combine(layout.VersionDirectory(asset.Id, asset.Version), "bin", "ffmpeg.exe");
+                DateTime stamp = File.GetLastWriteTimeUtc(primary);
+
+                // 第二次：既有有效安装不得被覆盖。
+                FfmpegDownloadPlan second = controller.TryStart(asset, true, 30);
+                File.Copy(archivePath, second.TempFilePath, true);
+                controller.ReportFinished(second.Generation, SuccessResponse(second));
+                PumpUntilSettled(controller);
+
+                TestKit.CheckEqual(FfmpegDownloadState.Succeeded, controller.State, "second run");
+                TestKit.CheckEqual(stamp, File.GetLastWriteTimeUtc(primary),
+                    "existing install must not be overwritten");
+            });
+
+            TestKit.Run("download: orphan download files are cleaned, current task file is not", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "download-orphans");
+                string archivePath;
+                FfmpegAsset asset = Fixtures.BuildSyntheticAsset(work, out archivePath);
+
+                FfmpegInstallLayout layout;
+                string layoutError;
+                FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
+                Directory.CreateDirectory(layout.DownloadRoot);
+
+                string orphan = Path.Combine(layout.DownloadRoot,
+                    FfmpegInstallLayout.DownloadFilePrefix + "left-over.zip");
+                File.WriteAllBytes(orphan, new byte[] { 1, 2, 3 });
+
+                var controller = new FfmpegDownloadController(layout, generation => { });
+                FfmpegDownloadPlan plan = controller.TryStart(asset, false, 5);
+                File.Copy(archivePath, plan.TempFilePath, true);
+
+                int removed = controller.CleanupOrphanDownloads();
+                TestKit.Check(removed >= 1, "orphan must be removed");
+                TestKit.Check(!File.Exists(orphan), "orphan file must be gone");
+                TestKit.Check(File.Exists(plan.TempFilePath), "current task temp file must be preserved");
+
+                controller.Cancel("test-cleanup");
+            });
+
+            TestKit.Run("download: progress tracking is reported", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "download-progress");
+                string archivePath;
+                FfmpegAsset asset = Fixtures.BuildSyntheticAsset(work, out archivePath);
+
+                FfmpegInstallLayout layout;
+                string layoutError;
+                FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
+
+                var controller = new FfmpegDownloadController(layout, generation => { });
+                FfmpegDownloadPlan plan = controller.TryStart(asset, false, 5);
+
+                TestKit.Check(controller.ProgressFraction == 0.0, "initial progress");
+                controller.ReportProgress(plan.ExpectedBytes / 2, plan.ExpectedBytes);
+                TestKit.Check(controller.ProgressFraction > 0.4 && controller.ProgressFraction < 0.6,
+                    "half progress, got " + controller.ProgressFraction);
+
+                controller.ReportProgress(plan.ExpectedBytes, plan.ExpectedBytes);
+                TestKit.CheckEqual(1.0, controller.ProgressFraction, "complete progress");
+
+                controller.Cancel("test-cleanup");
+            });
+        }
+
+        private static FfmpegDownloadResponse SuccessResponse(FfmpegDownloadPlan plan)
+        {
+            return new FfmpegDownloadResponse
+            {
+                ResponseCode = 200,
+                RequestSucceeded = true,
+                FinalUrl = plan.Url,
+                ReportedDownloadedBytes = plan.ExpectedBytes,
+            };
+        }
+
+        /// <summary>推进控制器直到后台校验/安装结束（或超时）。</summary>
+        private static void PumpUntilSettled(FfmpegDownloadController controller)
+        {
+            DateTime deadline = DateTime.UtcNow.AddSeconds(120);
+            while (controller.IsBusy && DateTime.UtcNow < deadline)
+            {
+                controller.Pump();
+                Thread.Sleep(5);
+            }
+            controller.Pump();
         }
     }
 }
