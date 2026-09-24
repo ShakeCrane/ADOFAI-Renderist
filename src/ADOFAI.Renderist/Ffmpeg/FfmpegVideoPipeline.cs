@@ -328,6 +328,22 @@ namespace ADOFAI.Renderist.Ffmpeg
 
         /// <summary>核验所使用的期望编解码器名。默认 "h264"（libx264）。</summary>
         public string ExpectedCodecName { get; set; }
+
+        /// <summary>
+        /// **回归测试专用故障注入缝**：包装 stdin / stdout / stderr 流（参数为流与它的角色名）。
+        /// null = 直接使用进程提供的流。生产恒为 null。
+        /// 用途：让"读取流抛 IO 异常"这一故障形态可以确定性复现，而不是靠随机时序。
+        /// </summary>
+        public Func<Stream, string, Stream> StreamWrapper { get; set; }
+
+        /// <summary>
+        /// **回归测试专用故障注入缝**：在"字节已完整写出"与"写入结果提交到会话状态"之间的
+        /// 可控屏障。null = 无屏障。生产恒为 null。
+        ///
+        /// 该缝标记的正是 Write/Finish 交接的临界点：修复后，在途标记由提交临界区自己持有并释放，
+        /// 因此屏障期间 FinishAsync 必须拒绝，绝不可能观察到未提交的写入结果。
+        /// </summary>
+        public Action WriteCommitBarrier { get; set; }
     }
 
     internal sealed class FfmpegVideoStartResult
@@ -418,6 +434,12 @@ namespace ADOFAI.Renderist.Ffmpeg
 
         public string ResidualDetail { get; set; }
 
+        /// <summary>true = 进程对象已经 Dispose（正常完成路径同样必须释放，而不是等 GC）。</summary>
+        public bool ProcessDisposed { get; set; }
+
+        /// <summary>true = 本会话为临时产物建立的 ownership 句柄已经释放。</summary>
+        public bool TempOwnershipReleased { get; set; }
+
         public bool IsCompleted
         {
             get { return State == FfmpegVideoPipelineState.Completed; }
@@ -448,10 +470,21 @@ namespace ADOFAI.Renderist.Ffmpeg
     internal sealed class FfmpegVideoPipeline : IDisposable
     {
         private readonly object _gate = new object();
-        private readonly FfmpegVideoPipelineOptions _options;
+
+        // ---- 冻结配置：构造时复制全部标量与路径值 ----
+        // 之后调用方修改 FfmpegVideoPipelineOptions / FfmpegVideoSettings 不再影响本会话：
+        // 命令构造、帧长度、核验期望与输出路径全部只读这些冻结值。
         private readonly FfmpegVideoSettings _settings;
-        private readonly long _frameLengthBytes;
+        private readonly FfmpegVideoIdentity _identity;
+        private readonly string _configuredFinalPath;
+        private readonly string _configuredTempPath;
+        private readonly string _expectedCodecName;
+        private readonly FfmpegVideoProcessStart _processStart;
         private readonly IFfmpegVideoVerifier _verifier;
+        private readonly Func<Stream, string, Stream> _streamWrapper;
+        private readonly Action _writeCommitBarrier;
+        private readonly long _frameLengthBytes;
+
         private readonly CancellationTokenSource _cancellation = new CancellationTokenSource();
         private readonly BoundedTextCollector _stdoutText = new BoundedTextCollector(4096, 4);
         private readonly BoundedTextCollector _stderrText = new BoundedTextCollector(8192, 8);
@@ -462,10 +495,9 @@ namespace ADOFAI.Renderist.Ffmpeg
 
         private Process _process;
         private Stream _stdin;
-        private Task _stdoutPump;
-        private Task _stderrPump;
+        private Task<Exception> _stdoutPump;
+        private Task<Exception> _stderrPump;
         private Task _exitTask;
-        private string _arguments;
 
         private int _writeInFlight;
         private long _deliveredFrames;
@@ -473,15 +505,23 @@ namespace ADOFAI.Renderist.Ffmpeg
 
         private string _finalPath;
         private string _tempPath;
+
+        /// <summary>本会话对临时产物的 ownership 句柄：原子创建 + 直到发布/清理前一直持有。</summary>
+        private FileStream _tempOwnership;
         private bool _tempOwned;
+        private bool _tempOwnershipReleased;
 
         private int? _encoderExitCode;
         private bool _processStarted;
         private bool _processReaped;
+        private bool _processDisposed;
         private bool _processKillFailed;
         private string _cancelReason;
         private string _failureCode;
         private string _failureDetail;
+
+        /// <summary>资源释放阶段的可观察失败细节（不进入终态判定，但绝不隐藏）。</summary>
+        private string _releaseDetail;
 
         private Task<FfmpegVideoOutcome> _convergence;
 
@@ -490,8 +530,25 @@ namespace ADOFAI.Renderist.Ffmpeg
             if (options == null)
                 throw new ArgumentNullException("options");
 
-            _options = options;
-            _settings = options.Settings ?? new FfmpegVideoSettings();
+            // 深复制：只保留标量副本，不保留调用方的可变对象引用。
+            FfmpegVideoSettings source = options.Settings ?? new FfmpegVideoSettings();
+            _settings = new FfmpegVideoSettings
+            {
+                Width = source.Width,
+                Height = source.Height,
+                Fps = source.Fps,
+                Crf = source.Crf,
+                Preset = source.Preset,
+                PixelFormat = source.PixelFormat,
+            };
+
+            _identity = options.Identity;
+            _configuredFinalPath = options.FinalPath;
+            _configuredTempPath = options.TempPath;
+            _expectedCodecName = string.IsNullOrEmpty(options.ExpectedCodecName) ? "h264" : options.ExpectedCodecName;
+            _processStart = options.ProcessStart;
+            _streamWrapper = options.StreamWrapper;
+            _writeCommitBarrier = options.WriteCommitBarrier;
 
             string settingsError;
             string settingsDetail;
@@ -606,37 +663,22 @@ namespace ADOFAI.Renderist.Ffmpeg
             result.TempPath = _tempPath;
 
             // 2) 冻结身份重新确认（fail-closed；绝不改用其他 FFmpeg）。
-            FfmpegVideoIdentity identity = _options.Identity;
+            FfmpegVideoIdentity identity = _identity;
             if (identity == null)
-            {
-                ClaimFailure("identity-missing", null);
-                result.ErrorCode = "identity-missing";
-                return result;
-            }
+                return FailStart(result, "identity-missing", null);
 
             string identityError;
             string identityDetail;
             if (!identity.TryReverify(out identityError, out identityDetail))
-            {
-                ClaimFailure(identityError, identityDetail);
-                result.ErrorCode = identityError;
-                result.ErrorDetail = identityDetail;
-                return result;
-            }
+                return FailStart(result, identityError, identityDetail);
 
             // 3) 命令构造（冻结配置 → 命令行）。
             string arguments;
             string commandError;
             string commandDetail;
             if (!FfmpegVideoCommand.TryBuildEncodeArguments(_settings, _tempPath, out arguments, out commandError, out commandDetail))
-            {
-                ClaimFailure(commandError, commandDetail);
-                result.ErrorCode = commandError;
-                result.ErrorDetail = commandDetail;
-                return result;
-            }
+                return FailStart(result, commandError, commandDetail);
 
-            _arguments = arguments;
             result.Arguments = arguments;
 
             // 4) 启动编码进程。
@@ -653,52 +695,64 @@ namespace ADOFAI.Renderist.Ffmpeg
                     workingDirectory = string.Empty;
                 }
 
-                process = _options.ProcessStart != null
-                    ? _options.ProcessStart(identity.ExecutablePath, arguments, workingDirectory)
+                process = _processStart != null
+                    ? _processStart(identity.ExecutablePath, arguments, workingDirectory)
                     : StartDefaultProcess(identity.ExecutablePath, arguments, workingDirectory);
             }
             catch (Exception ex)
             {
-                ClaimFailure("process-start-failed", ex.Message);
-                result.ErrorCode = "process-start-failed";
-                result.ErrorDetail = ex.Message;
-                return result;
+                return FailStart(result, "process-start-failed", ex.Message);
             }
 
             if (process == null)
-            {
-                ClaimFailure("process-start-failed", "process-start-returned-null");
-                result.ErrorCode = "process-start-failed";
-                result.ErrorDetail = "process-start-returned-null";
-                return result;
-            }
+                return FailStart(result, "process-start-failed", "process-start-returned-null");
 
+            // 进程 ownership 在 Process.Start 成功之后**立即**登记，
+            // 先于任何可能抛异常的初始化步骤（stdin/stdout/stderr/exit 等待任务）。
             lock (_gate)
             {
                 _process = process;
                 _processStarted = true;
+            }
 
-                if (_state == FfmpegVideoPipelineState.NotStarted)
+            // 5) 管道与退出等待的初始化。任一步骤失败都必须仍然回收已启动的进程。
+            try
+            {
+                Stream stdin = process.StandardInput.BaseStream;
+                Task exitTask = WaitForExitAsync(process);
+                Task<Exception> stdoutPump = FfmpegStreamPump.Start(WrapStream(process.StandardOutput.BaseStream, "stdout"), _stdoutText);
+                Task<Exception> stderrPump = FfmpegStreamPump.Start(WrapStream(process.StandardError.BaseStream, "stderr"), _stderrText);
+
+                lock (_gate)
                 {
-                    try
-                    {
-                        _stdin = process.StandardInput.BaseStream;
-                    }
-                    catch (Exception ex)
-                    {
-                        _state = FfmpegVideoPipelineState.Failed;
-                        _failureCode = "stdin-unavailable";
-                        _failureDetail = ex.Message;
-                    }
+                    _stdin = stdin;
+                    _exitTask = exitTask;
+                    _stdoutPump = stdoutPump;
+                    _stderrPump = stderrPump;
 
                     if (_state == FfmpegVideoPipelineState.NotStarted)
-                    {
-                        _stdoutPump = PumpAsync(process.StandardOutput.BaseStream, _stdoutText);
-                        _stderrPump = PumpAsync(process.StandardError.BaseStream, _stderrText);
-                        _exitTask = WaitForExitAsync(process);
                         _state = FfmpegVideoPipelineState.Running;
+                }
+            }
+            catch (Exception ex)
+            {
+                lock (_gate)
+                {
+                    // 绝不覆盖已经赢得的终态（例如启动期间取消）。
+                    if (_state == FfmpegVideoPipelineState.NotStarted)
+                    {
+                        _state = FfmpegVideoPipelineState.Failed;
+                        _failureCode = "process-init-failed";
+                        _failureDetail = ex.Message;
                     }
                 }
+
+                // 已经启动的进程必须有真正的回收路径，而不是只把异常抛给调用方。
+                StartConvergence(() => ConvergeFailure());
+
+                result.ErrorCode = "process-init-failed";
+                result.ErrorDetail = ex.Message;
+                return result;
             }
 
             if (State == FfmpegVideoPipelineState.Failed)
@@ -722,12 +776,33 @@ namespace ADOFAI.Renderist.Ffmpeg
             return result;
         }
 
+        /// <summary>故障注入缝：只在配置了 wrapper 时包装（生产恒为 null）。</summary>
+        private Stream WrapStream(Stream stream, string role)
+        {
+            return _streamWrapper != null ? _streamWrapper(stream, role) : stream;
+        }
+
+        /// <summary>
+        /// 启动阶段失败：锁定失败结论，**并让收敛任务回收已经建立的资源**
+        /// （进程 ownership、临时文件 ownership 句柄与已创建的临时文件）。
+        /// 绝不把"已经创建过资源"的失败伪装成"什么都没发生"。
+        /// </summary>
+        private FfmpegVideoStartResult FailStart(FfmpegVideoStartResult result, string errorCode, string errorDetail)
+        {
+            ClaimFailure(errorCode, errorDetail);
+            StartConvergence(() => ConvergeFailure());
+
+            result.ErrorCode = errorCode;
+            result.ErrorDetail = errorDetail;
+            return result;
+        }
+
         private bool TryPreparePaths(out string errorCode, out string errorDetail)
         {
             errorCode = null;
             errorDetail = null;
 
-            string finalPath = _options.FinalPath;
+            string finalPath = _configuredFinalPath;
             if (string.IsNullOrWhiteSpace(finalPath) || !Path.IsPathRooted(finalPath))
             {
                 errorCode = "final-path-not-absolute";
@@ -769,7 +844,7 @@ namespace ADOFAI.Renderist.Ffmpeg
                 return false;
             }
 
-            string tempPath = _options.TempPath;
+            string tempPath = _configuredTempPath;
             if (string.IsNullOrWhiteSpace(tempPath))
             {
                 string token = Guid.NewGuid().ToString("N").Substring(0, 16);
@@ -803,17 +878,66 @@ namespace ADOFAI.Renderist.Ffmpeg
                 }
             }
 
-            if (File.Exists(tempPath))
+            // 原子取得临时路径 ownership：CreateNew 要么创建成功，要么因为路径已被占用而失败。
+            // 不存在"先检查、后由 FFmpeg 创建"的窗口，因此绝不可能覆盖无法证明属于本会话的文件。
+            //
+            // 句柄以 FileShare.ReadWrite（**不含** FileShare.Delete）保持打开：FFmpeg 仍可正常
+            // 以 -y 打开并覆写本会话自己的这个文件，但其他任何一方都无法删除或改名覆盖它，
+            // 因此从创建到 FFmpeg 打开、直到发布/清理之前，路径始终绑定到本会话创建的这个文件。
+            FileStream ownership = null;
+            try
+            {
+                ownership = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.ReadWrite);
+            }
+            catch (Exception ex)
             {
                 errorCode = "temp-file-exists";
-                errorDetail = tempPath;
+                errorDetail = tempPath + " (" + ex.GetType().Name + ": " + ex.Message + ")";
+                if (ownership != null)
+                {
+                    try
+                    {
+                        ownership.Dispose();
+                    }
+                    catch (Exception)
+                    {
+                    }
+                }
                 return false;
             }
 
             _finalPath = finalPath;
             _tempPath = tempPath;
+            _tempOwnership = ownership;
             _tempOwned = true;
             return true;
+        }
+
+        /// <summary>
+        /// 释放临时产物的 ownership 句柄（幂等）。发布（Move）与清理（Delete）都需要它先释放：
+        /// 二者都要求对该文件的 DELETE 权限，而本会话的句柄刻意不共享 DELETE。
+        /// 释放之后到 Move/Delete 完成之间存在一个极短窗口，剩余风险见 §2.8 的说明。
+        /// </summary>
+        private void ReleaseTempOwnership()
+        {
+            FileStream ownership;
+            lock (_gate)
+            {
+                ownership = _tempOwnership;
+                _tempOwnership = null;
+                _tempOwnershipReleased = true;
+            }
+
+            if (ownership != null)
+            {
+                try
+                {
+                    ownership.Dispose();
+                }
+                catch (Exception)
+                {
+                }
+            }
         }
 
         private static Process StartDefaultProcess(string executablePath, string arguments, string workingDirectory)
@@ -883,6 +1007,7 @@ namespace ADOFAI.Renderist.Ffmpeg
         private FfmpegFrameWriteResult WriteFrameCore(FfmpegVideoFrame frame, Stream stdin)
         {
             long written = 0;
+            Exception failure = null;
 
             try
             {
@@ -903,62 +1028,90 @@ namespace ADOFAI.Renderist.Ffmpeg
             }
             catch (Exception ex)
             {
-                Interlocked.Exchange(ref _writeInFlight, 0);
-                return OnWriteFailure(frame, written, ex);
+                failure = ex;
             }
 
-            Interlocked.Exchange(ref _writeInFlight, 0);
+            // 故障注入缝：字节已全部写出、结果尚未提交到这个位置。
+            // 修复后，在途标记由下面的同一个临界区持有并释放，因此这里必须仍然"在途"。
+            if (_writeCommitBarrier != null)
+                _writeCommitBarrier();
+
+            // **写入结果提交与在途标记释放在同一个临界区内完成**：
+            // FinishAsync 拿到的只能是完整的写入终态 —— 要么在途（拒绝 Finish），
+            // 要么已计数 / 已锁定失败。绝不存在"已写出但未计数"或"已失败但未锁定"的窗口。
+            bool startFailureConvergence = false;
+            FfmpegFrameWriteResult result;
 
             lock (_gate)
             {
-                if (_state != FfmpegVideoPipelineState.Running)
+                try
                 {
-                    return new FfmpegFrameWriteResult
+                    if (failure != null)
                     {
-                        Success = false,
-                        ErrorCode = _state == FfmpegVideoPipelineState.Cancelled ? "cancelled" : "not-running",
-                        ErrorDetail = "state=" + _state,
-                        DeliveredFrameCount = _deliveredFrames,
-                    };
+                        result = CommitWriteFailureLocked(frame, written, failure, out startFailureConvergence);
+                    }
+                    else if (_state != FfmpegVideoPipelineState.Running)
+                    {
+                        result = new FfmpegFrameWriteResult
+                        {
+                            Success = false,
+                            ErrorCode = _state == FfmpegVideoPipelineState.Cancelled ? "cancelled" : "not-running",
+                            ErrorDetail = "state=" + _state,
+                            DeliveredFrameCount = _deliveredFrames,
+                        };
+                    }
+                    else
+                    {
+                        // 完整写入成功之后才增加交付帧计数。
+                        _deliveredFrames++;
+                        result = new FfmpegFrameWriteResult
+                        {
+                            Success = true,
+                            DeliveredFrameCount = _deliveredFrames,
+                        };
+                    }
                 }
-
-                // 完整写入成功之后才增加交付帧计数。
-                _deliveredFrames++;
-                return new FfmpegFrameWriteResult
+                finally
                 {
-                    Success = true,
-                    DeliveredFrameCount = _deliveredFrames,
-                };
+                    Interlocked.Exchange(ref _writeInFlight, 0);
+                    Monitor.PulseAll(_gate);
+                }
             }
+
+            if (startFailureConvergence)
+                StartConvergence(() => ConvergeFailure());
+
+            return result;
         }
 
-        private FfmpegFrameWriteResult OnWriteFailure(FfmpegVideoFrame frame, long written, Exception ex)
+        /// <summary>
+        /// 在写入提交临界区内锁定失败结果（调用方必须已持有 <see cref="_gate"/>）。
+        /// 部分写入不得在同一个 stdin 上重试，因此这里同时污染管道。
+        /// </summary>
+        private FfmpegFrameWriteResult CommitWriteFailureLocked(
+            FfmpegVideoFrame frame, long written, Exception ex, out bool startConvergence)
         {
-            bool cancelled;
-            lock (_gate)
+            startConvergence = false;
+
+            // 部分写入不得在同一个 stdin 上重试。
+            _poisoned = true;
+
+            bool cancelled = _state == FfmpegVideoPipelineState.Cancelled;
+            if (!cancelled && _state == FfmpegVideoPipelineState.Running)
             {
-                // 部分写入不得在同一个 stdin 上重试。
-                _poisoned = true;
-                cancelled = _state == FfmpegVideoPipelineState.Cancelled;
-
-                if (!cancelled && _state == FfmpegVideoPipelineState.Running)
-                {
-                    _state = FfmpegVideoPipelineState.Failed;
-                    _failureCode = "write-failed";
-                    _failureDetail = "written=" + written.ToString(CultureInfo.InvariantCulture) + "/" +
-                                     frame.Length.ToString(CultureInfo.InvariantCulture) + " ex=" + ex.Message;
-                }
+                _state = FfmpegVideoPipelineState.Failed;
+                _failureCode = "write-failed";
+                _failureDetail = "written=" + written.ToString(CultureInfo.InvariantCulture) + "/" +
+                                 frame.Length.ToString(CultureInfo.InvariantCulture) + " ex=" + ex.Message;
+                startConvergence = true;
             }
-
-            if (!cancelled && State == FfmpegVideoPipelineState.Failed)
-                StartConvergence(() => ConvergeFailure());
 
             return new FfmpegFrameWriteResult
             {
                 Success = false,
                 ErrorCode = cancelled ? "cancelled" : "write-failed",
                 ErrorDetail = ex.Message,
-                DeliveredFrameCount = DeliveredFrameCount,
+                DeliveredFrameCount = _deliveredFrames,
             };
         }
 
@@ -983,6 +1136,10 @@ namespace ADOFAI.Renderist.Ffmpeg
 
                 if (_state != FfmpegVideoPipelineState.Running)
                     return Task.FromResult(BuildFailure("not-running", "state=" + _state));
+
+                // 防御性检查：管道一旦被污染（部分写入失败），绝不允许进入 Finalizing。
+                if (_poisoned)
+                    return Task.FromResult(BuildFailure("pipe-poisoned", _failureDetail));
 
                 if (Volatile.Read(ref _writeInFlight) != 0)
                     return Task.FromResult(BuildFailure("write-in-flight", "await the pending frame write first"));
@@ -1109,7 +1266,7 @@ namespace ADOFAI.Renderist.Ffmpeg
                 return Fail("stdin-close-failed", ex.Message);
             }
 
-            // 2) 进程退出 + stdout/stderr 都到 EOF（Exited ≠ 日志已排空）。
+            // 2) 进程退出 + stdout/stderr 都到 EOF（Exited ≠ 日志已排空；读取异常 ≠ EOF）。
             int exitCode;
             string waitError;
             if (!TryAwaitProcessAndDrains(out exitCode, out waitError))
@@ -1126,15 +1283,22 @@ namespace ADOFAI.Renderist.Ffmpeg
                     (string.IsNullOrEmpty(_stdoutText.Tail) ? string.Empty : " stdout=" + Flatten(_stdoutText.Tail, 200)));
             }
 
+            // 进程已退出、两个流都已到真实 EOF：正常完成路径同样必须释放 Process 及其流，
+            // 而不是把句柄留给 GC。释放失败只作为可观察的 residual 记录，不影响 Completed 语义。
+            string releaseError = ReleaseProcessResources();
+            if (releaseError != null)
+                lock (_gate)
+                    _releaseDetail = Append(_releaseDetail, releaseError);
+
             // 3) 独立核验：只有实际可解码帧数 / 尺寸 / 有理时间基 / PTS 全部匹配才算产物有效。
             var request = new FfmpegVideoVerificationRequest
             {
-                ExecutablePath = _options.Identity != null ? _options.Identity.ExecutablePath : null,
+                ExecutablePath = _identity != null ? _identity.ExecutablePath : null,
                 VideoPath = _tempPath,
                 ExpectedWidth = _settings.Width,
                 ExpectedHeight = _settings.Height,
                 ExpectedFps = _settings.Fps,
-                ExpectedCodecName = _options.ExpectedCodecName ?? "h264",
+                ExpectedCodecName = _expectedCodecName,
                 ExpectedPixelFormat = FfmpegVideoPixelFormatPolicy.ToToken(_settings.ResolvePixelFormat()),
                 ExpectedFrameCount = DeliveredFrameCount,
                 CancellationToken = _cancellation.Token,
@@ -1209,6 +1373,9 @@ namespace ADOFAI.Renderist.Ffmpeg
                 {
                     try
                     {
+                        // Move 需要源文件的 DELETE 权限，而 ownership 句柄刻意不共享 DELETE：
+                        // 必须先释放句柄再发布（剩余窗口见 §2.8）。
+                        ReleaseTempOwnership();
                         File.Move(_tempPath, _finalPath);
                         _tempOwned = false;
                         _state = FfmpegVideoPipelineState.Completed;
@@ -1350,8 +1517,8 @@ namespace ADOFAI.Renderist.Ffmpeg
             Process process;
             Stream stdin;
             Task exitTask;
-            Task stdoutPump;
-            Task stderrPump;
+            Task<Exception> stdoutPump;
+            Task<Exception> stderrPump;
 
             lock (_gate)
             {
@@ -1387,6 +1554,20 @@ namespace ADOFAI.Renderist.Ffmpeg
                     _stdin = null;
             }
 
+            // 初始化阶段可能还没建立退出等待任务：这里补建，确保**真正等待**进程退出，
+            // 而不是依赖一次 HasExited 读数。
+            if (process != null && exitTask == null)
+            {
+                try
+                {
+                    exitTask = WaitForExitAsync(process);
+                }
+                catch (Exception ex)
+                {
+                    teardown.Error = Append(teardown.Error, "exit-wait-create-failed:" + ex.Message);
+                }
+            }
+
             if (exitTask != null)
             {
                 try
@@ -1399,45 +1580,33 @@ namespace ADOFAI.Renderist.Ffmpeg
                 }
             }
 
-            try
+            if (stdoutPump != null || stderrPump != null)
             {
-                var pumps = new List<Task>(2);
-                if (stdoutPump != null)
-                    pumps.Add(stdoutPump);
-                if (stderrPump != null)
-                    pumps.Add(stderrPump);
-                if (pumps.Count > 0)
+                try
+                {
+                    var pumps = new List<Task>(2);
+                    if (stdoutPump != null)
+                        pumps.Add(stdoutPump);
+                    if (stderrPump != null)
+                        pumps.Add(stderrPump);
                     Task.WaitAll(pumps.ToArray());
-            }
-            catch (Exception ex)
-            {
-                teardown.Error = Append(teardown.Error, "drain-failed:" + ex.Message);
+                }
+                catch (Exception ex)
+                {
+                    teardown.Error = Append(teardown.Error, "drain-failed:" + ex.Message);
+                }
+
+                teardown.Error = Append(teardown.Error, DescribePumpFailure("stdout", stdoutPump));
+                teardown.Error = Append(teardown.Error, DescribePumpFailure("stderr", stderrPump));
             }
 
-            if (process != null)
+            // 两个流都已结束（或已失败）之后才允许 Dispose 进程对象。
+            string releaseError = ReleaseProcessResources();
+            if (releaseError != null)
             {
                 lock (_gate)
-                {
-                    try
-                    {
-                        _encoderExitCode = _encoderExitCode ?? process.ExitCode;
-                        _processReaped = process.HasExited;
-                    }
-                    catch (Exception)
-                    {
-                        _processReaped = false;
-                    }
-
-                    try
-                    {
-                        process.Dispose();
-                    }
-                    catch (Exception)
-                    {
-                    }
-
-                    _process = null;
-                }
+                    _releaseDetail = Append(_releaseDetail, releaseError);
+                teardown.Error = Append(teardown.Error, releaseError);
             }
 
             bool ownsTemp;
@@ -1450,6 +1619,9 @@ namespace ADOFAI.Renderist.Ffmpeg
 
             if (ownsTemp && !string.IsNullOrEmpty(tempPath))
             {
+                // 删除前必须释放 ownership 句柄：它刻意不共享 DELETE。
+                ReleaseTempOwnership();
+
                 if (File.Exists(tempPath))
                 {
                     try
@@ -1479,8 +1651,35 @@ namespace ADOFAI.Renderist.Ffmpeg
                         _tempOwned = false;
                 }
             }
+            else
+            {
+                ReleaseTempOwnership();
+            }
 
             return teardown;
+        }
+
+        /// <summary>把排空泵的结果翻译成可观察的细节；正常 EOF（null）不产生任何内容。</summary>
+        private static string DescribePumpFailure(string role, Task<Exception> pump)
+        {
+            if (pump == null)
+                return null;
+
+            try
+            {
+                if (pump.IsFaulted)
+                {
+                    Exception inner = pump.Exception != null ? pump.Exception.GetBaseException() : null;
+                    return role + "-drain-failed:" + (inner != null ? inner.Message : "unknown");
+                }
+
+                Exception result = pump.Result;
+                return result != null ? role + "-drain-failed:" + result.Message : null;
+            }
+            catch (Exception ex)
+            {
+                return role + "-drain-failed:" + ex.Message;
+            }
         }
 
         private static void ApplyTeardown(FfmpegVideoOutcome outcome, TeardownOutcome teardown)
@@ -1494,8 +1693,8 @@ namespace ADOFAI.Renderist.Ffmpeg
             error = null;
 
             Task exitTask;
-            Task stdoutPump;
-            Task stderrPump;
+            Task<Exception> stdoutPump;
+            Task<Exception> stderrPump;
             Process process;
 
             lock (_gate)
@@ -1533,10 +1732,25 @@ namespace ADOFAI.Renderist.Ffmpeg
                 return false;
             }
 
+            // **真实 EOF 与读取异常必须区分**：读取异常绝不能被当成"日志已排空"，
+            // 也绝不允许在排空失败之后发布正式产物。
+            string stdoutError = DescribePumpFailure("stdout", stdoutPump);
+            if (stdoutError != null)
+            {
+                error = stdoutError;
+                return false;
+            }
+
+            string stderrError = DescribePumpFailure("stderr", stderrPump);
+            if (stderrError != null)
+            {
+                error = stderrError;
+                return false;
+            }
+
             try
             {
                 exitCode = process != null ? process.ExitCode : int.MinValue;
-                _processReaped = process != null && process.HasExited;
             }
             catch (Exception ex)
             {
@@ -1557,6 +1771,8 @@ namespace ADOFAI.Renderist.Ffmpeg
                 EncoderExitCode = _encoderExitCode,
                 ProcessStarted = _processStarted,
                 ProcessReaped = _processReaped,
+                ProcessDisposed = _processDisposed,
+                TempOwnershipReleased = _tempOwnershipReleased,
                 ErrorCode = _failureCode,
                 ErrorDetail = _failureDetail,
                 Reason = _cancelReason,
@@ -1578,6 +1794,13 @@ namespace ADOFAI.Renderist.Ffmpeg
             {
                 outcome.ResidualOwnership = true;
                 outcome.ResidualDetail = Append(outcome.ResidualDetail, "process-kill-failed");
+            }
+
+            // 释放阶段的可观察失败（例如 Process.Dispose 抛异常、ownership 句柄未释放）如实上报。
+            if (!string.IsNullOrEmpty(_releaseDetail))
+            {
+                outcome.ResidualOwnership = true;
+                outcome.ResidualDetail = Append(outcome.ResidualDetail, _releaseDetail);
             }
 
             return outcome;
@@ -1611,8 +1834,85 @@ namespace ADOFAI.Renderist.Ffmpeg
 
         // ==================================================================== process plumbing
 
-        private static bool TryKill(Process process, out bool failed)
+        /// <summary>
+        /// 终止（如仍存活）→ 等待真实退出 → 释放 Process 对象及其流。幂等。
+        ///
+        /// 不变量：
+        ///   * 只要还持有进程对象，就必须等到它真正退出；绝不"Kill 之后读一次 HasExited 就丢弃对象"。
+        ///   * 只在调用方已经等待过 stdout/stderr 之后才调用（流仍被后台读取时不得 Dispose）。
+        ///   * 返回 null 表示干净释放；否则返回可观察的失败细节（不伪装成 clean）。
+        /// </summary>
+        private string ReleaseProcessResources()
         {
+            Process process;
+            lock (_gate)
+            {
+                process = _process;
+                _process = null;
+            }
+
+            if (process == null)
+                return null;
+
+            string error = null;
+
+            bool exited;
+            try
+            {
+                exited = process.HasExited;
+            }
+            catch (Exception)
+            {
+                exited = false;
+            }
+
+            if (!exited)
+            {
+                bool killFailed;
+                TryKill(process, out killFailed);
+                if (killFailed)
+                {
+                    _processKillFailed = true;
+                    error = Append(error, "process-kill-failed");
+                }
+
+                try
+                {
+                    process.WaitForExit();
+                }
+                catch (Exception ex)
+                {
+                    error = Append(error, "exit-wait-failed:" + ex.Message);
+                }
+            }
+
+            try
+            {
+                int code = process.ExitCode;
+                lock (_gate)
+                    _encoderExitCode = _encoderExitCode ?? code;
+                _processReaped = true;
+            }
+            catch (Exception ex)
+            {
+                _processReaped = false;
+                error = Append(error, "exit-code-unavailable:" + ex.Message);
+            }
+
+            try
+            {
+                process.Dispose();
+                _processDisposed = true;
+            }
+            catch (Exception ex)
+            {
+                error = Append(error, "process-dispose-failed:" + ex.Message);
+            }
+
+            return error;
+        }
+
+        private static bool TryKill(Process process, out bool failed)        {
             failed = false;
             if (process == null)
                 return false;
@@ -1638,26 +1938,6 @@ namespace ADOFAI.Renderist.Ffmpeg
                 failed = true;
                 return false;
             }
-        }
-
-        private static Task PumpAsync(Stream stream, BoundedTextCollector collector)
-        {
-            return Task.Run(async () =>
-            {
-                try
-                {
-                    using (var reader = new StreamReader(stream, Encoding.UTF8, false, 4096, false))
-                    {
-                        string line;
-                        while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) != null)
-                            collector.FeedLine(line);
-                    }
-                }
-                catch (Exception)
-                {
-                    // 进程被杀 / 管道关闭：这里只负责排空到 EOF，异常不再向上扩散。
-                }
-            });
         }
 
         private static Task WaitForExitAsync(Process process)
@@ -1687,6 +1967,44 @@ namespace ADOFAI.Renderist.Ffmpeg
             }
 
             return completion.Task;
+        }
+    }
+
+    /// <summary>
+    /// stdout / stderr 的排空泵（L2 内部）：**区分真实 EOF 与读取异常**。
+    ///
+    /// 返回的任务在正常 EOF 时结果为 <c>null</c>；读取失败时结果为该异常。
+    /// 调用方只有确认两个泵都以 <c>null</c> 结束时，才能认为日志已经排空到 EOF ——
+    /// 排空失败绝不允许进入 Completed，也绝不允许发布产物。
+    ///
+    /// 诊断缓冲只是**有界证据**，不是读取上限：缓冲饱和后循环仍继续排空实际流。
+    /// </summary>
+    internal static class FfmpegStreamPump
+    {
+        public static Task<Exception> Start(Stream stream, BoundedTextCollector collector)
+        {
+            if (stream == null)
+                return Task.FromResult<Exception>(null);
+
+            return Task.Run(async () =>
+            {
+                try
+                {
+                    using (var reader = new StreamReader(stream, Encoding.UTF8, false, 4096, false))
+                    {
+                        string line;
+                        while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) != null)
+                            collector.FeedLine(line);
+                    }
+
+                    return (Exception)null;
+                }
+                catch (Exception ex)
+                {
+                    // 真实 EOF 与读取失败必须区分：异常向上传递，由调用方决定终态。
+                    return ex;
+                }
+            });
         }
     }
 }
