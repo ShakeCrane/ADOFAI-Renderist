@@ -179,7 +179,14 @@ namespace ADOFAI.Renderist.FfmpegTests
             if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
                 Directory.CreateDirectory(directory);
 
-            File.WriteAllBytes(outputPath, payload);
+            // 与真实 FFmpeg 一致的打开语义：deny-none 共享（_SH_DENYNO）。
+            // 这一点很重要：管线的临时文件 ownership 句柄是打开的，任何只共享 Read 的
+            // 打开方式都会与之冲突，从而无法复现真实编码器的行为。
+            using (var stream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
+            {
+                stream.Write(payload, 0, payload.Length);
+                stream.Flush();
+            }
         }
 
         private static void EmitNoise(Dictionary<string, string> directives)
@@ -521,6 +528,10 @@ namespace ADOFAI.Renderist.FfmpegTests
         public int EncoderStarts { get; private set; }
         public int VerifierStarts { get; private set; }
 
+        /// <summary>最后一次编码启动的可执行文件路径与命令行（用于断言冻结配置真的进入了命令）。</summary>
+        public string LastEncoderExecutablePath { get; private set; }
+        public string LastEncoderArguments { get; private set; }
+
         public FfmpegVideoProcessStart Create()
         {
             return StartProcess;
@@ -529,6 +540,12 @@ namespace ADOFAI.Renderist.FfmpegTests
         private Process StartProcess(string executablePath, string arguments, string workingDirectory)
         {
             bool verifier = arguments.IndexOf("-f framemd5", StringComparison.Ordinal) >= 0;
+
+            if (!verifier)
+            {
+                LastEncoderExecutablePath = executablePath;
+                LastEncoderArguments = arguments;
+            }
 
             var startInfo = new ProcessStartInfo
             {

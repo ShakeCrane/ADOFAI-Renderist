@@ -35,6 +35,7 @@ namespace ADOFAI.Renderist.FfmpegTests
             StreamLineParsingTests();
             VerifierContractTests(workRoot);
             PipelineLifecycleTests(workRoot);
+            LifecycleHardeningTests(workRoot);
             RealFixtureTests(workRoot);
         }
 
@@ -940,11 +941,20 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.CheckEqual("process-start-failed", start.ErrorCode, "error code");
                 TestKit.CheckEqual(FfmpegVideoPipelineState.Failed, throwing.State, "state");
 
+                // 启动失败也要回收已经建立的资源（这里包括预创建的临时文件与它的 ownership 句柄）。
+                FfmpegVideoOutcome throwingOutcome = Await(throwing.CleanupTask, "throwing cleanup");
+                TestKit.CheckEqual(FfmpegVideoPipelineState.Failed, throwingOutcome.State, "outcome state");
+                TestKit.CheckEqual("process-start-failed", throwingOutcome.ErrorCode, "outcome error code");
+                TestKit.Check(throwingOutcome.TempFileRemoved, "the owned temp file must be reclaimed");
+                TestKit.Check(throwingOutcome.TempOwnershipReleased, "the ownership handle must be released");
+                TestKit.Check(!throwingOutcome.ResidualOwnership, "no residual: " + throwingOutcome.ResidualDetail);
+
                 var nulling = CreatePipeline(directory, Settings(64, 48, 30), identity,
                     (path, arguments, workingDirectory) => null, "video.mp4");
                 start = nulling.Start();
                 TestKit.Check(!start.Started, "null process must not start");
                 TestKit.CheckEqual("process-start-failed", start.ErrorCode, "error code");
+                Await(nulling.CleanupTask, "nulling cleanup");
 
                 TestKit.CheckEqual(0, PartialFiles(directory).Length, "nothing may be left behind");
                 TestKit.TryDeleteDirectory(directory);
@@ -1420,15 +1430,18 @@ namespace ADOFAI.Renderist.FfmpegTests
                 FfmpegFrameWriteAttempt attempt = pipeline.TryWriteFrame(Frame(64, 48));
                 Await(attempt.Completion, "frame write");
 
-                // 用独占句柄占住临时文件：终态清理必然失败，管线必须如实报告 residual ownership。
+                // 用兼容的共享模式再占一个句柄（ReadWrite，但不共享 Delete）：
+                // 管线自己的 ownership 句柄仍能释放，但文件因此在终态时无法删除，
+                // 管线必须如实报告 residual ownership。
                 FileStream hold = new FileStream(
-                    pipeline.TempPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                    pipeline.TempPath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
                 try
                 {
                     TestKit.Check(pipeline.Cancel("residual-test"), "cancel");
                     FfmpegVideoOutcome outcome = Await(pipeline.CleanupTask, "cleanup");
 
                     TestKit.CheckEqual(FfmpegVideoPipelineState.Cancelled, outcome.State, "state");
+                    TestKit.Check(outcome.TempOwnershipReleased, "the session ownership handle must still be released");
                     TestKit.Check(outcome.ResidualOwnership, "residual ownership must be reported");
                     TestKit.Check((outcome.ResidualDetail ?? string.Empty).IndexOf("temp-delete-failed", StringComparison.Ordinal) >= 0,
                         "residual detail: " + outcome.ResidualDetail);
@@ -1444,8 +1457,590 @@ namespace ADOFAI.Renderist.FfmpegTests
             });
         }
 
-        // ==================================================================== real FFmpeg fixture
+        // ==================================================================== lifecycle hardening
+        //
+        // 本节针对 GPT Work 最终审查确认的六项缺陷。每项都有**确定性**回归：
+        //   P1-1 Write/Finish 原子交接 —— 用 WriteCommitBarrier 可控屏障卡在"字节已写出、
+        //        结果未提交"的临界点上（不依赖随机 Sleep）。
+        //   P1-2 临时文件 ownership —— 原子 CreateNew + 保持到发布/清理前的 ownership 句柄。
+        //   P1-3 Start/Cancel 与初始化异常回收 —— 启动屏障 + 注入的初始化异常。
+        //   P1-4 stdout/stderr 读取异常传播 —— 注入会抛 IO 异常的读取流。
+        //   P2-1 Completed 后释放 Process 资源。
+        //   P2-2 冻结配置深复制。
 
+        private static void LifecycleHardeningTests(string workRoot)
+        {
+            // ---------------------------------------------------------------- P1-1 write / finish handoff
+            TestKit.Run("hardening: Finish cannot observe an uncommitted successful write", () =>
+            {
+                string directory = TestKit.NewWorkDirectory(workRoot, "commitwin");
+                var launcher = new FakeVideoProcessLauncher
+                {
+                    Verifier = new FakeVideoVerifierScript { Frames = 1 },
+                };
+
+                using (var barrierEntered = new ManualResetEventSlim(false))
+                using (var barrierRelease = new ManualResetEventSlim(false))
+                {
+                    var options = new FfmpegVideoPipelineOptions
+                    {
+                        Settings = Settings(64, 48, 30),
+                        Identity = MakeIdentity(FakeVideoProcess.ExecutablePath),
+                        FinalPath = Path.Combine(directory, "video.mp4"),
+                        ProcessStart = launcher.Create(),
+                        WriteCommitBarrier = () =>
+                        {
+                            barrierEntered.Set();
+                            barrierRelease.Wait(30000);
+                        },
+                    };
+
+                    var pipeline = new FfmpegVideoPipeline(options);
+                    TestKit.Check(pipeline.Start().Started, "start");
+
+                    FfmpegFrameWriteAttempt attempt = pipeline.TryWriteFrame(Frame(64, 48));
+                    TestKit.Check(attempt.Accepted, "frame accepted: " + attempt.ErrorCode);
+                    TestKit.Check(barrierEntered.Wait(30000), "the writer must reach the commit barrier");
+
+                    // 字节已经完整写出，但结果还没提交：此时既不能计数，也不能开始 Finalizing。
+                    TestKit.CheckEqual(0L, pipeline.DeliveredFrameCount, "an uncommitted write must not be counted");
+                    TestKit.CheckEqual(FfmpegVideoPipelineState.Running, pipeline.State, "state must stay Running");
+
+                    FfmpegVideoOutcome rejected = Await(pipeline.FinishAsync(), "finish during commit");
+                    TestKit.CheckEqual(FfmpegVideoPipelineState.Failed, rejected.State, "finish must be rejected");
+                    TestKit.CheckEqual("write-in-flight", rejected.ErrorCode, "error code");
+                    TestKit.CheckEqual(FfmpegVideoPipelineState.Running, pipeline.State,
+                        "a rejected finish must not change the session state");
+
+                    barrierRelease.Set();
+
+                    FfmpegFrameWriteResult written = Await(attempt.Completion, "frame write");
+                    TestKit.Check(written.Success, "the frame write must succeed: " + written.ErrorCode);
+                    TestKit.CheckEqual(1L, pipeline.DeliveredFrameCount, "the completed write must be counted exactly once");
+
+                    FfmpegVideoOutcome outcome = Await(pipeline.FinishAsync(), "finish");
+                    TestKit.CheckEqual(FfmpegVideoPipelineState.Completed, outcome.State,
+                        "state (" + outcome.ErrorCode + " " + outcome.ErrorDetail + ")");
+                    TestKit.CheckEqual(1L, outcome.DeliveredFrameCount, "the verified frame count must include the frame");
+                    TestKit.Check(outcome.Verification != null && outcome.Verification.IsVerified, "verification");
+                    TestKit.Check(File.Exists(outcome.FinalPath), "the artifact must be published");
+                    TestKit.CheckEqual(0, PartialFiles(directory).Length, "no partial files left");
+                }
+
+                TestKit.TryDeleteDirectory(directory);
+            });
+
+            TestKit.Run("hardening: Finish cannot observe an uncommitted failed write", () =>
+            {
+                string directory = TestKit.NewWorkDirectory(workRoot, "commitfail");
+                var launcher = new FakeVideoProcessLauncher
+                {
+                    // 读满一个缓冲区就退出：大帧的写入必然中途失败。
+                    Encoder = new FakeVideoEncoderScript { ExitAfterBytes = 4096, ExitCode = 9 },
+                    Verifier = new FakeVideoVerifierScript { Frames = 1 },
+                };
+
+                using (var barrierEntered = new ManualResetEventSlim(false))
+                using (var barrierRelease = new ManualResetEventSlim(false))
+                {
+                    var options = new FfmpegVideoPipelineOptions
+                    {
+                        Settings = Settings(512, 512, 30),
+                        Identity = MakeIdentity(FakeVideoProcess.ExecutablePath),
+                        FinalPath = Path.Combine(directory, "video.mp4"),
+                        ProcessStart = launcher.Create(),
+                        WriteCommitBarrier = () =>
+                        {
+                            barrierEntered.Set();
+                            barrierRelease.Wait(30000);
+                        },
+                    };
+
+                    var pipeline = new FfmpegVideoPipeline(options);
+                    TestKit.Check(pipeline.Start().Started, "start");
+
+                    FfmpegFrameWriteAttempt attempt = pipeline.TryWriteFrame(Frame(512, 512));
+                    TestKit.Check(attempt.Accepted, "frame accepted: " + attempt.ErrorCode);
+                    TestKit.Check(barrierEntered.Wait(30000), "the writer must reach the commit barrier");
+
+                    // 写入已经失败，但失败结果尚未锁定：此时 Finish 必须被拒绝，
+                    // 绝不允许"写入失败却继续正常 Finalizing"。
+                    FfmpegVideoOutcome rejected = Await(pipeline.FinishAsync(), "finish during failing commit");
+                    TestKit.CheckEqual("write-in-flight", rejected.ErrorCode, "error code");
+                    TestKit.CheckEqual(FfmpegVideoPipelineState.Running, pipeline.State, "state must stay Running");
+
+                    barrierRelease.Set();
+
+                    FfmpegFrameWriteResult written = Await(attempt.Completion, "frame write");
+                    TestKit.Check(!written.Success, "the write must fail");
+                    TestKit.CheckEqual("write-failed", written.ErrorCode, "write error code");
+                    TestKit.CheckEqual(0L, pipeline.DeliveredFrameCount, "a partial frame must never be counted");
+
+                    FfmpegVideoOutcome outcome = Await(pipeline.CleanupTask, "cleanup");
+                    TestKit.CheckEqual(FfmpegVideoPipelineState.Failed, outcome.State, "state");
+                    TestKit.CheckEqual("write-failed", outcome.ErrorCode, "outcome error code");
+
+                    FfmpegVideoOutcome afterFailure = Await(pipeline.FinishAsync(), "finish after failure");
+                    TestKit.CheckEqual(FfmpegVideoPipelineState.Failed, afterFailure.State,
+                        "a failed session must never reach Completed");
+                    TestKit.Check(!File.Exists(Path.Combine(directory, "video.mp4")), "nothing may be published");
+                    TestKit.CheckEqual(0, PartialFiles(directory).Length, "temp file must be removed");
+                }
+
+                TestKit.TryDeleteDirectory(directory);
+            });
+
+            // ---------------------------------------------------------------- P1-2 temp ownership
+            TestKit.Run("hardening: temp ownership is acquired atomically and pins the path", () =>
+            {
+                string directory = TestKit.NewWorkDirectory(workRoot, "tempowner");
+                var launcher = new FakeVideoProcessLauncher
+                {
+                    // 读之前先睡：确保 Start 之后、FFmpeg 触碰输出之前有一个确定的时间窗。
+                    Encoder = new FakeVideoEncoderScript { SleepBeforeReadMs = 5000 },
+                };
+
+                var pipeline = CreatePipeline(directory, Settings(64, 48, 30),
+                    MakeIdentity(FakeVideoProcess.ExecutablePath), launcher.Create(), "video.mp4");
+
+                FfmpegVideoStartResult start = pipeline.Start();
+                TestKit.Check(start.Started, "start: " + start.ErrorCode + " " + start.ErrorDetail);
+
+                // 文件是**本会话**在启动进程之前原子创建的（空文件），不是 FFmpeg 创建的。
+                TestKit.Check(File.Exists(pipeline.TempPath), "the session must create the temp file itself");
+                TestKit.CheckEqual(0L, new FileInfo(pipeline.TempPath).Length, "the created temp file must be empty");
+
+                // 在 ownership 句柄持有期间，路径不能被删除或被替换。
+                bool deleted = false;
+                try
+                {
+                    File.Delete(pipeline.TempPath);
+                    deleted = true;
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+                TestKit.Check(!deleted, "no other actor may delete the owned temp file");
+
+                string foreign = Path.Combine(directory, "foreign.tmp");
+                File.WriteAllText(foreign, "foreign");
+                bool replaced = false;
+                try
+                {
+                    File.Replace(foreign, pipeline.TempPath, null);
+                    replaced = true;
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+                TestKit.Check(!replaced, "no other actor may replace the owned temp file");
+                TestKit.CheckEqual("foreign", File.ReadAllText(foreign), "the foreign file must be untouched");
+
+                TestKit.Check(pipeline.Cancel("owner-test"), "cancel");
+                FfmpegVideoOutcome outcome = Await(pipeline.CleanupTask, "cleanup");
+                TestKit.Check(outcome.TempOwnershipReleased, "the ownership handle must be released");
+                TestKit.Check(outcome.TempFileRemoved, "the owned temp file must be removed");
+                TestKit.Check(!outcome.ResidualOwnership, "no residual: " + outcome.ResidualDetail);
+                TestKit.CheckEqual(0, PartialFiles(directory).Length, "no partial files left");
+
+                TestKit.TryDeleteDirectory(directory);
+            });
+
+            TestKit.Run("hardening: foreign content at the temp path is never overwritten, deleted or published", () =>
+            {
+                string directory = TestKit.NewWorkDirectory(workRoot, "foreigntemp");
+                FfmpegVideoIdentity identity = MakeIdentity(FakeVideoProcess.ExecutablePath);
+                var launcher = new FakeVideoProcessLauncher();
+
+                string tempPath = Path.Combine(directory, "video.mp4" + FfmpegVideoCommand.TempFileInfix + "occupied");
+                File.WriteAllText(tempPath, "foreign-content");
+
+                var pipeline = CreatePipeline(directory, Settings(64, 48, 30), identity, launcher.Create(),
+                    "video.mp4", tempPath);
+
+                FfmpegVideoStartResult start = pipeline.Start();
+                TestKit.Check(!start.Started, "start must fail closed");
+                TestKit.CheckEqual("temp-file-exists", start.ErrorCode, "error code");
+                TestKit.CheckEqual(0, launcher.EncoderStarts, "no encoder may be started for an occupied path");
+                TestKit.CheckEqual("foreign-content", File.ReadAllText(tempPath), "foreign content must not be overwritten");
+
+                FfmpegVideoOutcome outcome = Await(pipeline.CleanupTask, "cleanup");
+                TestKit.CheckEqual(FfmpegVideoPipelineState.Failed, outcome.State, "state");
+                TestKit.Check(File.Exists(tempPath), "foreign content must not be deleted");
+                TestKit.CheckEqual("foreign-content", File.ReadAllText(tempPath), "foreign content must survive cleanup");
+                TestKit.Check(!File.Exists(Path.Combine(directory, "video.mp4")), "nothing may be published");
+                TestKit.Check(!outcome.ResidualOwnership, "nothing of ours was left behind: " + outcome.ResidualDetail);
+
+                TestKit.TryDeleteDirectory(directory);
+            });
+
+            TestKit.Run("hardening: cleanup of one session never touches another session's temp file", () =>
+            {
+                string directory = TestKit.NewWorkDirectory(workRoot, "twosessions");
+                FfmpegVideoIdentity identity = MakeIdentity(FakeVideoProcess.ExecutablePath);
+
+                var first = CreatePipeline(directory, Settings(64, 48, 30), identity,
+                    new FakeVideoProcessLauncher { Encoder = new FakeVideoEncoderScript { SleepBeforeReadMs = 5000 } }.Create(),
+                    "first.mp4");
+                var second = CreatePipeline(directory, Settings(64, 48, 30), identity,
+                    new FakeVideoProcessLauncher { Encoder = new FakeVideoEncoderScript { SleepBeforeReadMs = 5000 } }.Create(),
+                    "second.mp4");
+
+                TestKit.Check(first.Start().Started, "first start");
+                TestKit.Check(second.Start().Started, "second start");
+                TestKit.Check(!string.Equals(first.TempPath, second.TempPath, StringComparison.OrdinalIgnoreCase),
+                    "each session must own a distinct temp path");
+                TestKit.Check(File.Exists(second.TempPath), "the second session temp file must exist");
+
+                TestKit.Check(first.Cancel("cancel-first"), "cancel first");
+                FfmpegVideoOutcome firstOutcome = Await(first.CleanupTask, "first cleanup");
+                TestKit.Check(firstOutcome.TempFileRemoved, "the first session must clean its own temp file");
+                TestKit.Check(!File.Exists(first.TempPath), "the first temp file must be gone");
+                TestKit.Check(File.Exists(second.TempPath), "the second session temp file must be untouched");
+
+                TestKit.Check(second.Cancel("cancel-second"), "cancel second");
+                Await(second.CleanupTask, "second cleanup");
+                TestKit.Check(!File.Exists(second.TempPath), "the second temp file must be gone");
+                TestKit.CheckEqual(0, PartialFiles(directory).Length, "no partial files left");
+
+                TestKit.TryDeleteDirectory(directory);
+            });
+
+            // ---------------------------------------------------------------- P1-3 start / cancel / init
+            TestKit.Run("hardening: cancel during a blocked start still reaps the started process", () =>
+            {
+                string directory = TestKit.NewWorkDirectory(workRoot, "startcancel");
+                int before = CountProcesses("ADOFAI.Renderist.FfmpegTests");
+
+                var launcher = new FakeVideoProcessLauncher();
+                using (var processStarted = new ManualResetEventSlim(false))
+                using (var releaseStart = new ManualResetEventSlim(false))
+                {
+                    FfmpegVideoProcessStart start = (path, arguments, workingDirectory) =>
+                    {
+                        // 真实启动子进程，但把启动委托卡在这里，制造 Start/Cancel 交错。
+                        Process process = launcher.Create()(path, arguments, workingDirectory);
+                        processStarted.Set();
+                        releaseStart.Wait(30000);
+                        return process;
+                    };
+
+                    var pipeline = CreatePipeline(directory, Settings(64, 48, 30),
+                        MakeIdentity(FakeVideoProcess.ExecutablePath), start, "video.mp4");
+
+                    Task<FfmpegVideoStartResult> startTask = Task.Run(() => pipeline.Start());
+                    TestKit.Check(processStarted.Wait(30000), "the process must have been started");
+
+                    TestKit.Check(pipeline.Cancel("cancel-during-start"), "cancel must be accepted during start");
+                    releaseStart.Set();
+
+                    FfmpegVideoStartResult result = Await(startTask, "start");
+                    TestKit.Check(!result.Started, "a cancelled start must not report success");
+                    TestKit.CheckEqual("cancelled-during-start", result.ErrorCode, "error code");
+                    TestKit.CheckEqual(FfmpegVideoPipelineState.Cancelled, pipeline.State, "state");
+
+                    FfmpegVideoOutcome outcome = Await(pipeline.CleanupTask, "cleanup");
+                    TestKit.CheckEqual(FfmpegVideoPipelineState.Cancelled, outcome.State, "outcome state");
+                    TestKit.Check(outcome.ProcessStarted, "the process was started");
+                    TestKit.Check(outcome.ProcessReaped, "the started process must be reaped");
+                    TestKit.Check(outcome.ProcessDisposed, "the process object must be disposed");
+                    TestKit.Check(outcome.TempOwnershipReleased, "the ownership handle must be released");
+                    TestKit.Check(!outcome.ResidualOwnership, "no residual ownership: " + outcome.ResidualDetail);
+                    TestKit.CheckEqual(0, PartialFiles(directory).Length, "temp file must be removed");
+                    TestKit.Check(!File.Exists(Path.Combine(directory, "video.mp4")), "nothing may be published");
+                }
+
+                int after = CountProcesses("ADOFAI.Renderist.FfmpegTests");
+                TestKit.Check(after <= before, "no child process may survive a cancelled start (" + before + " -> " + after + ")");
+
+                TestKit.TryDeleteDirectory(directory);
+            });
+
+            TestKit.Run("hardening: an initialization failure after a successful start still reaps the process", () =>
+            {
+                string directory = TestKit.NewWorkDirectory(workRoot, "initfail");
+                int before = CountProcesses("ADOFAI.Renderist.FfmpegTests");
+
+                var launcher = new FakeVideoProcessLauncher
+                {
+                    Encoder = new FakeVideoEncoderScript { Hang = true },
+                };
+
+                var options = new FfmpegVideoPipelineOptions
+                {
+                    Settings = Settings(64, 48, 30),
+                    Identity = MakeIdentity(FakeVideoProcess.ExecutablePath),
+                    FinalPath = Path.Combine(directory, "video.mp4"),
+                    ProcessStart = launcher.Create(),
+                    // 注入 stdout 初始化异常：进程已经启动，但流初始化失败。
+                    StreamWrapper = (stream, role) =>
+                    {
+                        if (string.Equals(role, "stdout", StringComparison.Ordinal))
+                            throw new IOException("injected stdout initialization failure");
+                        return stream;
+                    },
+                };
+
+                var pipeline = new FfmpegVideoPipeline(options);
+                FfmpegVideoStartResult start = pipeline.Start();
+
+                TestKit.Check(!start.Started, "start must fail");
+                TestKit.CheckEqual("process-init-failed", start.ErrorCode, "error code");
+                TestKit.CheckEqual(1, launcher.EncoderStarts, "the encoder process was really started");
+
+                FfmpegVideoOutcome outcome = Await(pipeline.CleanupTask, "cleanup");
+                TestKit.CheckEqual(FfmpegVideoPipelineState.Failed, outcome.State, "state");
+                TestKit.Check(outcome.ProcessStarted, "the process was started");
+                TestKit.Check(outcome.ProcessReaped, "the process must be reaped even without a pre-built exit wait");
+                TestKit.Check(outcome.ProcessDisposed, "the process object must be disposed");
+                TestKit.Check(outcome.TempOwnershipReleased, "the ownership handle must be released");
+                TestKit.Check(!outcome.ResidualOwnership, "no residual ownership: " + outcome.ResidualDetail);
+                TestKit.CheckEqual(0, PartialFiles(directory).Length, "temp file must be removed");
+                TestKit.Check(!File.Exists(Path.Combine(directory, "video.mp4")), "nothing may be published");
+
+                int after = CountProcesses("ADOFAI.Renderist.FfmpegTests");
+                TestKit.Check(after <= before, "no child process may survive an init failure (" + before + " -> " + after + ")");
+
+                TestKit.TryDeleteDirectory(directory);
+            });
+
+            // ---------------------------------------------------------------- P1-4 drain error propagation
+            TestKit.Run("hardening: the drain pump distinguishes EOF from a read failure", () =>
+            {
+                var collector = new BoundedTextCollector(64, 2);
+
+                var closed = new MemoryStream(new byte[0]);
+                TestKit.Check(FfmpegStreamPump.Start(closed, collector).Result == null,
+                    "an empty stream must be reported as a clean EOF");
+
+                var throwing = new ThrowingReadStream();
+                Exception error = FfmpegStreamPump.Start(throwing, collector).Result;
+                TestKit.Check(error != null, "a read failure must be reported, not swallowed");
+                TestKit.Check(error is IOException, "the original exception must be preserved: " + error.GetType().Name);
+
+                // 缓冲饱和之后仍必须继续排空实际流。
+                var collector2 = new BoundedTextCollector(16, 1);
+                var lines = new MemoryStream(Encoding.UTF8.GetBytes("first\nsecond\nthird\n"));
+                TestKit.Check(FfmpegStreamPump.Start(lines, collector2).Result == null, "clean EOF expected");
+                TestKit.CheckEqual(3L, collector2.TotalLines, "the pump must keep draining after the buffer saturates");
+                TestKit.Check(collector2.TotalChars > 16, "all bytes must have been consumed");
+            });
+
+            TestKit.Run("hardening: a stdout read failure prevents Completed and publishing", () =>
+            {
+                string directory = TestKit.NewWorkDirectory(workRoot, "drainfail");
+                var launcher = new FakeVideoProcessLauncher
+                {
+                    Verifier = new FakeVideoVerifierScript { Frames = 1 },
+                };
+
+                var options = new FfmpegVideoPipelineOptions
+                {
+                    Settings = Settings(64, 48, 30),
+                    Identity = MakeIdentity(FakeVideoProcess.ExecutablePath),
+                    FinalPath = Path.Combine(directory, "video.mp4"),
+                    ProcessStart = launcher.Create(),
+                    StreamWrapper = (stream, role) =>
+                    {
+                        // 只有 stdout 读取失败；stderr 与 stdin 都是真实管道。
+                        return string.Equals(role, "stdout", StringComparison.Ordinal)
+                            ? new ThrowingReadStream()
+                            : stream;
+                    },
+                };
+
+                var pipeline = new FfmpegVideoPipeline(options);
+                TestKit.Check(pipeline.Start().Started, "start");
+
+                FfmpegFrameWriteAttempt attempt = pipeline.TryWriteFrame(Frame(64, 48));
+                TestKit.Check(attempt.Accepted, "frame accepted");
+                TestKit.Check(Await(attempt.Completion, "frame write").Success, "frame write");
+
+                FfmpegVideoOutcome outcome = Await(pipeline.FinishAsync(), "finish");
+                TestKit.CheckEqual(FfmpegVideoPipelineState.Failed, outcome.State,
+                    "state (" + outcome.ErrorCode + " " + outcome.ErrorDetail + ")");
+                TestKit.CheckEqual("drain-failed", outcome.ErrorCode, "error code");
+                TestKit.Check((outcome.ErrorDetail ?? string.Empty).IndexOf("stdout-drain-failed", StringComparison.Ordinal) >= 0,
+                    "the stdout read failure must be reported: " + outcome.ErrorDetail);
+                TestKit.CheckEqual(0, launcher.VerifierStarts, "verification must not run after a drain failure");
+                TestKit.Check(!File.Exists(Path.Combine(directory, "video.mp4")), "nothing may be published");
+                TestKit.CheckEqual(0, PartialFiles(directory).Length, "temp file must be removed");
+                TestKit.Check(outcome.ProcessDisposed, "the process object must still be released");
+
+                TestKit.TryDeleteDirectory(directory);
+            });
+
+            // ---------------------------------------------------------------- P2-1 release after Completed
+            TestKit.Run("hardening: a completed session releases the process object and stays safe to dispose", () =>
+            {
+                string directory = TestKit.NewWorkDirectory(workRoot, "release");
+                var launcher = new FakeVideoProcessLauncher
+                {
+                    Verifier = new FakeVideoVerifierScript { Frames = 1 },
+                };
+
+                var pipeline = CreatePipeline(directory, Settings(64, 48, 30),
+                    MakeIdentity(FakeVideoProcess.ExecutablePath), launcher.Create(), "video.mp4");
+                TestKit.Check(pipeline.Start().Started, "start");
+
+                FfmpegFrameWriteAttempt attempt = pipeline.TryWriteFrame(Frame(64, 48));
+                Await(attempt.Completion, "frame write");
+
+                FfmpegVideoOutcome outcome = Await(pipeline.FinishAsync(), "finish");
+                TestKit.CheckEqual(FfmpegVideoPipelineState.Completed, outcome.State, "state");
+                TestKit.Check(outcome.ProcessReaped, "the process must be observed exited");
+                TestKit.Check(outcome.ProcessDisposed, "Completed must release the process object, not leave it to GC");
+                TestKit.Check(outcome.TempOwnershipReleased, "the temp ownership handle must be released");
+                TestKit.Check(!outcome.ResidualOwnership, "no residual: " + outcome.ResidualDetail);
+                TestKit.Check(File.Exists(outcome.FinalPath), "the artifact must exist");
+
+                // Dispose 不得遗漏已经 Completed 的资源，也不得破坏已发布产物。
+                pipeline.Dispose();
+                pipeline.Dispose();
+                TestKit.CheckEqual(FfmpegVideoPipelineState.Completed, pipeline.State, "state must stay Completed");
+                TestKit.Check(File.Exists(outcome.FinalPath), "the published artifact must survive Dispose");
+                TestKit.Check(!outcome.ResidualOwnership, "no residual after Dispose");
+
+                TestKit.TryDeleteDirectory(directory);
+            });
+
+            TestKit.Run("hardening: consecutive sessions do not accumulate processes or handles", () =>
+            {
+                string directory = TestKit.NewWorkDirectory(workRoot, "nohandles");
+                FfmpegVideoIdentity identity = MakeIdentity(FakeVideoProcess.ExecutablePath);
+                int before = CountProcesses("ADOFAI.Renderist.FfmpegTests");
+
+                for (int cycle = 0; cycle < 4; cycle++)
+                {
+                    var launcher = new FakeVideoProcessLauncher
+                    {
+                        Verifier = new FakeVideoVerifierScript { Frames = 1 },
+                    };
+
+                    var pipeline = CreatePipeline(directory, Settings(64, 48, 30), identity,
+                        launcher.Create(), "video-" + cycle + ".mp4");
+                    TestKit.Check(pipeline.Start().Started, "cycle " + cycle + " start");
+
+                    FfmpegFrameWriteAttempt attempt = pipeline.TryWriteFrame(Frame(64, 48));
+                    Await(attempt.Completion, "cycle write");
+
+                    FfmpegVideoOutcome outcome = Await(pipeline.FinishAsync(), "cycle finish");
+                    TestKit.CheckEqual(FfmpegVideoPipelineState.Completed, outcome.State,
+                        "cycle " + cycle + " state (" + outcome.ErrorCode + ")");
+                    TestKit.Check(outcome.ProcessReaped && outcome.ProcessDisposed,
+                        "cycle " + cycle + " must release process resources");
+                    TestKit.Check(outcome.TempOwnershipReleased,
+                        "cycle " + cycle + " must release the temp ownership handle");
+                    TestKit.Check(!outcome.ResidualOwnership,
+                        "cycle " + cycle + " residual: " + outcome.ResidualDetail);
+
+                    // 本会话的临时文件必须已经不存在（既没被复制，也没被遗留）。
+                    TestKit.Check(!File.Exists(pipeline.TempPath), "cycle " + cycle + " temp file must be gone");
+                }
+
+                int after = CountProcesses("ADOFAI.Renderist.FfmpegTests");
+                TestKit.Check(after <= before, "no child process may accumulate (" + before + " -> " + after + ")");
+                TestKit.CheckEqual(0, PartialFiles(directory).Length, "no partial files may remain");
+                TestKit.CheckEqual(4, Directory.GetFiles(directory, "video-*.mp4").Length, "four published files");
+
+                TestKit.TryDeleteDirectory(directory);
+            });
+
+            // ---------------------------------------------------------------- P2-2 frozen configuration
+            TestKit.Run("hardening: the session configuration is frozen at construction", () =>
+            {
+                string directory = TestKit.NewWorkDirectory(workRoot, "frozen");
+                FfmpegVideoIdentity identity = MakeIdentity(FakeVideoProcess.ExecutablePath);
+                var launcher = new FakeVideoProcessLauncher
+                {
+                    Encoder = new FakeVideoEncoderScript(),
+                    Verifier = new FakeVideoVerifierScript { Frames = 1 },
+                };
+                var verifier = new CapturingVideoVerifier();
+
+                var settings = Settings(64, 48, 30);
+                string originalFinalPath = Path.Combine(directory, "video.mp4");
+                var options = new FfmpegVideoPipelineOptions
+                {
+                    Settings = settings,
+                    Identity = identity,
+                    FinalPath = originalFinalPath,
+                    ProcessStart = launcher.Create(),
+                    Verifier = verifier,
+                };
+
+                var pipeline = new FfmpegVideoPipeline(options);
+                long frozenFrameLength = pipeline.FrameLengthBytes;
+
+                // 构造之后再修改调用方的**所有**可变配置。
+                settings.Width = 128;
+                settings.Height = 128;
+                settings.Fps = 60;
+                settings.Crf = 51;
+                settings.Preset = "ultrafast";
+                settings.PixelFormat = FfmpegVideoPixelFormat.Yuv444p;
+                options.FinalPath = Path.Combine(directory, "mutated.mp4");
+                options.TempPath = Path.Combine(directory, "mutated.tmp");
+                options.ExpectedCodecName = "mpeg4";
+                options.ProcessStart = null;
+                options.Verifier = null;
+                options.Identity = null;
+
+                TestKit.CheckEqual(frozenFrameLength, pipeline.FrameLengthBytes, "frame length must stay frozen");
+
+                FfmpegVideoStartResult start = pipeline.Start();
+                TestKit.Check(start.Started, "start: " + start.ErrorCode + " " + start.ErrorDetail);
+
+                // 命令来自冻结值。
+                string arguments = launcher.LastEncoderArguments;
+                TestKit.CheckNotEmpty(arguments, "encoder arguments");
+                TestKit.Check(arguments.IndexOf("-s 64x48", StringComparison.Ordinal) >= 0, "frozen size: " + arguments);
+                TestKit.Check(arguments.IndexOf("-framerate 30 ", StringComparison.Ordinal) >= 0, "frozen framerate: " + arguments);
+                TestKit.Check(arguments.IndexOf("-vf settb=1/30,setpts=N", StringComparison.Ordinal) >= 0, "frozen filter: " + arguments);
+                TestKit.Check(arguments.IndexOf("-video_track_timescale 30", StringComparison.Ordinal) >= 0, "frozen timescale");
+                TestKit.Check(arguments.IndexOf("-crf 18", StringComparison.Ordinal) >= 0, "frozen crf: " + arguments);
+                TestKit.Check(arguments.IndexOf("-preset medium", StringComparison.Ordinal) >= 0, "frozen preset: " + arguments);
+                TestKit.Check(arguments.IndexOf("-pix_fmt yuv420p", StringComparison.Ordinal) >= 0, "frozen pixel format");
+                TestKit.CheckEqual(identity.ExecutablePath, launcher.LastEncoderExecutablePath, "frozen identity path");
+
+                // 输出路径来自冻结值。
+                TestKit.CheckEqual(Path.GetFullPath(originalFinalPath), pipeline.FinalPath, "frozen final path");
+                TestKit.Check(pipeline.TempPath.StartsWith(originalFinalPath, StringComparison.OrdinalIgnoreCase),
+                    "the temp path must derive from the frozen final path: " + pipeline.TempPath);
+
+                FfmpegFrameWriteAttempt attempt = pipeline.TryWriteFrame(Frame(64, 48));
+                TestKit.Check(attempt.Accepted, "frame accepted: " + attempt.ErrorCode);
+                Await(attempt.Completion, "frame write");
+
+                FfmpegVideoOutcome outcome = Await(pipeline.FinishAsync(), "finish");
+                TestKit.CheckEqual(FfmpegVideoPipelineState.Completed, outcome.State,
+                    "state (" + outcome.ErrorCode + " " + outcome.ErrorDetail + ")");
+
+                // 核验期望也来自冻结值。
+                TestKit.Check(verifier.Requests > 0, "the verifier must have been asked to verify");
+                TestKit.CheckEqual(64, verifier.LastRequest.ExpectedWidth, "frozen verification width");
+                TestKit.CheckEqual(48, verifier.LastRequest.ExpectedHeight, "frozen verification height");
+                TestKit.CheckEqual(30, verifier.LastRequest.ExpectedFps, "frozen verification fps");
+                TestKit.CheckEqual("yuv420p", verifier.LastRequest.ExpectedPixelFormat, "frozen verification pixel format");
+                TestKit.CheckEqual("h264", verifier.LastRequest.ExpectedCodecName, "frozen verification codec");
+                TestKit.CheckEqual(identity.ExecutablePath, verifier.LastRequest.ExecutablePath, "frozen verification executable");
+                TestKit.CheckEqual(pipeline.TempPath, verifier.LastRequest.VideoPath, "verification target");
+                TestKit.CheckEqual(1L, verifier.LastRequest.ExpectedFrameCount, "expected frame count");
+
+                TestKit.CheckEqual(Path.GetFullPath(originalFinalPath), outcome.FinalPath, "published at the frozen path");
+                TestKit.Check(!File.Exists(Path.Combine(directory, "mutated.mp4")), "the mutated path must not be used");
+
+                TestKit.TryDeleteDirectory(directory);
+            });
+        }
+
+        // ==================================================================== real FFmpeg fixture
         private static void RealFixtureTests(string workRoot)
         {
             IReadOnlyList<string> binaries = Program.FindLocalFfmpegBinaries();
@@ -1797,32 +2392,33 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.TryDeleteDirectory(directory);
             });
 
-            TestKit.Run("video fixture: unwritable temp path fails closed", () =>
+            TestKit.Run("video fixture: an occupied temp path fails closed before any process starts", () =>
             {
                 RequireFixture(ffmpeg);
                 string directory = TestKit.NewWorkDirectory(workRoot, "realunwritable");
                 FfmpegVideoIdentity identity = MakeRealIdentity(ffmpeg);
 
-                // 临时路径上预先存在一个目录：FFmpeg 无法打开输出文件。
+                // 临时路径上预先存在一个**目录**：原子 CreateNew 必然失败，
+                // 因此管线在启动任何进程之前就 fail-closed，并且绝不触碰外来内容。
                 string tempPath = Path.Combine(directory, "video.mp4" + FfmpegVideoCommand.TempFileInfix + "blocked");
                 Directory.CreateDirectory(tempPath);
+                string sentinel = Path.Combine(tempPath, "foreign.txt");
+                File.WriteAllText(sentinel, "foreign");
 
                 var pipeline = CreatePipeline(directory, Settings(64, 48, 30), identity, null, "video.mp4", tempPath);
-                TestKit.Check(pipeline.Start().Started, "start");
-
-                FfmpegFrameWriteAttempt attempt = pipeline.TryWriteFrame(Frame(64, 48));
-                TestKit.Check(attempt.Accepted, "frame accepted");
-                Await(attempt.Completion, "frame write");
-
-                FfmpegVideoOutcome outcome = Await(pipeline.FinishAsync(), "finish");
-                TestKit.CheckEqual(FfmpegVideoPipelineState.Failed, outcome.State, "state");
-                TestKit.CheckEqual("encoder-exit-nonzero", outcome.ErrorCode, "error code");
+                FfmpegVideoStartResult start = pipeline.Start();
+                TestKit.Check(!start.Started, "start must fail closed");
+                TestKit.CheckEqual("temp-file-exists", start.ErrorCode, "error code");
+                TestKit.Check(Directory.Exists(tempPath), "the foreign directory must not be touched");
+                TestKit.CheckEqual("foreign", File.ReadAllText(sentinel), "foreign content must be untouched");
                 TestKit.Check(!File.Exists(Path.Combine(directory, "video.mp4")), "nothing may be published");
-                TestKit.Check(outcome.ResidualOwnership, "a foreign directory at the temp path must be reported as residual");
-                TestKit.Check((outcome.ResidualDetail ?? string.Empty).IndexOf("temp-path-not-a-file", StringComparison.Ordinal) >= 0,
-                    "residual detail: " + outcome.ResidualDetail);
 
-                Directory.Delete(tempPath);
+                FfmpegVideoOutcome outcome = Await(pipeline.CleanupTask, "cleanup");
+                TestKit.CheckEqual(FfmpegVideoPipelineState.Failed, outcome.State, "state");
+                TestKit.Check(!outcome.ResidualOwnership, "no residual: " + outcome.ResidualDetail);
+                TestKit.Check(Directory.Exists(tempPath), "cleanup must not delete a foreign directory");
+
+                Directory.Delete(tempPath, true);
                 TestKit.TryDeleteDirectory(directory);
             });
 
@@ -1966,6 +2562,79 @@ namespace ADOFAI.Renderist.FfmpegTests
             catch (Exception)
             {
                 return 0;
+            }
+        }
+
+        /// <summary>
+        /// 只会抛 IO 异常的读取流：用于确定性地复现"排空读取失败"这一故障形态
+        /// （真实管道在正常终止时给出 EOF，不会这样失败）。
+        /// </summary>
+        private sealed class ThrowingReadStream : Stream
+        {
+            public override bool CanRead { get { return true; } }
+            public override bool CanSeek { get { return false; } }
+            public override bool CanWrite { get { return false; } }
+            public override long Length { get { throw new NotSupportedException(); } }
+
+            public override long Position
+            {
+                get { throw new NotSupportedException(); }
+                set { throw new NotSupportedException(); }
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                throw new IOException("injected read failure");
+            }
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            {
+                throw new IOException("injected read failure");
+            }
+
+            public override void Flush()
+            {
+            }
+
+            public override long Seek(long offset, SeekOrigin origin)
+            {
+                throw new NotSupportedException();
+            }
+
+            public override void SetLength(long value)
+            {
+                throw new NotSupportedException();
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                throw new NotSupportedException();
+            }
+        }
+
+        /// <summary>记录核验请求的核验器：用于断言会话**实际使用**的冻结期望值。</summary>
+        private sealed class CapturingVideoVerifier : IFfmpegVideoVerifier
+        {
+            public int Requests { get; private set; }
+            public FfmpegVideoVerificationRequest LastRequest { get; private set; }
+
+            public Task<FfmpegVideoVerificationResult> VerifyAsync(FfmpegVideoVerificationRequest request)
+            {
+                Requests++;
+                LastRequest = request;
+
+                return Task.FromResult(new FfmpegVideoVerificationResult
+                {
+                    Status = FfmpegVideoVerificationStatus.Verified,
+                    DecodedFrameCount = request != null ? request.ExpectedFrameCount : 0,
+                    ContainerPacketCount = request != null ? request.ExpectedFrameCount : 0,
+                    TimeBaseNumerator = 1,
+                    TimeBaseDenominator = request != null ? request.ExpectedFps : 1,
+                    CodecName = request != null ? request.ExpectedCodecName : null,
+                    PixelFormat = request != null ? request.ExpectedPixelFormat : null,
+                    DecodedWidth = request != null ? request.ExpectedWidth : 0,
+                    DecodedHeight = request != null ? request.ExpectedHeight : 0,
+                });
             }
         }
     }
