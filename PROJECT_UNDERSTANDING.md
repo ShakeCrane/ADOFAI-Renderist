@@ -899,18 +899,19 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 | 项 | 值 |
 | --- | --- |
-| 发布源码提交（release source commit） | **`<构建后填入>`**（承载 `0.3.8.0` 版本变更的提交） |
+| 发布源码提交（release source commit） | **`4d35801862d0828ea248d9934e8ebe74af11f2bb`**（`chore(release): 0.3.8.0 FFmpeg Video Export Pipeline (L1 Component Management)`） |
 | 产品版本 / FileVersion | `0.3.8.0` |
 | Phase | `Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management` |
-| **ProductVersion（含 `+hash`）** | **`<构建后填入>`** |
-| DLL SHA256 | **`<构建后填入>`** |
-| ZIP SHA256 | **`<构建后填入>`**（sidecar 同值） |
-| 包内容 | 仅 3 个顶层文件（`Info.json` / `ADOFAI.Renderist.dll` / `LICENSE`）—— 构建后独立解包复核 |
-| 一致性 | `bin\Release` DLL == 包内 DLL（逐字节一致）；**游戏内部署**为另行一步，不要求本轮执行 |
-| 构建/验证 | Release Rebuild / package / verify / 离线回归 / 真实 fixture 回归 —— 构建后填入 |
+| **ProductVersion（含 `+hash`）** | **`0.3.8.0+4d35801862d0828ea248d9934e8ebe74af11f2bb`** ⇒ 精确指向上述发布源码提交 |
+| DLL SHA256 | **`AE2326D3D2B13FFA5B300CD1E3E06241F8A6A5522B5AB3EF1260085721DBC6E9`**（268288 字节） |
+| 发布包 | `dist/ADOFAI.Renderist.zip`（`dist/` 为 gitignored，不入库） |
+| ZIP SHA256 | **`DB0F5B22CEB12D57241C347BCFDA55BE83E44224C9A0149BC529B85FD0476A3E`**（sidecar 同值） |
+| 包内容 | 仅 3 个顶层文件（`Info.json` / `ADOFAI.Renderist.dll` / `LICENSE`），**0 个嵌套目录，无 banned 内容**（独立解包复核） |
+| 一致性 | `bin\Release` DLL == 包内 DLL（SHA256 相同，逐字节一致）。**游戏内部署为另行一步，本轮未执行** —— Mods 内仍是收敛前的 `1D70BE45…`（`+02c7fb8`），故 `0.3.8.0` 的实机验证仍待完成 |
+| 构建/验证 | 强制 Release Rebuild **0 error / 0 C# warning**（仅 `NU1900` 离线 NuGet 环境噪声）；package + verify（内置与独立各一次）**PASS 11 checks / 0 failures**；离线回归 **72 passed / 0 failed / 1 skipped**；真实 Gyan 9.0.2 fixture 回归 **73 passed / 0 failed / 0 skipped**；`git diff --check` clean |
 | 本轮源码改动 | 版本点（`Info.json` / csproj `<Version>` / `ModEntry.ModVersion` + 启动日志）+ `EditorExportSession.PhaseLabel` + `ModEntry` 类注释 Phase；**无功能性代码改动** |
 
-**顺序（与 §12.1 相同的仓库约定）**：先提交版本收敛源码 → 从该提交**强制 Release Rebuild** + package → 再用一个 **docs-only 提交**把最终 DLL / ZIP 身份填入本表。因此 `+hash` 指向**承载 `0.3.8.0` 版本变更的提交**，HEAD 可能比它多一个 docs-only 提交，这不影响产物身份。**若在打包之后又产生任何源码改动，必须重新 Rebuild + 重新打包并更新本表。**
+**顺序（与 §12.1 相同的仓库约定）**：先提交版本收敛源码 → 从该提交**强制 Release Rebuild** + package → 再用一个 **docs-only 提交**把最终 DLL / ZIP 身份填入本表。因此 `+hash` 指向**承载 `0.3.8.0` 版本变更的提交**，HEAD 可能比它多一个 docs-only 提交，这不影响产物身份。**若在打包之后又产生任何源码改动，必须重新 Rebuild + 重新打包并更新本表。** 本仓库**刻意不在记录身份的 docs-only 提交之后再打包**：那会让同一个 `0.3.8.0` 出现两个不同哈希的发布包身份（对照 §12 对 `0.3.7.0` 三份包身份的警示）。因此当前**唯一**的 `0.3.8.0` 产物就是本表中由 `4d35801` 构建的那一份。
 
 **`0.3.8.0` 的能力边界（不得误读）**：`0.3.8.0` 仅覆盖 **L1 — FFmpeg Component Management**（组件发现 / 固定 manifest / 能力探测 / 安全安装 / HTTPS 下载）。**L2（FFmpeg Video Process Pipeline）与 L3（Unity MP4 Frame Transactions）未实施**，因此 `0.3.8.0` 的 DLL **不具备** MP4 导出能力，本文件任何位置都不得表述为「MP4 可用」。实机证据对应收敛前的 `1D70BE45…`（`+02c7fb8`，见 §2.7）；**`0.3.8.0` 构建本身尚未实机验证**。
 
