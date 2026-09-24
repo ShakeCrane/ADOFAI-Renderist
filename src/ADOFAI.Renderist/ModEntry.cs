@@ -14,7 +14,8 @@ namespace ADOFAI.Renderist
 {
     /// <summary>
     /// Unity Mod Manager entry point for ADOFAI Renderist.
-    /// Phase 3.7.0 Custom Resolution &amp; Supersampling.
+    /// Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management.
+    /// L1（组件管理 / 下载）已完成；L2（帧流进程）与 L3（MP4 帧事务）尚未实施。
     /// Renderist remains passive towards replay / autoplay.
     /// </summary>
     public static class ModEntry
@@ -25,7 +26,7 @@ namespace ADOFAI.Renderist
         /// 当前 mod 版本。与 Info.json / csproj / 启动日志保持同步，
         /// 由 scripts/set-version.ps1 自动同步。
         /// </summary>
-        internal const string ModVersion = "0.3.7.1";
+        internal const string ModVersion = "0.3.8.0";
 
         internal static UnityModManager.ModEntry Mod;
         internal static UnityModManager.ModEntry.ModLogger Logger;
@@ -109,7 +110,7 @@ namespace ADOFAI.Renderist
 
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.3.7.1 (Phase 3.7.0 Custom Resolution & Supersampling).");
+                Log.Info("Loaded ADOFAI Renderist 0.3.8.0 (Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management).");
                 return true;
             }
             catch (Exception ex)

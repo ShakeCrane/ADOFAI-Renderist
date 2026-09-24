@@ -31,9 +31,9 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 产品版本 | `0.3.7.1` |
-| Phase | `Phase 3.7.0 Custom Resolution & Supersampling`（收敛第四位时 **Phase 保持不变**） |
-| 版本定位 | `0.3.7.1` = **Custom Resolution + Supersampling 双闭环稳定性收敛版**（`0.3.7.0` 功能不变，仅第四位递增）。第一闭环 Custom Resolution 与第二闭环 Supersampling **均已在当前 Gamma / Direct3D11 环境通过实机验收**；其下 `0.3.6.4` = **Log-only Frame Transactions（image output disabled）** |
+| 产品版本 | `0.3.8.0` |
+| Phase | `Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management`（当前仅完成 **L1**；L2/L3 未实施） |
+| 版本定位 | **当前 `0.3.8.0` = `Phase 3.8.0 FFmpeg Video Export Pipeline` 的首个子阶段（L1：FFmpeg 组件管理 + HTTPS 下载）**；该 Phase 的其余部分（L2 帧流进程、L3 MP4 帧事务）**尚未实施**，因此 `0.3.8.0` **不代表** MP4 导出可用。其下 `0.3.7.1` = **Custom Resolution + Supersampling 双闭环稳定性收敛版**（**上一稳定基线**；`0.3.7.0` 功能不变、仅第四位递增）。第一闭环 Custom Resolution 与第二闭环 Supersampling **均已在当前 Gamma / Direct3D11 环境通过实机验收**；更早 `0.3.6.4` = **Log-only Frame Transactions（image output disabled）** |
 | 稳定实机基线 | **`0.3.7.1`**（= `0.3.7.0` 双闭环 + `ce34ad4` metadata 语义修正；构建身份见 §12）。`0.3.7.0` 第一闭环（Custom Resolution）与第二闭环（Supersampling，含 **scale=4 完整导出**）均已实机通过：第一闭环见 §9.1；第二闭环见 §9.7.1 + §9.7.3。更早的稳定基线 `0.3.6.4`（PNG 与 Log-only 同谱面跑通）仍见 §9.1。**未覆盖边界**（Linear 色彩空间、极端资源失败）见 §9.7.3。 |
 | 当前开发方向 | 双闭环均已收敛；**未开始**音频 / FFmpeg / replay / 外部视频编码。第二闭环仍然**未覆盖** Unity **Linear** 色彩空间与极端资源失败路径（详见 §9.7.3），不得由 Gamma 结果外推。 |
 | 下一阶段设计状态 | 用户已批准目标版本 `0.3.8.0`、名称 `FFmpeg Video Export Pipeline` 及准确 Phase 文案 `Phase 3.8.0 FFmpeg Video Export Pipeline`。截至本次架构调查，产品及源码仍为 `0.3.7.1`；视频管线**待实现、待验证**，本节批准不表示版本已变更。 |
@@ -201,8 +201,8 @@ Gyan [构建页](https://www.gyan.dev/ffmpeg/builds/)同时列出原站包、SHA
 
 - **本轮发现并修复一处明确缺陷（临时文件 ownership）**：`FfmpegDownloadController.ReportFinished` 原先对**当前 generation 的重复完成通知**也走"迟到通知"分支，删除该代临时归档。但此时校验或安装**正在读取**该文件：删除可能失败（映射条目已被移除 → 归档泄漏且不再被任何路径清理），也可能成功（把一次合法安装变成失败）。现改为：只有**非当前** generation 的迟到通知才删除其临时文件；当前 generation 的重复通知一律**不推进校验/安装、不删除在用归档**，终态清理由 `Pump` 统一负责。回归 `download: duplicate completion of the active generation keeps the in-use archive` **先失败后通过**（修复前 71 passed / 1 failed）。
 - **当前验证结果（本轮实际执行）**：离线回归 **72 passed / 0 failed / 1 skipped**（连跑三次稳定）；以目标游戏内**已安装的真实** Gyan 9.0.2 essentials 为 fixture 运行适用矩阵 **73 passed / 0 failed / 0 skipped**。真实 fixture 的两份 EXE 哈希均与 manifest 一致（`ffmpeg.exe` `3256173F3F8BFFD7DF12227C68ADF68025EDB1832273A9530688A7BB1ED8EDEC`、`ffprobe.exe` `F0D36ECBBDD3BCFAC3EFA078C96C7271C2E68B3810595552AC3B7F17E9A65C52`），实测 `ffmpeg version 9.0.2-essentials_build-www.gyan.dev`，配置含 `--enable-gpl` / `--enable-libx264`。**该 fixture 来自游戏内实际安装，不是本轮 shell 下载 —— 本会话 shell 的出站 TLS 仍然被阻断。** 这独立佐证了 §2.6 的实机安装结论。Release Rebuild 0 error / 0 warning；`package-release.ps1` 与独立 `verify-release-package.ps1` 均 **11 checks / 0 failures**；发布 ZIP 仍严格只有三文件；`git diff --check` clean。
-- **二进制身份（2026-09-24 复核；证据来自直接读取文件，不由 UI 结果推断）**：`Mods\ADOFAI.Renderist\ADOFAI.Renderist.dll` 现为 **`1D70BE45DCFA4BD809A909ED248BF22B744E95EC6AB956EF271BF00B6DC5F5B3`**（267776 字节），`ProductVersion = 0.3.7.1+02c7fb8ca6be2009aceb17148acbbe2dbc520bcb`，部署时间 2026-09-24 14:56:50，与 Release 构建**逐字节一致**（部署后重新读取校验），且**包含** `ea09bd7` 的 ownership 修正。**被取代**：`F8B3553F…`（`+bea143d`，13:34:51）—— 用户此前 5 项实机 PASS 绑定的是它，**不含**该修正；`6EA48355…`（`+be29174`）与本次部署功能内容相同、仅嵌入 HEAD 不同（`be29174` → `02c7fb8` 为 docs-only 提交），亦已取代；`63674902…`（HEAD `bea143d` + 未提交工作区）作废。**重要事实**：两个构建在游戏内都显示 `0.3.7.1` / `Phase 3.7.0 Custom Resolution & Supersampling`，**游戏内版本字符串无法区分它们**；唯一判别依据是**磁盘 DLL 哈希或 `ProductVersion`**（辅以 `Player.log` 在部署时间之后的加载记录）。因此待执行的 `0.3.7.2` 版本收敛本身也会顺带给出可区分的游戏内身份。
-- **当前交接状态（2026-09-24）**：`1D70BE45…`（`+02c7fb8`）**已部署**，等用户的**最小实机结果**（实际加载身份、FFmpeg `Ready`、`libx264` / `mp4` / `rawvideo` 识别、禁用与重新启用、无新报错）后再执行 `0.3.7.2` 版本收敛（§12）。**尚未声称 `0.3.7.2` 已发布**，产品版本仍为 `0.3.7.1`。不要求用户重跑 114 MB 下载、PNG / Log-only 或罕见取消竞态。部署未改动 `Settings.xml`（哈希前后一致 `F81452BB…`），未删除已安装 FFmpeg（两份 EXE 哈希仍与 manifest 一致），未放置任何额外的可被 UMM 加载的备份 DLL。
+- **二进制身份（2026-09-24 复核；证据来自直接读取文件，不由 UI 结果推断）**：`Mods\ADOFAI.Renderist\ADOFAI.Renderist.dll` 现为 **`1D70BE45DCFA4BD809A909ED248BF22B744E95EC6AB956EF271BF00B6DC5F5B3`**（267776 字节），`ProductVersion = 0.3.7.1+02c7fb8ca6be2009aceb17148acbbe2dbc520bcb`，部署时间 2026-09-24 14:56:50，与 Release 构建**逐字节一致**（部署后重新读取校验），且**包含** `ea09bd7` 的 ownership 修正。**被取代**：`F8B3553F…`（`+bea143d`，13:34:51）—— 用户此前 5 项实机 PASS 绑定的是它，**不含**该修正；`6EA48355…`（`+be29174`）与本次部署功能内容相同、仅嵌入 HEAD 不同（`be29174` → `02c7fb8` 为 docs-only 提交），亦已取代；`63674902…`（HEAD `bea143d` + 未提交工作区）作废。**重要事实**：两个构建在游戏内都显示 `0.3.7.1` / `Phase 3.7.0 Custom Resolution & Supersampling`，**游戏内版本字符串无法区分它们**；唯一判别依据是**磁盘 DLL 哈希或 `ProductVersion`**（辅以 `Player.log` 在部署时间之后的加载记录）。因此 `0.3.8.0` 版本收敛本身也会顺带给出可区分的游戏内身份（`0.3.8.0` ≠ `0.3.7.1`）。
+- **当前交接状态（2026-09-24）**：`1D70BE45…`（`+02c7fb8`）已部署，并**已由用户完成最小实机验收** —— FFmpeg `Ready` **PASS**；`libx264` / `mp4` / `rawvideo` 识别 **PASS**；禁用并重新启用 **PASS**；其他可见异常 **无**。这构成**当前 L1 修正源码**的实机证据（覆盖 `ea09bd7` 的 ownership 修正）。**但它不是未来 `0.3.8.0` 重新构建 DLL 的实机证据** —— 版本收敛会改变二进制，新构建仍需在后续**自然的**实机验证中确认（不要求用户专门重跑）。本轮据此把产品版本收敛到 **`0.3.8.0`**（§12 / §12.2）。部署未改动 `Settings.xml`（哈希前后一致 `F81452BB…`），未删除已安装 FFmpeg（两份 EXE 哈希仍与 manifest 一致），未放置任何额外的可被 UMM 加载的备份 DLL。
 - **用户实机验收（2026-09-24，针对上述 13:34:51 部署构建 `F8B3553F`）**：① FFmpeg 组件显示 `Ready` 并识别 `libx264` / `mp4` / `rawvideo` — **PASS**；② 禁用并重新启用 Renderist — **PASS**；③ Log-only 导出 — **PASS**；④ PNG 导出 — **PASS**；⑤ 其他可见异常 — **无**。**证据边界**：这五项绑定 `F8B3553F`（`+bea143d`），**不是**当前 HEAD 构建 `6EA48355`；`ea09bd7` 之后未重新部署，故当前构建未获得这五项结论。其中 ② 覆盖的是**空闲状态**下的禁用/启用，**不覆盖**活动下载期间的禁用/卸载。
 - **L1 分项状态（不得整体宣布完成）**：**已有实机证据** —— 主下载（固定 HTTPS、GitHub → `release-assets.githubusercontent.com` 重定向、HTTP 200、`Content-Length` = `downloadedBytes` = 实际文件长度 = `114768076`）、内容 SHA-256 校验、安全解压与原子安装、**真实能力探测**（`libx264` / `mp4` / `rawvideo`）、**重启后重新发现为 Ready**、**空闲状态下禁用/重新启用**、**存在 Ready 组件时的 Log-only 与 PNG 导出**。**仍未完整验收** —— 活动下载期间禁用/卸载；异常网络（证书失败、断线、超时）；旧回调与新请求的真实交错。
 - **剩余最小实机验收项**：① 活动下载进行中禁用 Mod / `OnUnload` / 退出游戏，确认 Abort、临时文件与 `.downloads` 收敛；② 让旧代完成通知与新请求**真实交错**（含同代重复完成通知），确认真实交错下不发布旧版本、不误删在用归档；③ 异常网络（证书失败、中途断线）的 fail-closed 与清理；④ 若要把当前 HEAD 构建 `6EA48355…` 作为交付基线，需在**下一次自然的实机验证**中确认（不要求用户专门重复验收）。
@@ -843,7 +843,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 > 此处只列**当前未收敛事项**；已完成的 End Tail、pre-entry、Log-only、Custom Resolution 和 Supersampling 不再重复充当待办。历史验收数据见 §9，实施不变量见 §3–§8，当前 ADOFAI 内部事实见 §10。
 
-1. **0.3.8.0 视频导出（未完成）**：组件管理与 UnityWebRequest 下载代码已实现；L1 完成通知丢失缺陷与"重复完成通知误删在用归档"ownership 缺陷均已修复（§2.6 / §2.7）。目标游戏中固定资产下载、SHA 校验、安全安装、真实能力探测、GUI Ready、重启后重新发现、空闲状态禁用/重新启用，以及存在 Ready 组件时的 Log-only / PNG 导出**已有实机证据**（具体绑定 `F8B3553F` / `+bea143d`，见 §2.7）。**仍未验收**：活动下载期间禁用/卸载、异常网络（证书/断线）、旧通知与新请求真实交错；且**当前 HEAD 构建尚未实机验证**（§2.7）。L1 Ready **不是** MP4 可用。L2 帧流进程与 L3 MP4 帧事务均**未实施**。Event-Driven A+ 决策见 §2.1；优先验证跨 Unity 帧的 pending、主线程完成投递与长时间 FFmpeg 背压下的原生 Update / visual state 是否漂移，再落实 MP4 接入、Finalizing 和完整故障收敛。L1 Ready **不是** MP4 运行时验收。
+1. **0.3.8.0 视频导出（未完成；版本线已开启）**：`0.3.7.1` → **`0.3.8.0`** 已执行，Phase 为 `Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management`（§12 / §12.2）—— **只完成 L1**。L1 完成通知丢失缺陷与"重复完成通知误删在用归档"ownership 缺陷均已修复（§2.6 / §2.7）。目标游戏中固定资产下载、SHA 校验、安全安装、真实能力探测、GUI Ready、重启后重新发现、空闲状态禁用/重新启用，以及存在 Ready 组件时的 Log-only / PNG 导出**已有实机证据**（绑定 `F8B3553F` / `+bea143d` 及后续 `1D70BE45` / `+02c7fb8`，见 §2.7）。**仍未验收**：活动下载期间禁用/卸载、异常网络（证书/断线）、旧通知与新请求真实交错；且 **`0.3.8.0` 重新构建的 DLL 尚未实机验证**。**L2 帧流进程与 L3 MP4 帧事务均未实施** —— 不得因进入 `0.3.8.0` 就宣称 MP4 导出可用。Event-Driven A+ 决策见 §2.1；优先验证跨 Unity 帧的 pending、主线程完成投递与长时间 FFmpeg 背压下的原生 Update / visual state 是否漂移，再落实 MP4 接入、Finalizing 和完整故障收敛。L1 Ready **不是** MP4 运行时验收。
 2. **Linear 与极端 GPU 资源失败**：Supersampling 已在 Gamma / Direct3D11 的所述范围实机通过，**Linear 色彩空间从未实机覆盖**；接近硬件极限的 RT 分配与 GPU 状态恢复故障仍只有 stub / 静态证据。详见 §9.7.3。
 3. **真实 Unity 故障注入**：host Destroy、RT Release/Destroy、partial Camera assignment 的失败与重试，已有生产源码 + Unity stub 的确定性测试，**未在真实 Unity Player 注入这些异常**；正常路径与跨调用 residual 的既有实机结果不能替代异常证据（§3.5、§9.3）。
 4. **其余边界测试**：显式 safety frame-limit runtime trigger 与 `TryPrepareHitState` 故障注入主要依赖静态 / 纯计算证据；需要扩大 BPM change、Twirl、Midspin、event-heavy、特殊 startup、长谱面覆盖。无须为此设置人为帧数或时长上限。
@@ -856,7 +856,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 ## 12. 发布与部署
 
-- 当前产品版本为 **`0.3.7.1`**（**Custom Resolution + Supersampling 双闭环稳定性收敛版**；`0.3.7.0` 功能不变，**仅第四位递增**，Phase 保持 `Phase 3.7.0 Custom Resolution & Supersampling`）；其下的 `0.3.7.0` = 双闭环功能版，`0.3.6.4` = Log-only Frame Transactions。前三位 `0.3.6` → `0.3.7` 与 Phase 文案在 `0.3.7.0` 轮次**均已变更**（用户明确批准）；`0.3.7.0` → `0.3.7.1` 未改 Phase。
+- 当前产品版本为 **`0.3.8.0`**，Phase 为 **`Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management`**（前三位 `0.3.7` → `0.3.8` 与 Phase 文案**均由用户明确批准**）。`0.3.8.0` 开启 FFmpeg 视频导出管线阶段，但**只完成 L1（FFmpeg 组件管理 + HTTPS 下载）**；**L2（FFmpeg Video Process Pipeline）与 L3（Unity MP4 Frame Transactions）尚未实施 —— 不得宣称 MP4 导出已经可用。** 其下 `0.3.7.1` = Custom Resolution + Supersampling 双闭环稳定性收敛版（**上一稳定基线**，Phase 为 `Phase 3.7.0 Custom Resolution & Supersampling`），`0.3.7.0` = 双闭环功能版，`0.3.6.4` = Log-only Frame Transactions。
 - 本轮（0.3.7.0 第一闭环）相对基线 `70df55b` 的改动：新增 `OutputGeometryPolicy.cs`、`RenderEnvironmentInventory.cs`；修改 `Settings.cs`、`UiText.cs`、`ModEntry.cs`、`EditorExportReadiness.cs`、`EditorExportPreflight.cs`、`EditorExportController.cs`、`EditorExportSession.cs`、`DeterministicFrameScheduler.cs`、`FrameCaptureDriver.cs`；版本点 `mod/Info.json`、csproj `<Version>`、`ModEntry.ModVersion` 与 `ModEntry` 启动日志，外加**人工同步**的 `EditorExportSession.PhaseLabel` 与类注释 phase 文案（`set-version.ps1` 的已知范围限制，见 §2）。
 - 本轮**未**新增 Harmony Patch、未新增 ADOFAI 内部 API 依赖、未修改 README。
 - 发布包：`Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` ignored。本轮以 `scripts/package-release.ps1 -Configuration Release -Version 0.3.7.0 -Force` 打包，并在发布提交 `05a3b4a` 之后重新 Release Rebuild 并以 `-SkipBuild` 重新打包，产出 `dist/ADOFAI.Renderist.zip`（zip SHA256 `B251B6A4631401E44F96130E152FB834B70B47CE6E75CA45304DC43380A4155F`，sidecar `dist/ADOFAI.Renderist.zip.sha256` 同值）；`verify-release-package.ps1` 结果 **PASS 11 checks / 0 failures**，独立解包复核确认包内仅有 3 个顶层文件、无目录，且包内 DLL 与 `bin\Release` 逐字节一致。
@@ -876,7 +876,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
   → `scripts/package-release.ps1 -Configuration Release -Force`
   → `scripts/verify-release-package.ps1 -ZipPath dist/ADOFAI.Renderist.zip`。
 
-- **L1（FFmpeg 组件管理 + HTTPS 下载）版本收敛方案（2026-09-24；用户已同意采用 `0.3.7.2`，**本轮尚未执行**）**：L1 已形成**可独立回退的阶段性闭环**（提交 `3483193` → `be29174`；离线回归、真实 fixture 矩阵、三文件发布验证均通过；主路径已在目标游戏实证，见 §2.6 / §2.7），但**已批准的 `0.3.8.0` / `Phase 3.8.0 FFmpeg Video Export Pipeline` 描述的是视频导出管线**，而 L2 帧流进程与 L3 MP4 帧事务**均未实施**。因此**不建议现在就升到 `0.3.8.0`** —— 那会让 Phase 名称覆盖尚未交付的能力。建议路径：① 本轮采用**第四位**，把产品版本升为 **`0.3.7.2`**（AGENTS.md：有独立回退价值的小闭环 → 递增第四位），Phase 保持 `Phase 3.7.0 Custom Resolution & Supersampling` 不变，用于标记 L1 里程碑；② 待 L2/L3 实际落地时再升 **`0.3.8.0`** 并同步已批准的 Phase 文案。若用户决定现在进入 `0.3.8.0` 线，则须同时确认 Phase 是否仍用 `Phase 3.8.0 FFmpeg Video Export Pipeline`（该文案涵盖尚未实现的能力），并同步全部版本点。**执行任何版本变更时必须同步**：`mod/Info.json`、csproj `<Version>`、`ModEntry.ModVersion` 与启动日志、`EditorExportSession.PhaseLabel`、`ModEntry` / `FrameCaptureDriver` 等类注释的 phase 文案（`set-version.ps1 -Phase` **不是**全仓库同步器，见 §2），随后 Release Rebuild + `package-release.ps1` + `verify-release-package.ps1`，并更新 §12.1 发布身份表的 DLL / ZIP 哈希。**当前源码的 `Info.json` / `ModEntry.ModVersion` 仍为 `0.3.7.1`。**
+- **版本收敛：`0.3.7.1` → `0.3.8.0`（2026-09-24 执行，用户裁定）**：**此前建议采用 `0.3.7.2` 的方案已由用户明确作废**（正确目标为 `0.3.8.0`；**不得使用 `0.3.7.2`**）。本轮直接开启 `0.3.8.0` 版本线，并采用 Phase `Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management`，使版本号与 Phase **同时**表达「当前开发阶段」与「已完成的功能」：`0.3.8.0` + `Phase 3.8.0` 表示已进入 FFmpeg 视频导出管线阶段，`— L1 Component Management` 子标题表示当前**仅**完成 L1。**L2 帧流进程与 L3 MP4 帧事务均未实施，故不得因进入 `0.3.8.0` 而宣称 MP4 导出可用。** 已同步的版本点：`mod/Info.json`、csproj `<Version>`、`ModEntry.ModVersion`、`ModEntry` 启动日志（版本 + Phase）、`EditorExportSession.PhaseLabel`、`ModEntry` 类注释 Phase，以及 `PROJECT_UNDERSTANDING.md`；发布身份见 §12.2。**`0.3.8.0` 重新构建的 DLL 尚未实机验证** —— 实机证据对应收敛前的 `1D70BE45…`（`+02c7fb8`），见 §2.7。
 
 ### 12.1 最终发布身份（`0.3.7.1` 稳定性收敛）
 
@@ -894,4 +894,23 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 | 本轮源码改动 | 仅：三个版本点（`Info.json` / csproj `<Version>` / `ModEntry.ModVersion` + 启动日志）+ `OutputGeometryPolicy` 规划器注释勘误；**Phase 未变** |
 
 **关于 `+hash` 与 HEAD 的关系（顺序说明）**：DLL 的 `ProductVersion +hash` 记录**构建时的 HEAD**。由于该 hash 嵌在 DLL 字节里，`DLL SHA256` 只能在提交之后才能算出，因此本仓库采用（与 `0.3.7.0` 相同）的顺序：**先提交发布源码（`647b1d7`）→ 从该提交 Rebuild / package → 再用一个 docs-only 提交记录最终身份**。因此 `+hash` 指向 `647b1d7`（**最终源码提交**），而 HEAD 可能比它多一个 docs-only 提交 —— 这不影响产物身份。若在打包之后又产生任何**源码**改动，必须重新 Rebuild + 重新打包并更新本节。
+
+### 12.2 当前发布身份（`0.3.8.0` — L1 Component Management）
+
+| 项 | 值 |
+| --- | --- |
+| 发布源码提交（release source commit） | **`<构建后填入>`**（承载 `0.3.8.0` 版本变更的提交） |
+| 产品版本 / FileVersion | `0.3.8.0` |
+| Phase | `Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management` |
+| **ProductVersion（含 `+hash`）** | **`<构建后填入>`** |
+| DLL SHA256 | **`<构建后填入>`** |
+| ZIP SHA256 | **`<构建后填入>`**（sidecar 同值） |
+| 包内容 | 仅 3 个顶层文件（`Info.json` / `ADOFAI.Renderist.dll` / `LICENSE`）—— 构建后独立解包复核 |
+| 一致性 | `bin\Release` DLL == 包内 DLL（逐字节一致）；**游戏内部署**为另行一步，不要求本轮执行 |
+| 构建/验证 | Release Rebuild / package / verify / 离线回归 / 真实 fixture 回归 —— 构建后填入 |
+| 本轮源码改动 | 版本点（`Info.json` / csproj `<Version>` / `ModEntry.ModVersion` + 启动日志）+ `EditorExportSession.PhaseLabel` + `ModEntry` 类注释 Phase；**无功能性代码改动** |
+
+**顺序（与 §12.1 相同的仓库约定）**：先提交版本收敛源码 → 从该提交**强制 Release Rebuild** + package → 再用一个 **docs-only 提交**把最终 DLL / ZIP 身份填入本表。因此 `+hash` 指向**承载 `0.3.8.0` 版本变更的提交**，HEAD 可能比它多一个 docs-only 提交，这不影响产物身份。**若在打包之后又产生任何源码改动，必须重新 Rebuild + 重新打包并更新本表。**
+
+**`0.3.8.0` 的能力边界（不得误读）**：`0.3.8.0` 仅覆盖 **L1 — FFmpeg Component Management**（组件发现 / 固定 manifest / 能力探测 / 安全安装 / HTTPS 下载）。**L2（FFmpeg Video Process Pipeline）与 L3（Unity MP4 Frame Transactions）未实施**，因此 `0.3.8.0` 的 DLL **不具备** MP4 导出能力，本文件任何位置都不得表述为「MP4 可用」。实机证据对应收敛前的 `1D70BE45…`（`+02c7fb8`，见 §2.7）；**`0.3.8.0` 构建本身尚未实机验证**。
 
