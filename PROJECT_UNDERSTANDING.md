@@ -10,7 +10,7 @@
 
 ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器内非实时渲染导出 Mod。
 
-当前**已实现**路线：编辑器内原生 Camera → Renderist-owned RenderTexture → PNG 序列 / Log-only；`MasterTimeline` 控制逻辑帧。**下一阶段已批准、尚未实施**：`0.3.8.0 — FFmpeg Video Export Pipeline`，在保留两条现有路径的同时增加独立 MP4 输出（技术决策与待验证项见 §2.1）。
+当前**已实现**路线：编辑器内原生 Camera → Renderist-owned RenderTexture → PNG 序列 / Log-only；`MasterTimeline` 控制逻辑帧。`0.3.8.0` 阶段在保留两条现有路径的同时增加独立 MP4 输出（技术决策与待验证项见 §2.1）：**L1（FFmpeg 组件管理 + HTTPS 下载）已完成并通过实机验收**；**L2（独立 FFmpeg 视频进程管线）已实现为 Unity-free 模块并通过独立 net48 回归，但尚未接入 Unity**（§2.8）；**L3（Unity MP4 帧事务）尚未实施**。
 
 硬边界：
 
@@ -31,13 +31,14 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 产品版本 | `0.3.8.0` |
-| Phase | `Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management`（当前仅完成 **L1**；L2/L3 未实施） |
-| 版本定位 | **当前 `0.3.8.0` = `Phase 3.8.0 FFmpeg Video Export Pipeline` 的首个子阶段（L1：FFmpeg 组件管理 + HTTPS 下载）**；该 Phase 的其余部分（L2 帧流进程、L3 MP4 帧事务）**尚未实施**，因此 `0.3.8.0` **不代表** MP4 导出可用。其下 `0.3.7.1` = **Custom Resolution + Supersampling 双闭环稳定性收敛版**（**上一稳定基线**；`0.3.7.0` 功能不变、仅第四位递增）。第一闭环 Custom Resolution 与第二闭环 Supersampling **均已在当前 Gamma / Direct3D11 环境通过实机验收**；更早 `0.3.6.4` = **Log-only Frame Transactions（image output disabled）** |
+| 产品版本 | `0.3.8.0`（L2 实现轮按用户要求**未递增第四位**，Phase 文案也未修改） |
+| Phase | `Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management`（代码内文案**保持 L1**，见 §2.8 结尾） |
+| 版本定位 | **当前 `0.3.8.0` = `Phase 3.8.0 FFmpeg Video Export Pipeline`**：**L1（组件管理 + HTTPS 下载）已完成并通过实机验收**，**L2（FFmpeg 视频进程管线）已在本轮实现并通过独立 net48 回归**（§2.8），**L3（Unity MP4 帧事务）未实施** —— 因此 `0.3.8.0` **仍然不代表** MP4 导出可用。其下 `0.3.7.1` = **Custom Resolution + Supersampling 双闭环稳定性收敛版**（**上一稳定基线**；`0.3.7.0` 功能不变、仅第四位递增）。第一闭环 Custom Resolution 与第二闭环 Supersampling **均已在当前 Gamma / Direct3D11 环境通过实机验收**；更早 `0.3.6.4` = **Log-only Frame Transactions（image output disabled）** |
 | 稳定实机基线 | **`0.3.7.1`**（= `0.3.7.0` 双闭环 + `ce34ad4` metadata 语义修正；构建身份见 §12）。`0.3.7.0` 第一闭环（Custom Resolution）与第二闭环（Supersampling，含 **scale=4 完整导出**）均已实机通过：第一闭环见 §9.1；第二闭环见 §9.7.1 + §9.7.3。更早的稳定基线 `0.3.6.4`（PNG 与 Log-only 同谱面跑通）仍见 §9.1。**未覆盖边界**（Linear 色彩空间、极端资源失败）见 §9.7.3。 |
 | L1 实机状态 | **`0.3.8.0`（DLL `AE2326D3…` / `+4d35801862d0828ea248d9934e8ebe74af11f2bb`）已通过用户最小实机验收**：UMM 显示 `0.3.8.0`、FFmpeg `Ready`、`libx264` / `mp4` / `rawvideo`、禁用并重新启用、无新可见异常。**L1 主路径已具备阶段性基线证据**；未覆盖边界（活动下载生命周期、异常网络、真实回调竞态）见 §2.7。 |
-| 当前开发方向 | **`0.3.8.0 — FFmpeg Video Export Pipeline` 已开启，L1（FFmpeg 组件管理 / HTTPS 下载）已完成并通过实机验收**；**L2 帧流进程与 L3 MP4 帧事务未实施**，音频 / replay / 外部视频编码的其余部分同样未开始。第二闭环仍然**未覆盖** Unity **Linear** 色彩空间与极端资源失败路径（详见 §9.7.3），不得由 Gamma 结果外推。 |
-| 下一阶段 | **进入 `L2 — FFmpeg Video Process Pipeline` 的技术规划**（本轮不开始实现）。产品及源码当前为 `0.3.8.0`；Phase `Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management` 表示阶段已开启、**仅 L1 完成**。 |
+| L2 实现状态 | **已实现（源码级 + 独立 net48 回归）**：`FfmpegVideoCommand` / `FfmpegVideoVerifier` / `FfmpegVideoPipeline` 三个 Unity-free 模块 + 独立测试。真实 Gyan 9.0.2 fixture 回归 **128 passed / 0 failed / 0 skipped**（无 fixture 时 116 / 0 / 12）。**未接入 Unity**，`CommitFrame` / `MasterTimeline` / `FrameCaptureDriver` / `DeterministicFrameScheduler` 一行未改；**没有任何 Mono 实机证据**。详见 §2.8。 |
+| 当前开发方向 | **`0.3.8.0 — FFmpeg Video Export Pipeline`：L1 完成并实机验收，L2 已实现（§2.8），L3（Unity MP4 帧事务 / Finalizing 接入）未开始**。第二闭环仍然**未覆盖** Unity **Linear** 色彩空间与极端资源失败路径（详见 §9.7.3），不得由 Gamma 结果外推。 |
+| 下一阶段 | **`L3 — Unity MP4 Frame Transactions` 的技术规划**（事件驱动交付、主板程回投、Finalizing 关口、watchdog 分离）。前提仍是 §2.2 的视觉确定性补测结论；`0.3.8.0` 的 DLL **不具备** MP4 导出能力。 |
 
 `0.3.6.2` 相对 `0.3.6.1` 的四个 hardening 点（功能语义不变，只收敛异常路径与输入判定）：
 
@@ -95,7 +96,7 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 ---
 
-### 2.1 Event-Driven A+ 视频导出设计（待实施）
+### 2.1 Event-Driven A+ 视频导出设计（L3 仍待实施；L2 已实现，见 §2.8）
 
 **调查依据**：本次在干净工作区核对 HEAD `01555e2300d38c938801d69d6d4387691ee96b58`、版本点、`MasterTimeline`、`DeterministicFrameScheduler`、`FrameCaptureDriver`、`OutputGeometryPolicy`、`EditorExportController`、`EditorExportSession`、Settings / GUI / preflight / metadata。以下“已确认”均指当前 `0.3.7.1` 源码静态事实，不是 MP4 实机验收。
 
@@ -145,7 +146,7 @@ Gyan [构建页](https://www.gyan.dev/ffmpeg/builds/)同时列出原站包、SHA
 **实现基线**：L1 实现提交 `62d10de`（其后文档提交 `caecfa9`）；产品版本仍为 **`0.3.7.1`**，Phase 未同步（本闭环形成稳定产物前不机械递增版本）。源码位于 `src/ADOFAI.Renderist/Ffmpeg/`，**刻意不依赖 Unity / UMM / Harmony** —— 因此同一份源码可直接编入 net48 回归工程（`tests/ADOFAI.Renderist.FfmpegTests`），**不需要任何 Unity stub**；GUI 接线由既有 UMM 入口负责。后续 L1 审查修正与最新验证结果见 §2.5。
 
 - **已实现（L1）**：① 固定资产 manifest（唯一可安装资产 = Gyan 9.0.2 essentials；固定 HTTPS tag 地址、归档 SHA-256、归档字节数、两个可执行文件固定 SHA-256；**禁止可变 `latest`**；manifest 自身结构校验，非法即 fail-closed）。② 候选发现：**用户显式路径 → Renderist 托管安装 → 系统 PATH → 无**，并冻结**绝对路径 + 内容哈希 + 字节数**；显式路径失效**报错且绝不静默回退**（PATH 顺序会改变被发现的版本）。③ 版本与必要能力检查（`-version` / `-encoders` / `-formats`，检查 `libx264` / `mp4` muxer / `rawvideo` demuxer，并解析 configuration 行的 `--enable-gpl` / `--enable-libx264`）；短进程探测同时读 stdout / stderr，带超时与取消，不是帧流会话。④ 安全 ZIP 解压（**默认拒绝**：绝对路径 / 盘符 / `..` 与 `.` 段 / 大小写不敏感重复条目 / 符号链接与重解析点 / 非法字符 / 单条目与归档总量上限；只写白名单匹配项；写出前再次确认目标仍在目标目录内；逐文件校验 SHA-256）。⑤ 安装锁（`FileShare.None` 独占句柄：第二个并发安装立即被拒绝；进程被强杀时由 OS 释放句柄，不会留下死锁）。⑥ 托管安装与 ownership 标记（无标记的目录**既不采用也不覆盖**）。⑦ 取消 / 回滚 / 孤儿 staging 清理（只删除**本次调用自己创建**的 staging，以及位于自身 StagingRoot 下且带本模块 ownership 标记的目录；不含标记的外来目录一律保留）。⑧ 组件就绪状态与机读错误码（`NotFound` / `Discovered` / `Ready` / `Unsupported` / `Invalid` / `InstallRootUnavailable`）。
-- **HTTPS 下载（2026-09-24 实施；Unity 实机未验证）**：已按既定路线用 `UnityWebRequest` + `DownloadHandlerFile` 实现固定资产下载，见 §2.6。`FfmpegInstaller` 仍然只接受"已在本地"的归档路径（它**只读取、绝不删除**该文件；临时文件由下载控制器独占拥有）。**L2（FFmpeg 帧流进程）与 L3（MP4 帧事务）均未实现**；`MasterTimeline` / `DeterministicFrameScheduler` / `FrameCaptureDriver` / `EditorExportController` / `EditorExportSession` **未被修改**，未新建第二套 EOF 或第二个 `CommitFrame` authority。
+- **HTTPS 下载（2026-09-24 实施；Unity 实机未验证）**：已按既定路线用 `UnityWebRequest` + `DownloadHandlerFile` 实现固定资产下载，见 §2.6。`FfmpegInstaller` 仍然只接受"已在本地"的归档路径（它**只读取、绝不删除**该文件；临时文件由下载控制器独占拥有）。**L2（FFmpeg 帧流进程）在该时点未实现（现已实现，见 §2.8）；L3（MP4 帧事务）仍未实现**；`MasterTimeline` / `DeterministicFrameScheduler` / `FrameCaptureDriver` / `EditorExportController` / `EditorExportSession` **未被修改**，未新建第二套 EOF 或第二个 `CommitFrame` authority。
 - **API 静态存在性 ≠ Mono 运行行为（本轮只读核对游戏自带程序集）**：`..._Data\Managed` 中存在 `System.dll`（`WebClient` / `HttpWebRequest` / `ServicePointManager` / `SecurityProtocolType` / `Tls12`）、`System.Net.Http.dll`（`HttpClient` / `HttpClientHandler`）、`System.Core.dll`（`SHA256` / `SHA256Managed`）、`System.IO.Compression.dll`（`ZipArchive` / `ZipArchiveEntry` / `DeflateStream`）、`System.IO.Compression.FileSystem.dll`（`ZipFile` / `ZipFileExtensions`）、`UnityEngine.UnityWebRequestModule.dll`；`System.Net.dll` **不存在**（不影响：`WebClient` / `HttpWebRequest` 位于 `System.dll`）。**这些只证明类型存在，不证明 Mono 下的 TLS、取消与异步语义可用。** 构建侧事实：net48 SDK 的**隐式**引用集合为 `System` / `System.Data` / `System.Drawing` / `System.Xml` / `System.Core` / `System.Runtime.Serialization` / `System.Xml.Linq` / `System.Numerics` / **`System.IO.Compression.FileSystem`**，而 `System.Net.Http` **不在其中**；因此安全解压无需新增引用，而 `HttpClient` 路线需要显式 `<Reference>`。所需参考程序集均已离线缓存，加引用**不需要**新 NuGet 下载。
 - **该提交的回归验证**：`tests/run-ffmpeg-tests.ps1` → **42 passed / 0 failed / 1 skipped**（exit 0）；§2.5 已增加回归，此数字只代表 `62d10de` 当时的测试。覆盖 manifest 校验、候选发现（含"显式路径失效绝不静默回退"、PATH 顺序优先、无效托管目录回退）、SHA-256、ZIP 安全（穿越 / 盘符 / 大小写重复 / 歧义匹配 / 缺必需条目 / 哈希不符 / 损坏归档 / 符号链接 / 尺寸上限 / 取消）、安装锁竞争、安装 happy path、既有安装不被覆盖、外来目录被保留、归档被篡改、解压失败清理、取消无残留、孤儿 staging 清理与外来 staging 保留、组件状态报告。唯一 SKIP 是**真实 FFmpeg 多版本能力回归**（本机无 FFmpeg fixture；二进制刻意不入库，需 `-FfmpegDirs` 指向本地目录）。测试使用**合成**归档与合成资产，不携带任何下载产物。
 - **该回归测试本轮发现并已修复的两个实现缺陷**：① `FfmpegInstallLayout.TryCreate` 原先经 `Path.GetFullPath` 把**相对路径**按进程 CWD 静默解析成合法绝对路径（违反"不猜测托管目录"）；现改为解析前即要求绝对路径。② 解压层把取消包装成失败结果，安装器原先会把**用户取消记成 `Failed`**；现按语义如实返回 `Cancelled`。
@@ -154,7 +155,7 @@ Gyan [构建页](https://www.gyan.dev/ffmpeg/builds/)同时列出原站包、SHA
 
 ### 2.5 L1 定向审查与下载路线（2026-09-24）
 
-**阶段状态**：`0.3.8.0 — FFmpeg Video Export Pipeline` 为已批准目标阶段；当前产品版本仍为 `0.3.7.1`。L1 的发现、固定 manifest、能力探测、本地归档安全安装和信息性 GUI 已实现；审查基线为 `caecfa9`，本地 `main` 当时领先实时核对的 `origin/main=731b186` 四个提交。本节保留 GPT Work 的审查结论；其中"HTTPS 下载未实现"与"probe 非零退出未修复"两条已在 2026-09-24 由 dsh 处理，现状见 §2.6。**L2/L3 仍未实施。**
+**阶段状态**：`0.3.8.0 — FFmpeg Video Export Pipeline` 为已批准目标阶段；当前产品版本仍为 `0.3.7.1`。L1 的发现、固定 manifest、能力探测、本地归档安全安装和信息性 GUI 已实现；审查基线为 `caecfa9`，本地 `main` 当时领先实时核对的 `origin/main=731b186` 四个提交。本节保留 GPT Work 的审查结论；其中"HTTPS 下载未实现"与"probe 非零退出未修复"两条已在 2026-09-24 由 dsh 处理，现状见 §2.6。**截至该时点 L2/L3 均未实施（L2 已于 §2.8 实现，L3 仍未实施）。**
 
 - **已复现并在 L1 修正**：原 `FfmpegFileHash` 以路径、长度和修改时间缓存内容哈希。回归测试将同长度文件替换后恢复原时间戳，原代码返回旧哈希，故该缓存不能用于归档校验、托管安装校验或二进制身份。现改为每次读取当前内容计算 SHA-256；测试先失败后通过。`SafeZipExtractor` 原先只限制各条目的真实写出量，跨条目总量只累计 ZIP 声明长度；伪造中央目录长度的双文件 ZIP 可突破真实总量上限，现复制时也限制累计真实字节数，回归先失败后通过。GUI 检查异步进行，重复哈希的性能代价待目标游戏观察，不以不安全缓存换取速度。
 - **已复现并在 L1 修正**：GUI 本地安装请求 `ProbeAfterInstall=true`，但原安装器即使能力探测失败仍原子发布并报告 `Installed`。合成不可执行文件的回归测试复现此行为；现探测失败或缺失必需能力时保留失败结果、清理自身 staging、不发布；发布前再次检查取消。此结论不等于真实 FFmpeg 已在当前机器重新完成能力检查。
@@ -194,7 +195,7 @@ Gyan [构建页](https://www.gyan.dev/ffmpeg/builds/)同时列出原站包、SHA
 
 **本轮实机复测（诊断 DLL SHA-256 `85D2324B1A03…`）**：固定 Gyan 9.0.2 请求 generation 1 在目标 Unity Mono 中得到 `operation.isDone=True`、`request.isDone=True`、`downloadHandler.isDone=True`、`result=Success`、HTTP 200、HTTPS GitHub → `release-assets.githubusercontent.com` 重定向、`Content-Length=downloadedBytes=fileLength=114768076`。临时订阅的 `completed` 事件确实触发，回调线程 ID=1，与主线程诊断 ID=1 相同；修复后的完整结果被同代控制器接受，进入 `Verifying`，经归档长度/内容 SHA、白名单解压、两个 EXE 固定 SHA 和实际能力探测后报告安装成功，GUI `Ready` 显示 `libx264 / mp4 / rawvideo`。托管 `ffmpeg.exe` SHA-256 为 `3256173f3f8bffd7df12227c68adf68025edb1832273a9530688a7bb1ed8edec`，`ffprobe.exe` 为 `f0d36ecbbdd3bcfac3efa078c96c7271c2e68b3810595552ac3b7f17e9a65c52`，均与 manifest 相同；.downloads 无剩余文件。离线回归（本次复测当时）**71 passed / 0 failed / 1 skipped**，以已安装真实 FFmpeg 为 fixture 在沙箱外运行后 **72 passed / 0 failed / 0 skipped**（§2.7 又增加一条回调 ownership 回归，当前源码计数以 §2.7 为准）；同一真实 fixture 在受限命令沙箱内以 Windows 进程退出码 `0xC0000142` 失败，沙箱外通过，不能把沙箱限制误报为目标游戏能力缺陷。一次性诊断源码已删除；清洁 Release Rebuild 0 warning / 0 error，三文件发布包 11 checks / 0 failures；清洁 DLL SHA-256 `F8B3553F4622934F5FB46D5BE3AAC547A627031DA207656090CFDE85B9ABB919` 已在游戏退出后部署，重启后 GUI 再次显示托管安装 `Ready` 与 `libx264 / mp4 / rawvideo`，UMM 已关闭。该重启验证的是重新发现，不是再次下载。
 
-**当前结论**：完整字节到达后的终态阻塞根因在 L1 回调清空顺序，已修复并由目标游戏完整下载、安装与 Ready，以及清洁 DLL 重启重新发现实证。完整文件本身仍不是请求成功判据：必须等待 Unity 最终成功状态和控制器校验。尚需补证活动下载时禁用/卸载、旧通知与新请求真实交错、证书/断线失败；L2/L3 仍未实施，不得把 L1 Ready 视为 MP4 可用。
+**当前结论**：完整字节到达后的终态阻塞根因在 L1 回调清空顺序，已修复并由目标游戏完整下载、安装与 Ready，以及清洁 DLL 重启重新发现实证。完整文件本身仍不是请求成功判据：必须等待 Unity 最终成功状态和控制器校验。尚需补证活动下载时禁用/卸载、旧通知与新请求真实交错、证书/断线失败；该轮 L2/L3 均未实施（L2 已于 §2.8 实现，L3 仍未实施），不得把 L1 Ready 视为 MP4 可用。
 
 ### 2.7 L1 下载回调 ownership 收敛与当前验证状态（dsh，2026-09-24）
 
@@ -208,6 +209,74 @@ Gyan [构建页](https://www.gyan.dev/ffmpeg/builds/)同时列出原站包、SHA
 - **用户实机验收（2026-09-24，针对上述 13:34:51 部署构建 `F8B3553F`）**：① FFmpeg 组件显示 `Ready` 并识别 `libx264` / `mp4` / `rawvideo` — **PASS**；② 禁用并重新启用 Renderist — **PASS**；③ Log-only 导出 — **PASS**；④ PNG 导出 — **PASS**；⑤ 其他可见异常 — **无**。**证据边界**：这五项绑定 `F8B3553F`（`+bea143d`），**不是**当前 HEAD 构建 `6EA48355`；`ea09bd7` 之后未重新部署，故当前构建未获得这五项结论。其中 ② 覆盖的是**空闲状态**下的禁用/启用，**不覆盖**活动下载期间的禁用/卸载。
 - **L1 分项状态（不得整体宣布完成）**：**已有实机证据** —— 主下载（固定 HTTPS、GitHub → `release-assets.githubusercontent.com` 重定向、HTTP 200、`Content-Length` = `downloadedBytes` = 实际文件长度 = `114768076`）、内容 SHA-256 校验、安全解压与原子安装、**真实能力探测**（`libx264` / `mp4` / `rawvideo`）、**重启后重新发现为 Ready**、**空闲状态下禁用/重新启用**、**存在 Ready 组件时的 Log-only 与 PNG 导出**。**仍未完整验收** —— 活动下载期间禁用/卸载；异常网络（证书失败、断线、超时）；旧回调与新请求的真实交错。
 - **剩余最小实机验收项**：① 活动下载进行中禁用 Mod / `OnUnload` / 退出游戏，确认 Abort、临时文件与 `.downloads` 收敛；② 让旧代完成通知与新请求**真实交错**（含同代重复完成通知），确认真实交错下不发布旧版本、不误删在用归档；③ 异常网络（证书失败、中途断线）的 fail-closed 与清理；④ 若要把当前 HEAD 构建 `6EA48355…` 作为交付基线，需在**下一次自然的实机验证**中确认（不要求用户专门重复验收）。
+
+### 2.8 L2 — FFmpeg Video Process Pipeline（已实现；未接入 L3）
+
+**基线**：在 `7a67546a62bf02e7079ebf77cbecfcd282d8b0e2` 之上实现，产品版本**保持 `0.3.8.0`**（用户要求不递增第四位）；本轮**未修改 Phase 文案**（仍为 `Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management`，是否升为 L2 待网页版 GPT 审查）。新增源码（全部 Unity-free / UMM-free / Harmony-free，因此同一份源码直接编入 net48 回归工程）：
+
+| 文件 | 职责 |
+| --- | --- |
+| `src/ADOFAI.Renderist/Ffmpeg/FfmpegVideoCommand.cs` | 冻结配置、参数合法性、编码命令、精确 FPS、像素格式选择、Windows 参数引用、临时路径规则 |
+| `src/ADOFAI.Renderist/Ffmpeg/FfmpegVideoVerifier.cs` | 独立视频验证进程、视频流与尺寸核验、实际可解码帧数、有理时间基与 PTS、失败原因、异步取消与验证进程回收 |
+| `src/ADOFAI.Renderist/Ffmpeg/FfmpegVideoPipeline.cs` | 会话生命周期、进程与管道 ownership、单帧完整写入、异步背压、Finish / Finalizing、Cancel、资源回收、终态仲裁、临时文件 ownership、最终文件发布；`FfmpegVideoIdentity` 负责 L1 身份冻结 |
+| `tests/ADOFAI.Renderist.FfmpegTests/FfmpegVideoPipelineTests.cs` + `FakeVideoProcess.cs` | 独立自动化回归；假进程由**测试可执行文件本身**充当编码 / 核验子进程 |
+
+**未修改**：`MasterTimeline`、`DeterministicFrameScheduler`、`FrameCaptureDriver`、`EditorExportController`、`EditorExportSession`、`ModEntry`、`UiText`、`Settings`、`EditorExportPreflight`、`Info.json`、csproj `<Version>`、README。**未新增 Harmony Patch、未新增 UI、未改动 PNG / Log-only 行为**（改动仅：3 个新生产文件 + 测试工程 2 个新文件 + `Program.cs` 接线）。
+
+**编码命令（真实 Gyan 9.0.2 `3256173F…` 实测）**：
+
+```text
+-hide_banner -nostdin -loglevel error
+-f rawvideo -pix_fmt rgb24 -s <W>x<H> -framerate <min(fps,1001000)> -i pipe:0
+-vf settb=1/<fps>,setpts=N -fps_mode passthrough -enc_time_base filter
+-bsf:v setts=duration=1 -c:v libx264 -preset medium -crf 18 -bf 0
+-pix_fmt <yuv420p|yuv444p> -video_track_timescale <fps>
+-xerror -abort_on empty_output_stream -f mp4 -y <临时文件>
+```
+
+实测结论（64×48 / stdin，输出用 framemd5 逐帧核对）：
+
+1. **30 / 1001001 / 2147483647 三种 FPS 全部精确**：解码帧数 == 输入帧数，逐帧 `pts == dts == N`、`duration == 1`，`#tb 0: 1/<fps>` 与 `-video_track_timescale` 一致。
+2. `-framerate` 的**输入侧**上限是 **1001000**：直接传 1001001 会被静默降级，因此命令显式取 `min(fps, 1001000)`（不依赖静默降级），真正的输出帧率只由 `settb/setpts` + `video_track_timescale` 表达。
+3. **奇数宽高只能用 4:4:4**：65×49 + `yuv420p` 时 libx264 直接失败（`width not divisible by 2`），`yuv444p` 正常编码并通过核验。因此像素格式是**编码器条件**而不是产品分辨率上限：宽高都是偶数选 `yuv420p`，否则选 `yuv444p`，**绝不静默改写输出几何**。
+4. **最后一帧被截断**时 `-xerror` 使退出码非零（实测 `-1094995529`，stderr 出现 `Packet corrupt / corrupt input packet`）；不加 `-xerror` 会静默退出 0 且只封装完整帧。空输入需 `-abort_on empty_output_stream` 才非零（`-22`）。
+5. **B 帧必须禁用**：保留 `-preset medium` 的默认 B 帧时，容器报 20 个包却只能解出 17 帧（100 帧 / 1001001 FPS 时同样丢失）—— 这正是"必须核验**实际可解码帧数**"的直接证据。
+
+**验证协议（两个独立进程，使用同一个冻结 FFmpeg）**：
+
+- **解码 pass**：`-loglevel info -xerror -i <file> -map 0:v:0 -an -fps_mode passthrough -f framemd5 -`。stdout 是 framemd5（`#tb` 有理时间基头 + 逐帧 dts/pts/duration），stderr 给出**输入**流信息（编码器 / 像素格式 / 尺寸）；`-nostats` 抑制进度行使 stderr 有界。
+- **容器/包 pass**：同一命令加 `-c copy`（不解码），给出**容器**逐包 dts/pts/duration。
+- 断言：退出码 0、无错误行、恰好一个**输入**视频流、编码器 == `h264`、尺寸与像素格式精确、`#tb == 1/<fps>`、**解码帧数 == 容器包数 == 已完整写入的帧数**、逐帧 `pts == dts == N` 且 `duration == 1`。
+- **两种时间语义必须分开验证**：容器可以声明 N 个包而解码器产出更少的帧（B 帧实测），只验证其中一侧会漏掉该失败模式。
+- **负对照（真实文件）**：PTS 被改写（`setpts=2*N`，实际时间基变成 `2/1001001`）→ `verify-timebase-mismatch`；丢帧（`select='not(mod(n,2))'`）→ `verify-frame-count-mismatch`（expected=20 actual=10）；截断 MP4、100 字节残缺 MP4、纯文本、纯音频 MP4 全部被拒绝。
+- 解析实现要点：**必须先剥离括号组**再找 `WxH`，否则 `(avc1 / 0x31637661)` 里的 `0x31637661` 会被误当成尺寸；只统计 `Input #N` 段的流行，否则 framemd5 的 rawvideo **输出**流会被算成第二个视频流。
+- **内存有界**：帧累加器只保留聚合值与首个不匹配细节，stderr 只保留尾部与少量结构化行，帧数与日志量都不构成内存上限。
+
+**进程生命周期与终态语义**：
+
+- 会话状态：`NotStarted → Running → Finalizing → Completed`，另有 `Cancelled` / `Failed`。`Finish` / `Cancel` / 失败 / 发布竞争由**同一终态仲裁**处理，先到者赢；**发布一旦提交即 `Completed`，之后的 `Cancel` 不能取消、也不能删除已发布文件**。
+- 正常完成条件：全部预期帧完整写入 → stdin 正常关闭 → 编码进程退出 → stdout/stderr 均到 EOF → 退出码 0 → 独立核验通过 → 同目录 `Move` 发布。
+- **单帧在途**：第二帧并发提交**立即**返回 `busy`（回归断言 < 2 s 内返回），不建立队列。
+- **完整写入成功后才增加交付帧计数**；部分写入失败会污染管道（`pipe-poisoned`），同一 stdin 不重试该帧；`WriteAsync` 成功**不代表** MP4 完成。
+- **取消不只依赖 WriteAsync 的 token**：取消会终止进程 → 对端管道关闭 → 被阻塞的写入立即失败。`Dispose` 只发起取消，收敛在可观察、可等待的 `CleanupTask` 上，**不在主线程等待进程退出**。
+- 合法 IO 背压**没有固定写入超时**；回归用"读取端停止消费"真实复现长时间背压。
+- **临时文件与发布**：临时文件与最终文件同目录、名字含唯一 token；已存在的正式目标文件**绝不删除或覆盖**（`final-file-exists`）；取消 / 失败只删除本次会话拥有的临时文件；删除失败或临时路径被外来目录占用时**如实报告 residual ownership**（`temp-delete-failed` / `temp-path-not-a-file`），不伪装成 clean。
+- **L1 契约**：只接受 `State == Ready` 的报告，冻结 `Candidate.Identity`（绝对路径 + SHA-256 + 字节数）与必要能力；启动编码前**重新读取内容**计算 SHA-256，并与冻结身份及 `Capability.ExecutableSha256` 比对，失败即 fail-closed（`component-not-ready` / `capability-identity-mismatch` / `capability-incomplete` / `identity-hash-changed` 等），**不重新发现、不下载、不安装、不改 PATH**。**哈希校验与 `Process.Start` 之间的 TOCTOU 窗口仍然存在**，代码注释如实记录，未声称已解决。
+
+**本轮实际验证结果**：
+
+- 离线（无 fixture）`tests/run-ffmpeg-tests.ps1` → **116 passed / 0 failed / 12 skipped**（12 个真实 fixture 用例如实 SKIP）。
+- 以真实 Gyan 9.0.2 essentials（与 manifest 同哈希）为 fixture → **128 passed / 0 failed / 0 skipped**，连跑三次一致。
+- 覆盖：命令与冻结配置、Windows 参数引用（含空格 / 中文 / `&` / 括号 / emoji 的真实子进程往返）、身份冻结与失效检测、核验协议正负对照、单帧在途与 busy、部分写入污染、中途断管、空输入、非零退出、核验失败、启动失败、输出目录缺失、临时文件已存在、正式目标文件保护（启动前与 session 中途出现两种情形）、Finalizing 中取消、发布后取消、终态竞争、Dispose 非阻塞、连续启停 3 轮无残留、迟到写入结果不增加计数、清理失败 residual 报告、真实编码的取消与进程回收。
+- 真实产物样本：24 帧 64×48 30 FPS → 2531 字节 MP4，**发布后再次独立核验通过**（解码帧数 = 容器包数 = 24、`tb = 1/30`、末帧 pts = 23）。
+- Release Rebuild **0 error**（仅 `NU1900` 离线 NuGet 环境噪声）；`package-release.ps1` 与独立 `verify-release-package.ps1` 均 **PASS 11 checks / 0 failures**；发布包严格三文件；`git diff --check` clean。构建身份见 §12.3。
+
+**边界（不得误读）**：
+
+- **未接入 Unity**：L2 只提供"接受外部完整 RGB24 帧"的独立管线，**`0.3.8.0` 仍然不是 MP4 导出可用的版本**；没有 MP4 导出 UI、没有音频、没有 replay、没有新增 Harmony Patch。
+- **本模块的测试是独立 net48 进程结果，不是 Unity Mono 实机验收**：Mono 下的 `Process.Start` / 异步 `Stream.WriteAsync` / `Exited` 事件语义、Unity 主线程回投、以及 L3 帧事务与 Finalizing 关口仍未验证。目标 Mono 验证不得由本轮结果代替。
+- 本轮**未在游戏内部署**，也**未改动** `Mods` 内已部署的 `0.3.8.0`（`AE2326D3…`）。
+- **工具环境事实（不影响产品）**：本机 agent 沙箱下，位于 `LocalLow\...\ADOFAI.Renderist\ffmpeg\<asset>\<version>\bin\ffmpeg.exe` 的二进制**无法创建任何输出文件**（`Permission denied`，即使放宽到 full access 也一样），而把**逐字节相同**的副本放到工作区目录后立即正常。真实 fixture 回归因此指向工作区内的同哈希副本，**不是**替换产品二进制；`-FfmpegDirs` 指向真实安装目录时在本机会因该沙箱限制而失败，这属于环境限制而非产品缺陷。
 
 ## 3. 正式导出架构
 
@@ -845,7 +914,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 > 此处只列**当前未收敛事项**；已完成的 End Tail、pre-entry、Log-only、Custom Resolution 和 Supersampling 不再重复充当待办。历史验收数据见 §9，实施不变量见 §3–§8，当前 ADOFAI 内部事实见 §10。
 
-1. **0.3.8.0 视频导出（未完成；版本线已开启）**：`0.3.7.1` → **`0.3.8.0`** 已执行，Phase 为 `Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management`（§12 / §12.2）—— **只完成 L1**。L1 完成通知丢失缺陷与"重复完成通知误删在用归档"ownership 缺陷均已修复（§2.6 / §2.7）。目标游戏中固定资产下载、SHA 校验、安全安装、真实能力探测、GUI Ready、重启后重新发现、空闲状态禁用/重新启用，以及存在 Ready 组件时的 Log-only / PNG 导出**已有实机证据**（绑定 `F8B3553F` / `+bea143d` 及后续 `1D70BE45` / `+02c7fb8`，见 §2.7）。**仍未验收**：活动下载期间禁用/卸载、异常网络（证书/断线）、旧通知与新请求真实交错。**`0.3.8.0` 正式构建（`AE2326D3…`）已通过用户最小实机验收**（§2.7），故 **L1 主路径具备阶段性基线证据**；上述三项边界不影响该基线，但**不得记为已通过**。**L2 帧流进程与 L3 MP4 帧事务均未实施** —— 不得因进入 `0.3.8.0` 就宣称 MP4 导出可用。Event-Driven A+ 决策见 §2.1；优先验证跨 Unity 帧的 pending、主线程完成投递与长时间 FFmpeg 背压下的原生 Update / visual state 是否漂移，再落实 MP4 接入、Finalizing 和完整故障收敛。L1 Ready **不是** MP4 运行时验收。
+1. **0.3.8.0 视频导出（L1 完成并实机验收；L2 已实现；L3 未开始）**：`0.3.7.1` → **`0.3.8.0`** 已执行，Phase 仍为 `Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management`（§12 / §12.2）—— **L1 完成，L2 已在本轮实现（§2.8），L3 未实施**。L1 完成通知丢失缺陷与"重复完成通知误删在用归档"ownership 缺陷均已修复（§2.6 / §2.7）。目标游戏中固定资产下载、SHA 校验、安全安装、真实能力探测、GUI Ready、重启后重新发现、空闲状态禁用/重新启用，以及存在 Ready 组件时的 Log-only / PNG 导出**已有实机证据**（绑定 `F8B3553F` / `+bea143d` 及后续 `1D70BE45` / `+02c7fb8`，见 §2.7）。**仍未验收**：活动下载期间禁用/卸载、异常网络（证书/断线）、旧通知与新请求真实交错。**`0.3.8.0` 正式构建（`AE2326D3…`）已通过用户最小实机验收**（§2.7），故 **L1 主路径具备阶段性基线证据**；上述三项边界不影响该基线，但**不得记为已通过**。**L2 已实现并通过独立 net48 回归（128/0/0，含真实 Gyan 9.0.2 fixture），但仍未接入 Unity**；**L3（MP4 帧事务 / Finalizing 关口）未实施** —— 不得因 L2 实现就宣称 MP4 导出可用。Event-Driven A+ 决策见 §2.1；接入 L3 前仍需 §2.2 的视觉确定性补测结论，以及 Mono 下的进程与异步 IO 行为验证。L1 Ready **不是** MP4 运行时验收，L2 源码回归同样**不是**实机验收。
 2. **Linear 与极端 GPU 资源失败**：Supersampling 已在 Gamma / Direct3D11 的所述范围实机通过，**Linear 色彩空间从未实机覆盖**；接近硬件极限的 RT 分配与 GPU 状态恢复故障仍只有 stub / 静态证据。详见 §9.7.3。
 3. **真实 Unity 故障注入**：host Destroy、RT Release/Destroy、partial Camera assignment 的失败与重试，已有生产源码 + Unity stub 的确定性测试，**未在真实 Unity Player 注入这些异常**；正常路径与跨调用 residual 的既有实机结果不能替代异常证据（§3.5、§9.3）。
 4. **其余边界测试**：显式 safety frame-limit runtime trigger 与 `TryPrepareHitState` 故障注入主要依赖静态 / 纯计算证据；需要扩大 BPM change、Twirl、Midspin、event-heavy、特殊 startup、长谱面覆盖。无须为此设置人为帧数或时长上限。
@@ -858,7 +927,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 ## 12. 发布与部署
 
-- 当前产品版本为 **`0.3.8.0`**，Phase 为 **`Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management`**（前三位 `0.3.7` → `0.3.8` 与 Phase 文案**均由用户明确批准**）。`0.3.8.0` 开启 FFmpeg 视频导出管线阶段，但**只完成 L1（FFmpeg 组件管理 + HTTPS 下载）**；**L2（FFmpeg Video Process Pipeline）与 L3（Unity MP4 Frame Transactions）尚未实施 —— 不得宣称 MP4 导出已经可用。** 其下 `0.3.7.1` = Custom Resolution + Supersampling 双闭环稳定性收敛版（**上一稳定基线**，Phase 为 `Phase 3.7.0 Custom Resolution & Supersampling`），`0.3.7.0` = 双闭环功能版，`0.3.6.4` = Log-only Frame Transactions。
+- 当前产品版本为 **`0.3.8.0`**，Phase 为 **`Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management`**（前三位 `0.3.7` → `0.3.8` 与 Phase 文案**均由用户明确批准**；**L2 实现轮按用户要求未改版本号、也未改 Phase 文案**）。`0.3.8.0` 开启 FFmpeg 视频导出管线阶段：**L1（FFmpeg 组件管理 + HTTPS 下载）已完成并通过用户最小实机验收**，**L2（FFmpeg Video Process Pipeline）已实现并通过独立 net48 回归但尚未接入 Unity（§2.8）**，**L3（Unity MP4 Frame Transactions）尚未实施 —— 因此不得宣称 MP4 导出已经可用。** `0.3.8.0` 现有**两份不同的构建身份**（L1 实机验收版 §12.2 / L2 实现轮工作区版 §12.3），引用时必须同时给出 DLL SHA256 或 `+hash`。 其下 `0.3.7.1` = Custom Resolution + Supersampling 双闭环稳定性收敛版（**上一稳定基线**，Phase 为 `Phase 3.7.0 Custom Resolution & Supersampling`），`0.3.7.0` = 双闭环功能版，`0.3.6.4` = Log-only Frame Transactions。
 - 本轮（0.3.7.0 第一闭环）相对基线 `70df55b` 的改动：新增 `OutputGeometryPolicy.cs`、`RenderEnvironmentInventory.cs`；修改 `Settings.cs`、`UiText.cs`、`ModEntry.cs`、`EditorExportReadiness.cs`、`EditorExportPreflight.cs`、`EditorExportController.cs`、`EditorExportSession.cs`、`DeterministicFrameScheduler.cs`、`FrameCaptureDriver.cs`；版本点 `mod/Info.json`、csproj `<Version>`、`ModEntry.ModVersion` 与 `ModEntry` 启动日志，外加**人工同步**的 `EditorExportSession.PhaseLabel` 与类注释 phase 文案（`set-version.ps1` 的已知范围限制，见 §2）。
 - 本轮**未**新增 Harmony Patch、未新增 ADOFAI 内部 API 依赖、未修改 README。
 - 发布包：`Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` ignored。本轮以 `scripts/package-release.ps1 -Configuration Release -Version 0.3.7.0 -Force` 打包，并在发布提交 `05a3b4a` 之后重新 Release Rebuild 并以 `-SkipBuild` 重新打包，产出 `dist/ADOFAI.Renderist.zip`（zip SHA256 `B251B6A4631401E44F96130E152FB834B70B47CE6E75CA45304DC43380A4155F`，sidecar `dist/ADOFAI.Renderist.zip.sha256` 同值）；`verify-release-package.ps1` 结果 **PASS 11 checks / 0 failures**，独立解包复核确认包内仅有 3 个顶层文件、无目录，且包内 DLL 与 `bin\Release` 逐字节一致。
@@ -878,7 +947,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
   → `scripts/package-release.ps1 -Configuration Release -Force`
   → `scripts/verify-release-package.ps1 -ZipPath dist/ADOFAI.Renderist.zip`。
 
-- **版本收敛：`0.3.7.1` → `0.3.8.0`（2026-09-24 执行，用户裁定）**：**此前建议采用 `0.3.7.2` 的方案已由用户明确作废**（正确目标为 `0.3.8.0`；**不得使用 `0.3.7.2`**）。本轮直接开启 `0.3.8.0` 版本线，并采用 Phase `Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management`，使版本号与 Phase **同时**表达「当前开发阶段」与「已完成的功能」：`0.3.8.0` + `Phase 3.8.0` 表示已进入 FFmpeg 视频导出管线阶段，`— L1 Component Management` 子标题表示当前**仅**完成 L1。**L2 帧流进程与 L3 MP4 帧事务均未实施，故不得因进入 `0.3.8.0` 而宣称 MP4 导出可用。** 已同步的版本点：`mod/Info.json`、csproj `<Version>`、`ModEntry.ModVersion`、`ModEntry` 启动日志（版本 + Phase）、`EditorExportSession.PhaseLabel`、`ModEntry` 类注释 Phase，以及 `PROJECT_UNDERSTANDING.md`；发布身份见 §12.2。**`0.3.8.0` 正式构建（`AE2326D3…` / `+4d35801`）已部署并通过用户最小实机验收**（§2.7）；此前 `1D70BE45…`（`+02c7fb8`）为收敛前的 L1 源码证据，保留于 §2.7。
+- **版本收敛：`0.3.7.1` → `0.3.8.0`（2026-09-24 执行，用户裁定）**：**此前建议采用 `0.3.7.2` 的方案已由用户明确作废**（正确目标为 `0.3.8.0`；**不得使用 `0.3.7.2`**）。本轮直接开启 `0.3.8.0` 版本线，并采用 Phase `Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management`，使版本号与 Phase **同时**表达「当前开发阶段」与「已完成的功能」：`0.3.8.0` + `Phase 3.8.0` 表示已进入 FFmpeg 视频导出管线阶段，`— L1 Component Management` 子标题表示当时**仅**完成 L1。**该时点 L2 帧流进程与 L3 MP4 帧事务均未实施（L2 现已实现，见 §2.8；L3 仍未实施），因此不得因进入 `0.3.8.0` 而宣称 MP4 导出可用。** 已同步的版本点：`mod/Info.json`、csproj `<Version>`、`ModEntry.ModVersion`、`ModEntry` 启动日志（版本 + Phase）、`EditorExportSession.PhaseLabel`、`ModEntry` 类注释 Phase，以及 `PROJECT_UNDERSTANDING.md`；发布身份见 §12.2。**`0.3.8.0` 正式构建（`AE2326D3…` / `+4d35801`）已部署并通过用户最小实机验收**（§2.7）；此前 `1D70BE45…`（`+02c7fb8`）为收敛前的 L1 源码证据，保留于 §2.7。
 
 ### 12.1 最终发布身份（`0.3.7.1` 稳定性收敛）
 
@@ -897,7 +966,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 **关于 `+hash` 与 HEAD 的关系（顺序说明）**：DLL 的 `ProductVersion +hash` 记录**构建时的 HEAD**。由于该 hash 嵌在 DLL 字节里，`DLL SHA256` 只能在提交之后才能算出，因此本仓库采用（与 `0.3.7.0` 相同）的顺序：**先提交发布源码（`647b1d7`）→ 从该提交 Rebuild / package → 再用一个 docs-only 提交记录最终身份**。因此 `+hash` 指向 `647b1d7`（**最终源码提交**），而 HEAD 可能比它多一个 docs-only 提交 —— 这不影响产物身份。若在打包之后又产生任何**源码**改动，必须重新 Rebuild + 重新打包并更新本节。
 
-### 12.2 当前发布身份（`0.3.8.0` — L1 Component Management）
+### 12.2 L1 发布身份（`0.3.8.0` — L1 Component Management；**当前唯一经过实机验收的构建**）
 
 | 项 | 值 |
 | --- | --- |
@@ -913,7 +982,23 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 | 构建/验证 | 强制 Release Rebuild **0 error / 0 C# warning**（仅 `NU1900` 离线 NuGet 环境噪声）；package + verify（内置与独立各一次）**PASS 11 checks / 0 failures**；离线回归 **72 passed / 0 failed / 1 skipped**；真实 Gyan 9.0.2 fixture 回归 **73 passed / 0 failed / 0 skipped**；`git diff --check` clean |
 | 本轮源码改动 | 版本点（`Info.json` / csproj `<Version>` / `ModEntry.ModVersion` + 启动日志）+ `EditorExportSession.PhaseLabel` + `ModEntry` 类注释 Phase；**无功能性代码改动** |
 
-**顺序（与 §12.1 相同的仓库约定）**：先提交版本收敛源码 → 从该提交**强制 Release Rebuild** + package → 再用一个 **docs-only 提交**把最终 DLL / ZIP 身份填入本表。因此 `+hash` 指向**承载 `0.3.8.0` 版本变更的提交**，HEAD 可能比它多一个 docs-only 提交，这不影响产物身份。**若在打包之后又产生任何源码改动，必须重新 Rebuild + 重新打包并更新本表。** 本仓库**刻意不在记录身份的 docs-only 提交之后再打包**：那会让同一个 `0.3.8.0` 出现两个不同哈希的发布包身份（对照 §12 对 `0.3.7.0` 三份包身份的警示）。因此当前**唯一**的 `0.3.8.0` 产物就是本表中由 `4d35801` 构建的那一份。
+**顺序（与 §12.1 相同的仓库约定）**：先提交版本收敛源码 → 从该提交**强制 Release Rebuild** + package → 再用一个 **docs-only 提交**把最终 DLL / ZIP 身份填入本表。因此 `+hash` 指向**承载 `0.3.8.0` 版本变更的提交**，HEAD 可能比它多一个 docs-only 提交，这不影响产物身份。**若在打包之后又产生任何源码改动，必须重新 Rebuild + 重新打包并更新本表。** 本仓库**刻意不在记录身份的 docs-only 提交之后再打包**：那会让同一个 `0.3.8.0` 出现两个不同哈希的发布包身份（对照 §12 对 `0.3.7.0` 三份包身份的警示）。因此**L1 收敛时**唯一的 `0.3.8.0` 产物就是本表中由 `4d35801` 构建的那一份。
 
-**`0.3.8.0` 的能力边界（不得误读）**：`0.3.8.0` 仅覆盖 **L1 — FFmpeg Component Management**（组件发现 / 固定 manifest / 能力探测 / 安全安装 / HTTPS 下载）。**L2（FFmpeg Video Process Pipeline）与 L3（Unity MP4 Frame Transactions）未实施**，因此 `0.3.8.0` 的 DLL **不具备** MP4 导出能力，本文件任何位置都不得表述为「MP4 可用」。**`0.3.8.0` 构建本身已通过用户最小实机验收**（UMM 显示 `0.3.8.0`、FFmpeg `Ready`、`libx264` / `mp4` / `rawvideo`、禁用并重新启用、无新可见异常；见 §2.7）；收敛前的 `1D70BE45…`（`+02c7fb8`）同类证据保留于 §2.7。
+### 12.3 L2 实现轮的工作区构建身份（与 §12.2 的 L1 产物**不是**同一份）
+
+**L2 实现（§2.8）在 `7a67546` 之上产生了新的源码改动，因此 `0.3.8.0` 现在有第二份构建身份。产品版本**仍为** `0.3.8.0`（用户要求不递增第四位），**Phase 文案未修改**。**
+
+| 项 | 值 |
+| --- | --- |
+| 基线（起始 HEAD） | `7a67546a62bf02e7079ebf77cbecfcd282d8b0e2` |
+| 产品版本 / FileVersion | `0.3.8.0` |
+| L2 源码提交 | **`a7a4ef1fd0178343da6d97a5f921dcc3c04a0597`**（`feat(ffmpeg): implement independent video process pipeline` + `test(ffmpeg): cover video process pipeline lifecycle and verification`，其父提交为上述基线） |
+| **ProductVersion（含 `+hash`）** | **`0.3.8.0+a7a4ef1fd0178343da6d97a5f921dcc3c04a0597`** ⇒ 精确指向**承载 L2 源码的测试提交**（在其之后只有 docs-only 提交） |
+| DLL SHA256 | **`5FFDABBEAA778646BBE64CE6B63F41A427C04D11F113C381AD4D4ECBC2847512`**（319488 字节） |
+| 发布包 ZIP SHA256 | **`941ADA72F3722612EE0666C399BDE401F0826F99B94A794027C1CD6EA4AAE330`** |
+| 包内容 | 仅 3 个顶层文件（`Info.json` / `ADOFAI.Renderist.dll` / `LICENSE`），**0 个嵌套目录** |
+| 构建/验证 | 强制 Release Rebuild **0 error**（仅 `NU1900` 离线噪声）；package + 独立 verify 均 **PASS 11 checks / 0 failures**；`git diff --check` clean；离线回归 116/0/12、真实 fixture 回归 128/0/0（§2.8） |
+| 与 §12.2 的关系 | **两份都是 `0.3.8.0`，内容不同**：§12.2 的 `AE2326D3…`（`+4d35801`）是**已部署并通过用户实机验收的 L1 构建**；本节 `5FFDABBE…`（`+a7a4ef1`）**包含 L2 源码但尚未部署、尚无任何实机证据**。引用 `0.3.8.0` 时必须同时给出 DLL SHA256 或 `ProductVersion` 的 `+hash`。**部署前不得用本节身份替代 §12.2 的实机验收结论。** |
+
+**`0.3.8.0` 的能力边界（不得误读）**：`0.3.8.0` 的**已部署构建**覆盖 **L1 — FFmpeg Component Management**（组件发现 / 固定 manifest / 能力探测 / 安全安装 / HTTPS 下载）；**L2（FFmpeg Video Process Pipeline）已实现为独立 Unity-free 源码并通过 net48 回归，但尚未接入 Unity、也未部署（§2.8 / §12.3）**；**L3（Unity MP4 Frame Transactions）未实施**。因此**任何** `0.3.8.0` DLL 都 **不具备** MP4 导出能力，本文件任何位置都不得表述为「MP4 可用」。**`0.3.8.0` L1 构建本身已通过用户最小实机验收**（UMM 显示 `0.3.8.0`、FFmpeg `Ready`、`libx264` / `mp4` / `rawvideo`、禁用并重新启用、无新可见异常；见 §2.7）；收敛前的 `1D70BE45…`（`+02c7fb8`）同类证据保留于 §2.7。
 
