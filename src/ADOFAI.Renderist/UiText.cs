@@ -102,6 +102,66 @@ namespace ADOFAI.Renderist
         public const string GuiMasterTimelineHandoffBtnStart = "启动 MasterTimeline Deterministic Gameplay Handoff";
         public const string GuiMasterTimelineHandoffBtnStop = "停止 MasterTimeline Deterministic Gameplay Handoff";
 
+        // ---- Phase 3.8.0: FFmpeg 组件管理 ----
+
+        public const string GuiFfmpegSectionTitle = "FFmpeg 组件";
+        public const string GuiFfmpegStatusPrefix = "组件状态：";
+        public const string GuiFfmpegStateInstallRootUnavailable = "托管目录不可用";
+        public const string GuiFfmpegStateNotFound = "未发现 FFmpeg";
+        public const string GuiFfmpegStateDiscovered = "已发现（未做能力检查）";
+        public const string GuiFfmpegStateReady = "就绪";
+        public const string GuiFfmpegStateUnsupported = "已发现但能力不足";
+        public const string GuiFfmpegStateInvalid = "显式路径无效";
+        public const string GuiFfmpegNotBlockingHint =
+            "FFmpeg 仅用于未来的视频输出；组件缺失或能力不足不影响 PNG / Log-only 导出。";
+        public const string GuiFfmpegSourcePrefix = "发现来源：";
+        public const string GuiFfmpegSourceExplicit = "用户指定路径";
+        public const string GuiFfmpegSourceManaged = "Renderist 托管安装";
+        public const string GuiFfmpegSourcePath = "系统 PATH";
+        public const string GuiFfmpegSourceNone = "（无）";
+        public const string GuiFfmpegExecutablePrefix = "可执行文件：";
+        public const string GuiFfmpegIdentityPrefix = "二进制身份（SHA-256 前 16 位）：";
+        public const string GuiFfmpegInstallRootPrefix = "托管目录：";
+        public const string GuiFfmpegManagedInstallsPrefix = "托管安装：";
+        public const string GuiFfmpegManagedNone = "（无）";
+        public const string GuiFfmpegCapabilityPrefix = "能力检查：";
+        public const string GuiFfmpegCapabilityNotProbed = "（未检查）";
+        public const string GuiFfmpegCapabilityOk = "含 libx264 / mp4 / rawvideo";
+        public const string GuiFfmpegCapabilityMissingPrefix = "缺少 ";
+        public const string GuiFfmpegCapabilityFailedPrefix = "检查失败：";
+        public const string GuiFfmpegAssetPrefix = "可安装资产：";
+        public const string GuiFfmpegAssetSourcePrefix = "来源：";
+        public const string GuiFfmpegLicensePrefix = "许可证：";
+        public const string GuiFfmpegExplicitPathLabel = "指定 FFmpeg 路径：";
+        public const string GuiFfmpegExplicitPathHint = "（留空 = 依次查找托管安装、系统 PATH）";
+        public const string GuiFfmpegArchivePathLabel = "本地安装包 ZIP：";
+        public const string GuiFfmpegArchivePathHint = "（选择已下载好的固定版本 ZIP；不会自动下载）";
+        public const string GuiFfmpegButtonRefresh = "刷新组件状态";
+        public const string GuiFfmpegButtonInstall = "从本地 ZIP 安装";
+        public const string GuiFfmpegButtonCancelInstall = "取消安装";
+        public const string GuiFfmpegBusyInspecting = "正在检查组件…";
+        public const string GuiFfmpegBusyInstalling = "正在安装…";
+        public const string GuiFfmpegDownloadPendingHint =
+            "自动下载尚未启用：下载方案（Unity Mono HTTPS 客户端）仍在收敛验证中，当前只支持从本地 ZIP 安装。";
+        public const string GuiFfmpegInstallResultPrefix = "上次安装：";
+        public const string GuiFfmpegInstallOutcomeInstalled = "已安装";
+        public const string GuiFfmpegInstallOutcomeAlready = "已存在，未覆盖";
+        public const string GuiFfmpegInstallOutcomeCancelled = "已取消（已清理暂存）";
+        public const string GuiFfmpegInstallOutcomeFailed = "失败";
+        public const string GuiFfmpegUnavailable = "（不可用）";
+
+        // ---------------- Log: FFmpeg 组件 ----------------
+
+        // {0}=assetId, {1}=errorCode, {2}=detail
+        public const string LogFfmpegInstallFailedFormat = "FFmpeg 安装失败（{0}）：{1} {2}";
+        public const string LogFfmpegInstallCancelled = "FFmpeg 安装已取消，暂存目录已清理。";
+        // {0}=directory
+        public const string LogFfmpegInstallSucceededFormat = "FFmpeg 安装完成：{0}";
+        // {0}=directory
+        public const string LogFfmpegInstallAlreadyPresentFormat = "FFmpeg 已存在，未覆盖：{0}";
+        // {0}=error
+        public const string LogFfmpegInspectionFailedFormat = "FFmpeg 组件状态检查失败：{0}";
+
         // ---------------- Log: ModEntry ----------------
 
         public const string LogEnabled = "已启用。";

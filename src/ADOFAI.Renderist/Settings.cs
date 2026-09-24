@@ -123,6 +123,20 @@ namespace ADOFAI.Renderist
         /// </summary>
         public int EditorExportSafetyFrameLimit = 0;
 
+        // ---------------- Phase 3.8.0: FFmpeg 组件管理 ----------------
+
+        /// <summary>
+        /// 用户显式指定的 FFmpeg 可执行文件绝对路径（ffmpeg.exe）。空 = 未指定。
+        ///
+        /// 发现顺序为：显式路径 → Renderist 托管安装 → 系统 PATH。
+        /// **显式路径失效时报错，绝不静默改用其它来源** —— 否则用户会以为自己在用自己的
+        /// FFmpeg，实际却在用别的二进制（PATH 顺序实测会改变被发现的版本）。
+        ///
+        /// 该字段只影响 FFmpeg 组件管理，**不阻断** PNG / Log-only 导出：
+        /// 组件缺失或能力不足只是让未来视频输出不可用。
+        /// </summary>
+        public string FfmpegExplicitPath = string.Empty;
+
         public override void Save(UnityModManager.ModEntry modEntry)
         {
             Save(this, modEntry);

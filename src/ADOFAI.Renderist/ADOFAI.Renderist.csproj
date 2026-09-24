@@ -89,6 +89,16 @@
       and the DLL is never committed. This is a deliberate design choice, not a gap.
     -->
 
+    <!--
+      FFmpeg component management (Phase 3.8.0) needs safe ZIP extraction only.
+      System.IO.Compression.FileSystem is already an implicit SDK reference for
+      net48 (>= 4.5), but both are declared explicitly so the dependency is visible
+      and does not rely on implicit behaviour. Both resolve from the net48
+      reference assemblies already used by this project: no new NuGet download.
+    -->
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+
   </ItemGroup>
 
   <!--

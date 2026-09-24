@@ -1,10 +1,13 @@
 using System;
 using System.Globalization;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using HarmonyLib;
 using UnityEngine;
 using UnityModManagerNet;
 using ADOFAI.Renderist.Export;
+using ADOFAI.Renderist.Ffmpeg;
 using ADOFAI.Renderist.Logging;
 
 namespace ADOFAI.Renderist
@@ -59,6 +62,20 @@ namespace ADOFAI.Renderist
         private static string _supersamplingScaleText;
         private static bool _geometryInputValid = true;
         private static bool _supersamplingInputValid = true;
+
+        // ---- Phase 3.8.0: FFmpeg 组件管理（与导出路径完全独立）----
+        //
+        // 组件检查与安装都在后台 Task 上执行，完成状态由既有 OnUpdate 轮询收取，
+        // 因此不会新增调度系统，也不会让 GUI / 主线程阻塞在短进程探测或大文件哈希上。
+        private static FfmpegComponentReport _cachedFfmpegReport;
+        private static bool _ffmpegReportDirty = true;
+        private static Task<FfmpegComponentReport> _ffmpegInspectTask;
+        private static Task<FfmpegInstallResult> _ffmpegInstallTask;
+        private static CancellationTokenSource _ffmpegInstallCancellation;
+        private static FfmpegInstallResult _lastFfmpegInstallResult;
+
+        // 本地安装包路径只是编辑缓冲，不写回 Settings（下载方案未收敛前不持久化它）。
+        private static string _ffmpegArchivePathText;
 
         /// <summary>
         /// UMM entry method, invoked via Info.json's "EntryMethod".
@@ -139,6 +156,8 @@ namespace ADOFAI.Renderist
                 DrawOutputDirectoryGui();
                 GUILayout.Space(8f);
                 DrawEditorExportGui();
+                GUILayout.Space(8f);
+                DrawFfmpegComponentGui();
             }
             catch (Exception ex)
             {
@@ -1072,6 +1091,450 @@ namespace ADOFAI.Renderist
             }
         }
 
+        // ================= Phase 3.8.0: FFmpeg 组件管理 =================
+        //
+        // 本段只做「显示 + 用户主动触发」。组件检查 / 安装的全部逻辑位于
+        // ADOFAI.Renderist.Ffmpeg 命名空间，且不依赖 Unity / UMM / Harmony。
+        //
+        // 关键边界：FFmpeg 组件状态**不参与** preflight，也绝不阻断 PNG / Log-only 导出。
+
+        /// <summary>托管安装根目录。由 GUI 层根据用户可写目录决定，Ffmpeg 层不猜测路径。</summary>
+        private static string GetFfmpegInstallRoot()
+        {
+            try
+            {
+                return Path.Combine(Application.persistentDataPath, "ADOFAI.Renderist", "ffmpeg");
+            }
+            catch (Exception ex)
+            {
+                Log.Warn(UiText.Format(UiText.LogFfmpegInspectionFailedFormat, ex.Message));
+                return null;
+            }
+        }
+
+        private static void DrawFfmpegComponentGui()
+        {
+            GUILayout.Label(UiText.GuiFfmpegSectionTitle, GUI.skin.label);
+
+            if (_ffmpegInspectTask == null && _ffmpegReportDirty)
+                RequestFfmpegInspection();
+
+            if (_ffmpegInspectTask != null)
+            {
+                GUILayout.Label(UiText.GuiFfmpegBusyInspecting, GUI.skin.label);
+            }
+            else if (_cachedFfmpegReport == null)
+            {
+                GUILayout.Label(UiText.GuiFfmpegBusyInspecting, GUI.skin.label);
+            }
+            else
+            {
+                DrawFfmpegReport(_cachedFfmpegReport);
+            }
+
+            DrawFfmpegControls();
+        }
+
+        private static void DrawFfmpegReport(FfmpegComponentReport report)
+        {
+            GUILayout.Label(UiText.GuiFfmpegStatusPrefix + FfmpegStateText(report.State), GUI.skin.label);
+
+            if (!string.IsNullOrEmpty(report.InstallRoot))
+            {
+                GUILayout.Label(UiText.GuiFfmpegInstallRootPrefix + report.InstallRoot, GUI.skin.label);
+            }
+            else if (!string.IsNullOrEmpty(report.InstallRootError))
+            {
+                GUILayout.Label(UiText.GuiFfmpegInstallRootPrefix + UiText.GuiFfmpegUnavailable +
+                                "（" + report.InstallRootError + "）", GUI.skin.label);
+            }
+
+            if (report.Found)
+            {
+                GUILayout.Label(UiText.GuiFfmpegSourcePrefix + FfmpegSourceText(report.Source), GUI.skin.label);
+                GUILayout.Label(UiText.GuiFfmpegExecutablePrefix + report.ExecutablePath, GUI.skin.label);
+                GUILayout.Label(UiText.GuiFfmpegIdentityPrefix +
+                                ShortHash(report.Candidate.Identity.Sha256), GUI.skin.label);
+                GUILayout.Label(UiText.GuiFfmpegCapabilityPrefix + FfmpegCapabilityText(report.Capability),
+                    GUI.skin.label);
+            }
+            else
+            {
+                GUILayout.Label(UiText.GuiFfmpegSourcePrefix + UiText.GuiFfmpegSourceNone, GUI.skin.label);
+                if (!string.IsNullOrEmpty(report.DiscoveryErrorCode))
+                {
+                    string detail = string.IsNullOrEmpty(report.DiscoveryErrorDetail)
+                        ? string.Empty
+                        : "（" + report.DiscoveryErrorDetail + "）";
+                    GUILayout.Label(report.DiscoveryErrorCode + detail, GUI.skin.label);
+                }
+            }
+
+            DrawFfmpegManagedInstalls(report);
+
+            FfmpegAsset asset = report.InstallableAsset;
+            if (asset != null)
+            {
+                GUILayout.Label(UiText.GuiFfmpegAssetPrefix + asset.DisplayName, GUI.skin.label);
+                GUILayout.Label(UiText.GuiFfmpegAssetSourcePrefix + asset.ArchiveUrl, GUI.skin.label);
+                GUILayout.Label(UiText.GuiFfmpegLicensePrefix + asset.LicenseName + " — " + asset.LicenseUrl,
+                    GUI.skin.label);
+            }
+
+            GUILayout.Label(UiText.GuiFfmpegNotBlockingHint, GUI.skin.label);
+        }
+
+        private static void DrawFfmpegManagedInstalls(FfmpegComponentReport report)
+        {
+            bool drewAny = false;
+            if (report.ManagedInstalls != null)
+            {
+                for (int i = 0; i < report.ManagedInstalls.Count; i++)
+                {
+                    FfmpegManagedInstall install = report.ManagedInstalls[i];
+                    if (install == null || !install.DirectoryPresent)
+                        continue;
+
+                    string status = install.IsValid
+                        ? UiText.GuiFfmpegStateReady
+                        : (install.InvalidReason ?? UiText.GuiFfmpegUnavailable);
+                    GUILayout.Label(UiText.GuiFfmpegManagedInstallsPrefix +
+                                    install.AssetId + " " + install.Version + " — " + status, GUI.skin.label);
+                    drewAny = true;
+                }
+            }
+
+            if (!drewAny)
+                GUILayout.Label(UiText.GuiFfmpegManagedInstallsPrefix + UiText.GuiFfmpegManagedNone, GUI.skin.label);
+        }
+
+        private static void DrawFfmpegControls()
+        {
+            bool previousEnabled = GUI.enabled;
+            bool installing = _ffmpegInstallTask != null;
+            GUI.enabled = previousEnabled && !installing;
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(UiText.GuiFfmpegExplicitPathLabel, GUI.skin.label, GUILayout.Width(120f));
+            string changedExplicit = GUILayout.TextField(Settings.FfmpegExplicitPath ?? string.Empty);
+            if (!string.Equals(changedExplicit, Settings.FfmpegExplicitPath, StringComparison.Ordinal))
+            {
+                Settings.FfmpegExplicitPath = changedExplicit;
+                _ffmpegReportDirty = true;
+            }
+            GUILayout.EndHorizontal();
+            GUILayout.Label(UiText.GuiFfmpegExplicitPathHint, GUI.skin.label);
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(UiText.GuiFfmpegArchivePathLabel, GUI.skin.label, GUILayout.Width(120f));
+            string changedArchive = GUILayout.TextField(_ffmpegArchivePathText ?? string.Empty);
+            if (!string.Equals(changedArchive, _ffmpegArchivePathText, StringComparison.Ordinal))
+                _ffmpegArchivePathText = changedArchive;
+            GUILayout.EndHorizontal();
+            GUILayout.Label(UiText.GuiFfmpegArchivePathHint, GUI.skin.label);
+
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button(UiText.GuiFfmpegButtonRefresh, GUI.skin.button, GUILayout.Width(160f)))
+                _ffmpegReportDirty = true;
+
+            if (installing)
+            {
+                if (GUILayout.Button(UiText.GuiFfmpegButtonCancelInstall, GUI.skin.button, GUILayout.Width(160f)))
+                    RequestFfmpegInstallCancel();
+            }
+            else if (GUILayout.Button(UiText.GuiFfmpegButtonInstall, GUI.skin.button, GUILayout.Width(160f)))
+            {
+                StartFfmpegInstall(_ffmpegArchivePathText);
+            }
+            GUILayout.EndHorizontal();
+
+            GUI.enabled = previousEnabled;
+
+            if (installing)
+                GUILayout.Label(UiText.GuiFfmpegBusyInstalling, GUI.skin.label);
+
+            GUILayout.Label(UiText.GuiFfmpegDownloadPendingHint, GUI.skin.label);
+
+            FfmpegInstallResult last = _lastFfmpegInstallResult;
+            if (last != null)
+            {
+                string text = UiText.GuiFfmpegInstallResultPrefix + FfmpegInstallOutcomeText(last);
+                if (last.Outcome != FfmpegInstallOutcome.Installed &&
+                    last.Outcome != FfmpegInstallOutcome.AlreadyInstalled)
+                {
+                    text += "（" + (last.ErrorCode ?? "unknown") + "）";
+                }
+                GUILayout.Label(text, GUI.skin.label);
+            }
+        }
+
+        /// <summary>
+        /// 请求一次组件状态检查。检查在后台线程执行（能力探测会启动短进程，
+        /// 大文件哈希也可能耗时），结果由 <see cref="PumpFfmpegTasks"/> 在主线程收取。
+        /// </summary>
+        private static void RequestFfmpegInspection()
+        {
+            if (_ffmpegInspectTask != null)
+                return;
+
+            _ffmpegReportDirty = false;
+
+            // 在进入后台线程前把 Unity 侧的路径解析完，后台线程不接触任何 Unity API。
+            string installRoot = GetFfmpegInstallRoot();
+            string explicitPath = Settings.FfmpegExplicitPath;
+
+            _ffmpegInspectTask = Task.Run(() => FfmpegComponentInspector.Inspect(
+                new FfmpegComponentInspectionRequest
+                {
+                    ExplicitPath = explicitPath,
+                    InstallRoot = installRoot,
+                    ProbeCapabilities = true,
+                }));
+        }
+
+        private static void StartFfmpegInstall(string archivePath)
+        {
+            if (_ffmpegInstallTask != null)
+                return;
+
+            FfmpegInstallLayout layout;
+            string layoutError;
+            if (!FfmpegInstallLayout.TryCreate(GetFfmpegInstallRoot(), out layout, out layoutError))
+            {
+                _lastFfmpegInstallResult = new FfmpegInstallResult
+                {
+                    Outcome = FfmpegInstallOutcome.Failed,
+                    ErrorCode = layoutError ?? "install-root-unavailable",
+                };
+                Log.Warn(UiText.Format(UiText.LogFfmpegInstallFailedFormat, "-", layoutError, string.Empty));
+                return;
+            }
+
+            var request = new FfmpegInstallRequest
+            {
+                Asset = FfmpegAssetManifest.Primary,
+                Layout = layout,
+                ArchivePath = archivePath,
+                ProbeAfterInstall = true,
+            };
+
+            var cancellation = new CancellationTokenSource();
+            _ffmpegInstallCancellation = cancellation;
+
+            _ffmpegInstallTask = Task.Run(() => FfmpegInstaller.Install(request, cancellation.Token));
+        }
+
+        private static void RequestFfmpegInstallCancel()
+        {
+            try
+            {
+                CancellationTokenSource cancellation = _ffmpegInstallCancellation;
+                if (cancellation != null && !cancellation.IsCancellationRequested)
+                    cancellation.Cancel();
+            }
+            catch (Exception ex)
+            {
+                Log.Warn(ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// 收取后台组件检查 / 安装任务的结果。只读取由后台线程产出的纯数据对象，
+        /// 不涉及任何 Unity API。
+        /// </summary>
+        private static void PumpFfmpegTasks()
+        {
+            Task<FfmpegComponentReport> inspect = _ffmpegInspectTask;
+            if (inspect != null && inspect.IsCompleted)
+            {
+                _ffmpegInspectTask = null;
+                if (inspect.IsFaulted)
+                {
+                    Log.Warn(UiText.Format(UiText.LogFfmpegInspectionFailedFormat, DescribeTaskFailure(inspect)));
+                    _ffmpegReportDirty = true;
+                }
+                else
+                {
+                    _cachedFfmpegReport = inspect.Result;
+                }
+            }
+
+            Task<FfmpegInstallResult> install = _ffmpegInstallTask;
+            if (install != null && install.IsCompleted)
+            {
+                _ffmpegInstallTask = null;
+
+                FfmpegInstallResult result;
+                if (install.IsFaulted)
+                {
+                    result = new FfmpegInstallResult
+                    {
+                        Outcome = FfmpegInstallOutcome.Failed,
+                        ErrorCode = "install-task-faulted",
+                        ErrorDetail = DescribeTaskFailure(install),
+                    };
+                }
+                else
+                {
+                    result = install.Result;
+                }
+
+                _lastFfmpegInstallResult = result;
+                LogFfmpegInstallResult(result);
+
+                if (_ffmpegInstallCancellation != null)
+                {
+                    try
+                    {
+                        _ffmpegInstallCancellation.Dispose();
+                    }
+                    catch
+                    {
+                    }
+                    _ffmpegInstallCancellation = null;
+                }
+
+                // 磁盘状态已改变：重新检查组件状态。
+                _ffmpegReportDirty = true;
+            }
+        }
+
+        private static void LogFfmpegInstallResult(FfmpegInstallResult result)
+        {
+            if (result == null)
+                return;
+
+            switch (result.Outcome)
+            {
+                case FfmpegInstallOutcome.Installed:
+                    Log.Info(UiText.Format(UiText.LogFfmpegInstallSucceededFormat,
+                        result.TargetDirectory ?? string.Empty));
+                    break;
+                case FfmpegInstallOutcome.AlreadyInstalled:
+                    Log.Info(UiText.Format(UiText.LogFfmpegInstallAlreadyPresentFormat,
+                        result.TargetDirectory ?? string.Empty));
+                    break;
+                case FfmpegInstallOutcome.Cancelled:
+                    Log.Info(UiText.LogFfmpegInstallCancelled);
+                    break;
+                default:
+                    Log.Warn(UiText.Format(UiText.LogFfmpegInstallFailedFormat,
+                        result.AssetId ?? "-", result.ErrorCode, result.ErrorDetail));
+                    break;
+            }
+
+            if (result.CleanupWarnings != null)
+            {
+                for (int i = 0; i < result.CleanupWarnings.Count; i++)
+                    Log.Warn(result.CleanupWarnings[i]);
+            }
+
+            if (result.OrphanStagingRemoved != null)
+            {
+                for (int i = 0; i < result.OrphanStagingRemoved.Count; i++)
+                    Log.Info("已清理孤儿 staging：" + result.OrphanStagingRemoved[i]);
+            }
+        }
+
+        private static string DescribeTaskFailure(Task task)
+        {
+            AggregateException aggregate = task.Exception;
+            if (aggregate == null)
+                return "unknown";
+
+            Exception first = aggregate.Flatten().InnerExceptions.Count > 0
+                ? aggregate.Flatten().InnerExceptions[0]
+                : aggregate;
+            return first.Message;
+        }
+
+        private static string FfmpegStateText(FfmpegComponentState state)
+        {
+            switch (state)
+            {
+                case FfmpegComponentState.InstallRootUnavailable:
+                    return UiText.GuiFfmpegStateInstallRootUnavailable;
+                case FfmpegComponentState.NotFound:
+                    return UiText.GuiFfmpegStateNotFound;
+                case FfmpegComponentState.Discovered:
+                    return UiText.GuiFfmpegStateDiscovered;
+                case FfmpegComponentState.Ready:
+                    return UiText.GuiFfmpegStateReady;
+                case FfmpegComponentState.Unsupported:
+                    return UiText.GuiFfmpegStateUnsupported;
+                case FfmpegComponentState.Invalid:
+                    return UiText.GuiFfmpegStateInvalid;
+                default:
+                    return state.ToString();
+            }
+        }
+
+        private static string FfmpegSourceText(FfmpegCandidateSource source)
+        {
+            switch (source)
+            {
+                case FfmpegCandidateSource.ExplicitPath:
+                    return UiText.GuiFfmpegSourceExplicit;
+                case FfmpegCandidateSource.ManagedInstall:
+                    return UiText.GuiFfmpegSourceManaged;
+                case FfmpegCandidateSource.SystemPath:
+                    return UiText.GuiFfmpegSourcePath;
+                default:
+                    return UiText.GuiFfmpegSourceNone;
+            }
+        }
+
+        private static string FfmpegCapabilityText(FfmpegCapabilityReport capability)
+        {
+            if (capability == null)
+                return UiText.GuiFfmpegCapabilityNotProbed;
+
+            if (capability.Status != FfmpegCapabilityStatus.Probed)
+            {
+                string detail = capability.ErrorCode ?? "unknown";
+                if (!string.IsNullOrEmpty(capability.ErrorDetail))
+                    detail += "（" + capability.ErrorDetail + "）";
+                return UiText.GuiFfmpegCapabilityFailedPrefix + detail;
+            }
+
+            if (capability.MissingCapabilities == null || capability.MissingCapabilities.Count == 0)
+                return UiText.GuiFfmpegCapabilityOk;
+
+            return UiText.GuiFfmpegCapabilityMissingPrefix +
+                   string.Join("、", ToStringArray(capability.MissingCapabilities));
+        }
+
+        private static string[] ToStringArray(System.Collections.Generic.IReadOnlyList<string> values)
+        {
+            var array = new string[values.Count];
+            for (int i = 0; i < values.Count; i++)
+                array[i] = values[i];
+            return array;
+        }
+
+        private static string FfmpegInstallOutcomeText(FfmpegInstallResult result)
+        {
+            switch (result.Outcome)
+            {
+                case FfmpegInstallOutcome.Installed:
+                    return UiText.GuiFfmpegInstallOutcomeInstalled;
+                case FfmpegInstallOutcome.AlreadyInstalled:
+                    return UiText.GuiFfmpegInstallOutcomeAlready;
+                case FfmpegInstallOutcome.Cancelled:
+                    return UiText.GuiFfmpegInstallOutcomeCancelled;
+                default:
+                    return UiText.GuiFfmpegInstallOutcomeFailed;
+            }
+        }
+
+        private static string ShortHash(string sha256)
+        {
+            if (string.IsNullOrEmpty(sha256))
+                return UiText.GuiFfmpegUnavailable;
+
+            return sha256.Length <= 16 ? sha256 : sha256.Substring(0, 16);
+        }
+
         private static void OnSaveGUI(UnityModManager.ModEntry modEntry)
         {
             try
@@ -1089,6 +1552,9 @@ namespace ADOFAI.Renderist
             try
             {
                 if (!Enabled) return;
+
+                // 收取后台 FFmpeg 组件检查 / 安装结果（无 Unity API 参与，见 Ffmpeg 命名空间）。
+                PumpFfmpegTasks();
 
                 // 仅推进当前编辑器确定性导出会话。
                 EditorExportController.Tick();

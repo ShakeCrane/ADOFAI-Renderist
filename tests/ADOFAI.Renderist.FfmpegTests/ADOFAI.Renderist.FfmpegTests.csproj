@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    FFmpeg 组件管理（L1）的正式回归测试。
+
+    这不是临时探针，也不是发布产物的一部分：
+      * 它只覆盖长期有用的行为契约（manifest 校验、候选发现、能力检查、ZIP 安全、
+        安装锁、取消/回滚、孤儿 staging、旧安装不被覆盖）；
+      * 它不携带任何下载的 FFmpeg 二进制、临时 ZIP、视频或日志；
+      * 它不被 src/ADOFAI.Renderist 引用，也不会进入三文件发布 ZIP。
+
+    L1 生产源码刻意不依赖 Unity / UMM / Harmony，因此这里可以直接编译生产源码，
+    不需要任何 Unity stub。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <RootNamespace>ADOFAI.Renderist.FfmpegTests</RootNamespace>
+    <AssemblyName>ADOFAI.Renderist.FfmpegTests</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <DebugType>portable</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 直接编译生产源码（同一份源文件，不是副本）。 -->
+    <Compile Include="..\..\src\ADOFAI.Renderist\Ffmpeg\*.cs" LinkBase="Production" />
+  </ItemGroup>
+
+</Project>
