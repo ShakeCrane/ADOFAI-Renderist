@@ -22,6 +22,10 @@ namespace ADOFAI.Renderist.FfmpegTests
 
         private static int Main(string[] args)
         {
+            // 被 L2 视频管线当作"假编码 / 假核验进程"启动时，本进程充当可控子进程。
+            if (FakeVideoProcess.IsFakeInvocation(args))
+                return FakeVideoProcess.Run(args);
+
             // 被能力探测以 -hide_banner 调用时，本进程充当"假 FFmpeg"子进程。
             if (FakeFfmpeg.IsFakeInvocation(args))
                 return FakeFfmpeg.Run(args);
@@ -47,6 +51,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 InstallerTests();
                 DownloadTests();
                 UnityFfmpegDownloadDriverTests.Run(_workRoot);
+                FfmpegVideoPipelineTests.Run(_workRoot);
             }
             catch (Exception ex)
             {
@@ -426,7 +431,7 @@ namespace ADOFAI.Renderist.FfmpegTests
             });
         }
 
-        private static IReadOnlyList<string> FindLocalFfmpegBinaries()
+        internal static IReadOnlyList<string> FindLocalFfmpegBinaries()
         {
             var found = new List<string>();
 
