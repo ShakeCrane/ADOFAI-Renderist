@@ -992,13 +992,13 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 | --- | --- |
 | 基线（起始 HEAD） | `7a67546a62bf02e7079ebf77cbecfcd282d8b0e2` |
 | 产品版本 / FileVersion | `0.3.8.0` |
-| L2 源码提交 | **`a7a4ef1fd0178343da6d97a5f921dcc3c04a0597`**（`feat(ffmpeg): implement independent video process pipeline` + `test(ffmpeg): cover video process pipeline lifecycle and verification`，其父提交为上述基线） |
-| **ProductVersion（含 `+hash`）** | **`0.3.8.0+a7a4ef1fd0178343da6d97a5f921dcc3c04a0597`** ⇒ 精确指向**承载 L2 源码的测试提交**（在其之后只有 docs-only 提交） |
-| DLL SHA256 | **`5FFDABBEAA778646BBE64CE6B63F41A427C04D11F113C381AD4D4ECBC2847512`**（319488 字节） |
-| 发布包 ZIP SHA256 | **`941ADA72F3722612EE0666C399BDE401F0826F99B94A794027C1CD6EA4AAE330`** |
+| L2 源码提交 | **`22f346f`（feat）→ `a7a4ef1`（test）→ `e475d961a34859052ee93f24682cd7b0ba71fb32`（refactor，末次源码提交）**，其父提交为上述基线 |
+| **ProductVersion（含 `+hash`）** | **`0.3.8.0+e475d961a34859052ee93f24682cd7b0ba71fb32`** ⇒ 精确指向**末次 L2 源码提交**（在其之后只有 docs-only 提交） |
+| DLL SHA256 | **`C0092C4C48D86EAF775B77CA453C1A28467B5C4B91EA03742A219D7B52566764`**（319488 字节） |
+| 发布包 ZIP SHA256 | **`B13ACCE281EFB9A1E4EA5A50A20565E39279FD376420C8DAE5913C9C0109741A`** |
 | 包内容 | 仅 3 个顶层文件（`Info.json` / `ADOFAI.Renderist.dll` / `LICENSE`），**0 个嵌套目录** |
 | 构建/验证 | 强制 Release Rebuild **0 error**（仅 `NU1900` 离线噪声）；package + 独立 verify 均 **PASS 11 checks / 0 failures**；`git diff --check` clean；离线回归 116/0/12、真实 fixture 回归 128/0/0（§2.8） |
-| 与 §12.2 的关系 | **两份都是 `0.3.8.0`，内容不同**：§12.2 的 `AE2326D3…`（`+4d35801`）是**已部署并通过用户实机验收的 L1 构建**；本节 `5FFDABBE…`（`+a7a4ef1`）**包含 L2 源码但尚未部署、尚无任何实机证据**。引用 `0.3.8.0` 时必须同时给出 DLL SHA256 或 `ProductVersion` 的 `+hash`。**部署前不得用本节身份替代 §12.2 的实机验收结论。** |
+| 与 §12.2 的关系 | **两份都是 `0.3.8.0`，内容不同**：§12.2 的 `AE2326D3…`（`+4d35801`）是**已部署并通过用户实机验收的 L1 构建**；本节 `C0092C4C…`（`+e475d96`）**包含 L2 源码但尚未部署、尚无任何实机证据**。引用 `0.3.8.0` 时必须同时给出 DLL SHA256 或 `ProductVersion` 的 `+hash`。**部署前不得用本节身份替代 §12.2 的实机验收结论。** |
 
 **`0.3.8.0` 的能力边界（不得误读）**：`0.3.8.0` 的**已部署构建**覆盖 **L1 — FFmpeg Component Management**（组件发现 / 固定 manifest / 能力探测 / 安全安装 / HTTPS 下载）；**L2（FFmpeg Video Process Pipeline）已实现为独立 Unity-free 源码并通过 net48 回归，但尚未接入 Unity、也未部署（§2.8 / §12.3）**；**L3（Unity MP4 Frame Transactions）未实施**。因此**任何** `0.3.8.0` DLL 都 **不具备** MP4 导出能力，本文件任何位置都不得表述为「MP4 可用」。**`0.3.8.0` L1 构建本身已通过用户最小实机验收**（UMM 显示 `0.3.8.0`、FFmpeg `Ready`、`libx264` / `mp4` / `rawvideo`、禁用并重新启用、无新可见异常；见 §2.7）；收敛前的 `1D70BE45…`（`+02c7fb8`）同类证据保留于 §2.7。
 
