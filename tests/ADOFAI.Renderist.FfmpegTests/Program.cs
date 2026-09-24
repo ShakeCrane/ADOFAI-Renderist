@@ -46,6 +46,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 InstallLockTests();
                 InstallerTests();
                 DownloadTests();
+                UnityFfmpegDownloadDriverTests.Run(_workRoot);
             }
             catch (Exception ex)
             {
@@ -1805,6 +1806,40 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.CheckEqual(1.0, controller.ProgressFraction, "complete progress");
 
                 controller.Cancel("test-cleanup");
+            });
+
+            TestKit.Run("download: duplicate completion of the active generation keeps the in-use archive", () =>
+            {
+                string work = TestKit.NewWorkDirectory(_workRoot, "download-duplicate");
+                string archivePath;
+                FfmpegAsset asset = Fixtures.BuildSyntheticAssetWithFakeFfmpeg(work, out archivePath);
+
+                FfmpegInstallLayout layout;
+                string layoutError;
+                FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
+
+                var controller = new FfmpegDownloadController(layout, generation => { });
+                FfmpegDownloadPlan plan = controller.TryStart(asset, true, 30);
+                File.Copy(archivePath, plan.TempFilePath, true);
+
+                TestKit.Check(controller.ReportFinished(plan.Generation, SuccessResponse(plan)),
+                    "first completion must be accepted");
+                TestKit.CheckEqual(FfmpegDownloadState.Verifying, controller.State, "entered verification");
+
+                // 同一代的重复完成通知：既不得重复推进校验/安装，也不得删除
+                // 校验与安装**仍在读取**的归档（临时文件的 owner 是控制器）。
+                TestKit.Check(!controller.ReportFinished(plan.Generation, SuccessResponse(plan)),
+                    "duplicate completion must be rejected");
+                TestKit.CheckEqual(FfmpegDownloadState.Verifying, controller.State,
+                    "duplicate completion must not change the state");
+                TestKit.Check(File.Exists(plan.TempFilePath),
+                    "in-use archive must NOT be deleted while verification/installation reads it");
+
+                PumpUntilSettled(controller);
+                TestKit.CheckEqual(FfmpegDownloadState.Succeeded, controller.State,
+                    "the single accepted verification must still complete (" +
+                    controller.ErrorCode + " " + controller.ErrorDetail + ")");
+                TestKit.Check(!File.Exists(plan.TempFilePath), "temp must be cleaned once terminal");
             });
         }
 

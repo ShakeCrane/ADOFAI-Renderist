@@ -35,6 +35,7 @@
   <ItemGroup>
     <!-- 直接编译生产源码（同一份源文件，不是副本）。 -->
     <Compile Include="..\..\src\ADOFAI.Renderist\Ffmpeg\*.cs" LinkBase="Production" />
+    <Compile Include="..\..\src\ADOFAI.Renderist\UnityFfmpegDownloadDriver.cs" LinkBase="Production" />
   </ItemGroup>
 
 </Project>
