@@ -226,7 +226,7 @@ namespace ADOFAI.Renderist.Ffmpeg
             // ---- pass 2: 容器 / 包级时间语义 ----
             var packetRows = new Framemd5Accumulator();
             var packetStreams = new StreamLineCollector();
-            var packetStderr = new BoundedTextCollector(StderrCharsForPackets(), MaxMatchedLines);
+            var packetStderr = new BoundedTextCollector(StderrTailChars, MaxMatchedLines);
 
             PassOutcome packets = RunPass(
                 request,
@@ -289,11 +289,6 @@ namespace ADOFAI.Renderist.Ffmpeg
 
             result.Status = FfmpegVideoVerificationStatus.Verified;
             return result;
-        }
-
-        private static int StderrCharsForPackets()
-        {
-            return StderrTailChars;
         }
 
         private static FfmpegVideoVerificationResult Fail(
