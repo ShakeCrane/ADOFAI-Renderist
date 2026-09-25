@@ -1810,6 +1810,84 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.TryDeleteDirectory(directory);
             });
 
+            TestKit.Run("hardening: a failed stderr initialization still owns and waits for the running stdout pump", () =>
+            {
+                string directory = TestKit.NewWorkDirectory(workRoot, "partialinit");
+                int before = CountProcesses("ADOFAI.Renderist.FfmpegTests");
+
+                var launcher = new FakeVideoProcessLauncher
+                {
+                    // 保持存活，直到清理阶段把它终止。
+                    Encoder = new FakeVideoEncoderScript { Hang = true },
+                };
+
+                using (var pumpEntered = new ManualResetEventSlim(false))
+                using (var pumpRelease = new ManualResetEventSlim(false))
+                {
+                    var options = new FfmpegVideoPipelineOptions
+                    {
+                        Settings = Settings(64, 48, 30),
+                        Identity = MakeIdentity(FakeVideoProcess.ExecutablePath),
+                        FinalPath = Path.Combine(directory, "video.mp4"),
+                        ProcessStart = launcher.Create(),
+                        StreamWrapper = (stream, role) =>
+                        {
+                            // stdout pump 会真实启动并被屏障卡住；stderr 初始化直接抛异常。
+                            if (string.Equals(role, "stdout", StringComparison.Ordinal))
+                                return new BarrierReadStream(stream, pumpEntered, pumpRelease);
+
+                            throw new IOException("injected stderr initialization failure");
+                        },
+                    };
+
+                    var pipeline = new FfmpegVideoPipeline(options);
+                    FfmpegVideoStartResult start = pipeline.Start();
+
+                    TestKit.Check(!start.Started, "start must fail");
+                    TestKit.CheckEqual("process-init-failed", start.ErrorCode, "error code");
+                    TestKit.CheckEqual(1, launcher.EncoderStarts, "the encoder process was really started");
+
+                    // stdout pump 必须真的已经进入读取（不依赖随机时序）。
+                    TestKit.Check(pumpEntered.Wait(30000), "the stdout pump must have started reading");
+                    TestKit.CheckEqual(FfmpegVideoPipelineState.Failed, pipeline.State, "state must be Failed");
+
+                    Task<FfmpegVideoOutcome> cleanup = pipeline.CleanupTask;
+                    TestKit.Check(cleanup != null, "a failed initialization must expose a cleanup task");
+
+                    // 漏洞判据：stdout pump 仍在运行时，CleanupTask 绝不能报告完成 ——
+                    // 否则进程会在后台读取任务仍持有管道时被 Dispose。
+                    TestKit.Check(!cleanup.Wait(1500),
+                        "CleanupTask must not complete while an owned stdout pump is still running");
+                    TestKit.Check(!cleanup.IsCompleted, "cleanup must still be pending");
+
+                    pumpRelease.Set();
+
+                    FfmpegVideoOutcome outcome = Await(cleanup, "cleanup");
+                    TestKit.CheckEqual(FfmpegVideoPipelineState.Failed, outcome.State, "outcome state");
+                    TestKit.CheckEqual("process-init-failed", outcome.ErrorCode, "outcome error code");
+                    TestKit.Check(outcome.ProcessStarted, "the process was started");
+                    TestKit.Check(outcome.ProcessReaped, "the process must be reaped");
+                    TestKit.Check(outcome.ProcessDisposed, "the process object must be disposed");
+                    TestKit.Check(outcome.TempOwnershipReleased, "the ownership handle must be released");
+                    TestKit.Check(outcome.TempFileRemoved, "the owned temp file must be removed");
+                    TestKit.Check(!outcome.ResidualOwnership, "no residual ownership: " + outcome.ResidualDetail);
+                    TestKit.CheckEqual(0, PartialFiles(directory).Length, "temp file must be removed");
+                    TestKit.Check(!File.Exists(Path.Combine(directory, "video.mp4")), "nothing may be published");
+                    TestKit.CheckEqual(0, launcher.VerifierStarts, "verification must not run for a failed start");
+
+                    // 释放屏障之后 stdout pump 必须已经收敛（没有遗留后台读取任务）。
+                    TestKit.Check(outcome.ResidualDetail == null ||
+                                  outcome.ResidualDetail.IndexOf("stdout-drain-failed", StringComparison.Ordinal) < 0,
+                        "a deliberately released pump must not report a drain failure: " + outcome.ResidualDetail);
+                }
+
+                int after = CountProcesses("ADOFAI.Renderist.FfmpegTests");
+                TestKit.Check(after <= before, "no child process may survive a partial initialization failure (" +
+                                              before + " -> " + after + ")");
+
+                TestKit.TryDeleteDirectory(directory);
+            });
+
             // ---------------------------------------------------------------- P1-4 drain error propagation
             TestKit.Run("hardening: the drain pump distinguishes EOF from a read failure", () =>
             {
@@ -2014,6 +2092,31 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.Check(pipeline.TempPath.StartsWith(originalFinalPath, StringComparison.OrdinalIgnoreCase),
                     "the temp path must derive from the frozen final path: " + pipeline.TempPath);
 
+                // Mutating the caller's objects AGAIN after Start must not affect the running session either:
+                // the session already resolved its frozen values, so command, frame length, output paths
+                // and verification expectations must all stay unchanged.
+                string frozenTempPath = pipeline.TempPath;
+                string frozenFinalPath = pipeline.FinalPath;
+                settings.Width = 256;
+                settings.Height = 256;
+                settings.Fps = 120;
+                settings.Crf = 0;
+                settings.Preset = "veryslow";
+                settings.PixelFormat = FfmpegVideoPixelFormat.Yuv444p;
+                options.FinalPath = Path.Combine(directory, "mutated-after-start.mp4");
+                options.TempPath = Path.Combine(directory, "mutated-after-start.tmp");
+                options.ExpectedCodecName = "mpeg4";
+                options.ProcessStart = null;
+                options.Verifier = null;
+                options.Identity = null;
+
+                TestKit.CheckEqual(frozenFrameLength, pipeline.FrameLengthBytes,
+                    "frame length must stay frozen after Start");
+                TestKit.CheckEqual(Path.GetFullPath(originalFinalPath), pipeline.FinalPath,
+                    "the final path must stay frozen after Start");
+                TestKit.CheckEqual(frozenTempPath, pipeline.TempPath, "the temp path must stay frozen after Start");
+                TestKit.CheckEqual(frozenFinalPath, pipeline.FinalPath, "frozen final path value");
+
                 FfmpegFrameWriteAttempt attempt = pipeline.TryWriteFrame(Frame(64, 48));
                 TestKit.Check(attempt.Accepted, "frame accepted: " + attempt.ErrorCode);
                 Await(attempt.Completion, "frame write");
@@ -2035,6 +2138,10 @@ namespace ADOFAI.Renderist.FfmpegTests
 
                 TestKit.CheckEqual(Path.GetFullPath(originalFinalPath), outcome.FinalPath, "published at the frozen path");
                 TestKit.Check(!File.Exists(Path.Combine(directory, "mutated.mp4")), "the mutated path must not be used");
+                TestKit.Check(!File.Exists(Path.Combine(directory, "mutated-after-start.mp4")),
+                    "a path mutated after Start must not be used either");
+                TestKit.CheckEqual(frozenTempPath, verifier.LastRequest.VideoPath,
+                    "verification must target the frozen temp path, not a path mutated after Start");
 
                 TestKit.TryDeleteDirectory(directory);
             });
@@ -2590,6 +2697,68 @@ namespace ADOFAI.Renderist.FfmpegTests
             public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
             {
                 throw new IOException("injected read failure");
+            }
+
+            public override void Flush()
+            {
+            }
+
+            public override long Seek(long offset, SeekOrigin origin)
+            {
+                throw new NotSupportedException();
+            }
+
+            public override void SetLength(long value)
+            {
+                throw new NotSupportedException();
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                throw new NotSupportedException();
+            }
+        }
+
+        /// <summary>
+        /// 会在读取处阻塞的包装流：用于确定性地把 stdout pump 卡在"已启动、仍在运行"的状态，
+        /// 从而验证 pipeline 对它的 ownership（不依赖随机 Sleep 碰撞窗口）。
+        /// </summary>
+        private sealed class BarrierReadStream : Stream
+        {
+            private readonly Stream _inner;
+            private readonly ManualResetEventSlim _entered;
+            private readonly ManualResetEventSlim _release;
+
+            public BarrierReadStream(Stream inner, ManualResetEventSlim entered, ManualResetEventSlim release)
+            {
+                _inner = inner;
+                _entered = entered;
+                _release = release;
+            }
+
+            public override bool CanRead { get { return true; } }
+            public override bool CanSeek { get { return false; } }
+            public override bool CanWrite { get { return false; } }
+            public override long Length { get { throw new NotSupportedException(); } }
+
+            public override long Position
+            {
+                get { throw new NotSupportedException(); }
+                set { throw new NotSupportedException(); }
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                _entered.Set();
+                _release.Wait(30000);
+                return _inner.Read(buffer, offset, count);
+            }
+
+            public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            {
+                _entered.Set();
+                _release.Wait(30000);
+                return await _inner.ReadAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
             }
 
             public override void Flush()
