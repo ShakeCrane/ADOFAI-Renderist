@@ -142,7 +142,7 @@ namespace ADOFAI.Renderist.Export
         public string DownsampleRenderTextureFormat;
         public string DownsampleRenderTextureGraphicsFormat;
 
-        private const string PhaseLabel = "Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management";
+        private const string PhaseLabel = "Phase 3.8.0 FFmpeg Video Export Pipeline — L2 Video Process Pipeline";
         /// <summary>PNG 序列模式的既有 mode 值（保持不变，避免破坏既有 metadata 语义）。</summary>
         private const string PngModeLabel = "editor-export-png-sequence";
         /// <summary>log-only（image output disabled）模式的 mode 值。</summary>

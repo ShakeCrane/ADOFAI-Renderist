@@ -14,8 +14,9 @@ namespace ADOFAI.Renderist
 {
     /// <summary>
     /// Unity Mod Manager entry point for ADOFAI Renderist.
-    /// Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management.
-    /// L1（组件管理 / 下载）已完成；L2（帧流进程）与 L3（MP4 帧事务）尚未实施。
+    /// Phase 3.8.0 FFmpeg Video Export Pipeline — L2 Video Process Pipeline.
+    /// L1（组件管理 / 下载）与 L2（独立 FFmpeg 视频进程管线，源码阶段）已完成；
+    /// L3（Unity MP4 帧事务）尚未实施，编辑器 MP4 导出仍不可用。
     /// Renderist remains passive towards replay / autoplay.
     /// </summary>
     public static class ModEntry
@@ -110,7 +111,7 @@ namespace ADOFAI.Renderist
 
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.3.8.0 (Phase 3.8.0 FFmpeg Video Export Pipeline — L1 Component Management).");
+                Log.Info("Loaded ADOFAI Renderist 0.3.8.0 (Phase 3.8.0 FFmpeg Video Export Pipeline — L2 Video Process Pipeline).");
                 return true;
             }
             catch (Exception ex)
