@@ -1041,22 +1041,23 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 **顺序（与 §12.1 相同的仓库约定）**：先提交版本收敛源码 → 从该提交**强制 Release Rebuild** + package → 再用一个 **docs-only 提交**把最终 DLL / ZIP 身份填入本表。因此 `+hash` 指向**承载 `0.3.8.0` 版本变更的提交**，HEAD 可能比它多一个 docs-only 提交，这不影响产物身份。**若在打包之后又产生任何源码改动，必须重新 Rebuild + 重新打包并更新本表。** 本仓库**刻意不在记录身份的 docs-only 提交之后再打包**：那会让同一个 `0.3.8.0` 出现两个不同哈希的发布包身份（对照 §12 对 `0.3.7.0` 三份包身份的警示）。因此**L1 收敛时**唯一的 `0.3.8.0` 产物就是本表中由 `4d35801` 构建的那一份。
 
-### 12.3 L2 工作区构建身份（与 §12.2 的 L1 产物**不是**同一份）
+### 12.3 L2 正式收敛构建身份（与 §12.2 的 L1 产物**不是**同一份）
 
-**L2 实现与随后的生命周期/ownership 修复轮（§2.8 / §2.8.1）在 `7a67546` 之上产生了新的源码改动，因此 `0.3.8.0` 现在有第二份构建身份。产品版本**仍为** `0.3.8.0`（用户要求不递增第四位），**Phase 文案未修改**。**
+**L2 实现 → 首次复审六项修复 → 最终复审一项 P2 修复与 Phase 收敛（§2.8 / §2.8.1 / §2.8.2）在 `7a67546` 之上产生了新的源码改动，因此 `0.3.8.0` 有第二份构建身份。产品版本**仍为** `0.3.8.0`（未递增第四位）；**Phase 文案在本轮更新为 L2**。**
 
 | 项 | 值 |
 | --- | --- |
 | 基线（起始 HEAD） | `7a67546a62bf02e7079ebf77cbecfcd282d8b0e2` |
 | 产品版本 / FileVersion | `0.3.8.0` |
-| L2 源码提交 | `22f346f`（feat）→ `a7a4ef1`（test）→ `e475d96`（refactor）→ `6d8522e`（fix: lifetime/ownership hardening）→ **`cede25d65c529ad616e24ed6454e215336ba2bd8`（test，末次源码提交）** |
-| **ProductVersion（含 `+hash`）** | **`0.3.8.0+cede25d65c529ad616e24ed6454e215336ba2bd8`** ⇒ 精确指向**末次 L2 源码提交**（在其之后只有 docs-only 提交） |
-| DLL SHA256 | **`5B16C9C1936442E8B8AE2D22309082E85092A567F82E78BEFFC1D2725967AE28`**（322560 字节） |
-| 发布包 ZIP SHA256 | **`C8720F91F37B14BC723C09027E5544DD40FAB0957F5F978F3B867DEE04CC38B0`** |
+| Phase | `Phase 3.8.0 FFmpeg Video Export Pipeline — L2 Video Process Pipeline` |
+| L2 源码提交 | `22f346f` → `a7a4ef1` → `e475d96` → `6d8522e` → `cede25d` → `bc71843`（fix: initialization ownership）→ `6237743`（test）→ **`bb1503dbaa90b4340e06c0e1b41f88eb27f4bc55`（chore(release): finalize 0.3.8.0 L2 video process pipeline，末次源码提交）** |
+| **ProductVersion（含 `+hash`）** | **`0.3.8.0+bb1503dbaa90b4340e06c0e1b41f88eb27f4bc55`** ⇒ 精确指向**末次 L2 源码提交**（在其之后只有 docs-only 提交） |
+| DLL SHA256 | **`3FBB993FF2E9897D97B5DA127C66D1C2B183E6C667F9FEA75C20589B170F377F`**（323072 字节） |
+| 发布包 ZIP SHA256 | **`C6AA358E554B551A6060A7B0ED19237D859DD728DEE5A088480559BD5F843D79`** |
 | 包内容 | 仅 3 个顶层文件（`Info.json` / `ADOFAI.Renderist.dll` / `LICENSE`），**0 个嵌套目录** |
-| 构建/验证 | 强制 Release Rebuild **0 error**（仅 `NU1900` 离线噪声）；package + 独立 verify 均 **PASS 11 checks / 0 failures**；`git diff --check` clean；离线回归 **128/0/12**、真实 fixture 回归 **140/0/0**（§2.8 / §2.8.1） |
-| 与 §12.2 的关系 | **两份都是 `0.3.8.0`，内容不同**：§12.2 的 `AE2326D3…`（`+4d35801`）是**已部署并通过用户实机验收的 L1 构建**；本节 `5B16C9C1…`（`+cede25d`）**包含 L2 与修复轮源码，但尚未部署、尚无任何实机证据**。引用 `0.3.8.0` 时必须同时给出 DLL SHA256 或 `ProductVersion` 的 `+hash`。**部署前不得用本节身份替代 §12.2 的实机验收结论。** |
-| 被取代的 L2 中间产物 | 修复轮之前的 L2 包（DLL `C0092C4C…` / `+e475d96`、ZIP `B13ACCE2…`）**已被本表取代**，且从未部署、从未被任何人验收：不要再用它指代 L2 构建。 |
+| 构建/验证 | 强制 Release Rebuild **0 error**（仅 `NU1900` 离线噪声）；package + 独立 verify 均 **PASS 11 checks / 0 failures**；`git diff --check` clean；**本轮实际执行**：离线回归 **129/0/12**、真实 Gyan 9.0.2 fixture 回归 **141/0/0**（§2.8） |
+| 与 §12.2 的关系 | **两份都是 `0.3.8.0`，内容不同**：§12.2 的 `AE2326D3…`（`+4d35801`）是**已部署并通过用户实机验收的 L1 构建**（Phase 文案为 L1）；本节 `3FBB993F…`（`+bb1503d`）是 **L2 源码收敛构建**（Phase 文案为 L2），**尚未部署、尚无任何实机证据**。引用 `0.3.8.0` 时必须同时给出 DLL SHA256 或 `ProductVersion` 的 `+hash`。**部署前不得用本节身份替代 §12.2 的实机验收结论。** |
+| 被取代的 L2 中间产物 | 早先两份 L2 包（DLL `C0092C4C…` / `+e475d96`、ZIP `B13ACCE2…`；DLL `5B16C9C1…` / `+cede25d`、ZIP `C8720F91…`）**均已被本表取代**，且从未部署、从未被任何人验收：不要再用它们指代 L2 构建。 |
 
-**`0.3.8.0` 的能力边界（不得误读）**：`0.3.8.0` 的**已部署构建**覆盖 **L1 — FFmpeg Component Management**（组件发现 / 固定 manifest / 能力探测 / 安全安装 / HTTPS 下载）；**L2（FFmpeg Video Process Pipeline）已实现为独立 Unity-free 源码并通过 net48 回归，但尚未接入 Unity、也未部署（§2.8 / §12.3）**；**L3（Unity MP4 Frame Transactions）未实施**。因此**任何** `0.3.8.0` DLL 都 **不具备** MP4 导出能力，本文件任何位置都不得表述为「MP4 可用」。**`0.3.8.0` L1 构建本身已通过用户最小实机验收**（UMM 显示 `0.3.8.0`、FFmpeg `Ready`、`libx264` / `mp4` / `rawvideo`、禁用并重新启用、无新可见异常；见 §2.7）；收敛前的 `1D70BE45…`（`+02c7fb8`）同类证据保留于 §2.7。
+**`0.3.8.0` 的能力边界（不得误读）**：`0.3.8.0` 的**已部署构建**覆盖 **L1 — FFmpeg Component Management**（组件发现 / 固定 manifest / 能力探测 / 安全安装 / HTTPS 下载）；**L2（FFmpeg Video Process Pipeline）已完成源码阶段收敛（独立 Unity-free 源码 + net48 回归），但尚未接入 Unity、也未部署（§2.8 / §12.3）**；**L3（Unity MP4 Frame Transactions）未实施**。因此**任何** `0.3.8.0` DLL 都 **不具备** MP4 导出能力，本文件任何位置都不得表述为「MP4 可用」。**Phase `… — L2 Video Process Pipeline` 只表示"独立 FFmpeg 视频进程管线源码阶段完成"，不代表编辑器 MP4 导出可用。** **`0.3.8.0` L1 构建本身已通过用户最小实机验收**（UMM 显示 `0.3.8.0`、FFmpeg `Ready`、`libx264` / `mp4` / `rawvideo`、禁用并重新启用、无新可见异常；见 §2.7）；收敛前的 `1D70BE45…`（`+02c7fb8`）同类证据保留于 §2.7。
 
