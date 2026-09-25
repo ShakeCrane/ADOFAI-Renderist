@@ -715,27 +715,42 @@ namespace ADOFAI.Renderist.Ffmpeg
                 _processStarted = true;
             }
 
-            // 5) 管道与退出等待的初始化。任一步骤失败都必须仍然回收已启动的进程。
+            // 5) 管道与退出等待的初始化。
+            //
+            // Ownership 原则：**任何资源或任务一旦成功创建/启动，就立即登记到 pipeline ownership，
+            // 然后才执行下一步可能失败的初始化。** 绝不先启动多个异步任务再批量登记 ——
+            // 否则"已经启动但尚未登记"的窗口会让 CleanupTask 无法等待它，
+            // 进而可能在后台读取任务仍在使用管道时提前 Dispose 进程。
             try
             {
                 Stream stdin = process.StandardInput.BaseStream;
+                lock (_gate)
+                    _stdin = stdin;
+
                 Task exitTask = WaitForExitAsync(process);
-                Task<Exception> stdoutPump = FfmpegStreamPump.Start(WrapStream(process.StandardOutput.BaseStream, "stdout"), _stdoutText);
-                Task<Exception> stderrPump = FfmpegStreamPump.Start(WrapStream(process.StandardError.BaseStream, "stderr"), _stderrText);
+                lock (_gate)
+                    _exitTask = exitTask;
+
+                Stream stdoutStream = WrapStream(process.StandardOutput.BaseStream, "stdout");
+                Task<Exception> stdoutPump = FfmpegStreamPump.Start(stdoutStream, _stdoutText);
+                lock (_gate)
+                    _stdoutPump = stdoutPump;
+
+                Stream stderrStream = WrapStream(process.StandardError.BaseStream, "stderr");
+                Task<Exception> stderrPump = FfmpegStreamPump.Start(stderrStream, _stderrText);
+                lock (_gate)
+                    _stderrPump = stderrPump;
 
                 lock (_gate)
                 {
-                    _stdin = stdin;
-                    _exitTask = exitTask;
-                    _stdoutPump = stdoutPump;
-                    _stderrPump = stderrPump;
-
                     if (_state == FfmpegVideoPipelineState.NotStarted)
                         _state = FfmpegVideoPipelineState.Running;
                 }
             }
             catch (Exception ex)
             {
+                // 到这里为止已经登记的资源（进程、stdin、退出任务、可能已启动的 stdout pump）
+                // 全部仍归本会话所有，由收敛任务负责等待与回收。
                 lock (_gate)
                 {
                     // 绝不覆盖已经赢得的终态（例如启动期间取消）。
@@ -747,7 +762,7 @@ namespace ADOFAI.Renderist.Ffmpeg
                     }
                 }
 
-                // 已经启动的进程必须有真正的回收路径，而不是只把异常抛给调用方。
+                // 已经启动的进程/任务必须有真正的回收路径，而不是只把异常抛给调用方。
                 StartConvergence(() => ConvergeFailure());
 
                 result.ErrorCode = "process-init-failed";
