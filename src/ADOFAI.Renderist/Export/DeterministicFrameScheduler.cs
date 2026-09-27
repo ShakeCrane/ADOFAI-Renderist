@@ -532,7 +532,9 @@ namespace ADOFAI.Renderist.Export
                 Log.Info(UiText.LogSchedulerInitHoldStarted);
 
                 // ---- 4) Handoff observer：必须在本次 editor.Play() 前安装 ----
-                _handoff = new PlaybackLifecycleHandoff(ModEntry.Harmony);
+                // handoff 同时持有本 session 的 Planet 视觉时间 ownership observer
+                // （PlanetVisualTimeOwnership），因此 observer 安装也在这里、早于 editor.Play()。
+                _handoff = new PlaybackLifecycleHandoff(ModEntry.Harmony, RequestPlanetVisualTimeStop);
                 if (!_handoff.Begin(out string handoffError))
                 {
                     return FailStart("lifecycle-handoff-unavailable:" + handoffError);
@@ -550,6 +552,14 @@ namespace ADOFAI.Renderist.Export
                     return FailStart("capture-driver-start-failed:" + captureError);
                 }
                 _captureGeneration = captureGeneration;
+
+                // Planet 视觉时间 ownership 绑定本 session 的 generation authority：
+                // 复用 FrameCaptureDriver 每次成功 Start 分配的单调 generation，不新建第二套
+                // generation，也确保在 editor.Play() / OnMusicScheduled 之前已经绑定完成。
+                if (!_handoff.ArmPlanetVisualTimeOwnership(_captureGeneration))
+                {
+                    return FailStart("planet-visual-time-ownership-unavailable");
+                }
 
                 // ---- 6) 官方 editor.Play() ----
                 _handoff.MarkPlayRequested();
@@ -1453,6 +1463,48 @@ namespace ADOFAI.Renderist.Export
             }
         }
 
+        /// <summary>
+        /// Prepare 边界的 Planet 视觉时间定位（pre-entry 与 gameplay 共用）。
+        ///
+        /// 时间 authority 仍是本 scheduler 的 absolute <c>_outputFrameIndex</c> 与
+        /// <c>TryStart</c> 时冻结一次的 <c>_outputFps</c>：ownership 只消费 frame N，不推进时间。
+        /// ownership 的 Pause 让这条原生 Tween 在 Awaiting / pending 期间保持 paused，
+        /// 因此 Unity 原生 Update 继续运行也不会额外推进它的视觉时间。
+        /// </summary>
+        private static bool TryPreparePlanetVisualTime(long absoluteOutputFrameIndex)
+        {
+            if (_handoff == null)
+            {
+                RequestStop("planet-visual-time-ownership-failed", "lifecycle-handoff-unavailable");
+                return false;
+            }
+
+            if (_handoff.TryPreparePlanetVisualTime(
+                    _captureGeneration, absoluteOutputFrameIndex, _outputFps, out string error))
+            {
+                return true;
+            }
+
+            Log.Warn("DeterministicFrameScheduler: Planet 视觉时间 ownership 拒绝本帧 Prepare: " +
+                     (error ?? "unknown") +
+                     " absoluteOutputFrameIndex=" +
+                     absoluteOutputFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                     " ownershipState=" + _handoff.DescribePlanetVisualTimeState);
+            RequestStop("planet-visual-time-ownership-failed", error ?? "planet-visual-time-prepare-failed");
+            return false;
+        }
+
+        /// <summary>
+        /// Planet 视觉时间 ownership 的 fail-closed 失败出口（由 ownership 的
+        /// Prefix / Postfix / Pause 契约检查调用）。只登记停止请求，不在这里 cleanup：
+        /// 统一由既有 Tick → ProcessStop → RestoreAll 与 residual gate 收敛。
+        /// </summary>
+        private static void RequestPlanetVisualTimeStop(string reason)
+        {
+            RequestStop("planet-visual-time-ownership-failed",
+                reason ?? "planet-visual-time-ownership-failed");
+        }
+
         private static void PrepareFrame()
         {
             // 关键不变量：上一帧必须已捕获并提交，才允许开始下一帧。
@@ -1533,6 +1585,15 @@ namespace ADOFAI.Renderist.Export
                          Time.unscaledDeltaTime.ToString("0.######", CultureInfo.InvariantCulture) +
                          " timeScaleOwned=" + _preEntryLifecycleTimeScaleOwned +
                          "");
+            }
+
+            // Planet 视觉时间 ownership 定位：唯一的 Prepare 边界入口，pre-entry 与 gameplay
+            // 共用同一实现与同一 absolute _outputFrameIndex。顺序必须是
+            // Prepare → ownership Goto → ADOFAI native Update / Planet 视觉消费 → EOF → Commit。
+            // ownership 自身不推进任何时间，只在 EOF 之前把已识别 Tween 定位到本帧视觉时间。
+            if (!TryPreparePlanetVisualTime(index))
+            {
+                return;
             }
 
             _frameTransactionRequestCount++;
@@ -1959,6 +2020,12 @@ namespace ADOFAI.Renderist.Export
             EditorVisualClock.SetForcedSongPosition(_forcedSongPosition);
             EditorVisualClock.SetActive(true);
 
+            // 与 gameplay 完全相同的 ownership 定位入口，使用同一 absolute _outputFrameIndex：
+            // pre-entry → gameplay 边界绝不把 owned Tween position 重新从 4/FPS 起算。
+            if (!TryPreparePlanetVisualTime(index))
+            {
+                return;
+            }
 
             _frameTransactionRequestCount++;
             // captureRequestCount 只统计 PNG 图像请求；log-only 模式下保持 0。

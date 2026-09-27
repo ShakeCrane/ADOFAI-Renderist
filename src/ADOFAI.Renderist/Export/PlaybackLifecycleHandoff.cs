@@ -11,13 +11,18 @@ namespace ADOFAI.Renderist.Export
         private const string StateEngineFullName = "MonsterLove.StateMachine.StateEngine";
 
         private readonly Harmony _harmony;
+        private readonly Action<string> _requestOwnershipFailure;
         private object _controller;
         private object _stateMachine;
         private EventInfo _changedEvent;
         private Action<Enum> _changedHandler;
         private bool _changedSubscribed;
-        private MethodInfo _musicScheduled;
-        private bool _musicScheduledPatched;
+
+        /// <summary>
+        /// 本 session 的 Planet 视觉时间 ownership。由本 handoff 持有，因此两者的生命周期
+        /// 完全一致：安装早于本次 editor.Play()，cleanup 精确撤销，清理失败计入同一 residual gate。
+        /// </summary>
+        private PlanetVisualTimeOwnership _planetVisualTime;
 
         internal bool PlayRequested { get; private set; }
         internal bool PlayReturned { get; private set; }
@@ -28,9 +33,10 @@ namespace ADOFAI.Renderist.Export
 
         internal string MarkerStatus => "requested=" + PlayRequested + ",returned=" + PlayReturned + ",start=" + SawStart + ",music=" + SawMusicScheduled + ",countdown=" + SawCountdown + ",playerControl=" + SawPlayerControl;
 
-        internal PlaybackLifecycleHandoff(Harmony harmony)
+        internal PlaybackLifecycleHandoff(Harmony harmony, Action<string> requestOwnershipFailure)
         {
             _harmony = harmony ?? throw new ArgumentNullException(nameof(harmony));
+            _requestOwnershipFailure = requestOwnershipFailure;
         }
 
         internal bool Begin(out string error)
@@ -62,24 +68,23 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
-                _musicScheduled = _controller.GetType().GetMethod("OnMusicScheduled",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-                    null, Type.EmptyTypes, null);
-                if (_musicScheduled == null)
-                {
-                    error = "on-music-scheduled-unavailable";
-                    return false;
-                }
-
                 _changedHandler = OnStateChanged;
                 _changedEvent.AddEventHandler(_stateMachine, _changedHandler);
                 _changedSubscribed = true;
 
-                // Mark Harmony ownership before Patch: a partially applied/throwing Patch must
-                // remain retryable during cleanup.
-                _musicScheduledPatched = true;
-                _harmony.Patch(_musicScheduled,
-                    postfix: new HarmonyMethod(typeof(PlaybackLifecycleHandoff), nameof(OnMusicScheduledPostfix)));
+                // Planet 视觉时间 ownership observer：必须在本次 editor.Play() 之前安装。
+                // 它的 OnMusicScheduled Postfix 只有在完整 acquisition 成功后才回调
+                // MarkMusicScheduled()，因此 SawMusicScheduled 仍然表达“本次 playback 的
+                // OnMusicScheduled 已被本 session 观测并成功接管”。
+                _planetVisualTime = new PlanetVisualTimeOwnership(
+                    _harmony, _controller, MarkMusicScheduled, _requestOwnershipFailure);
+                if (!_planetVisualTime.Begin(out string ownershipError))
+                {
+                    error = "planet-visual-time-ownership-unavailable:" + ownershipError;
+                    TryDispose();
+                    return false;
+                }
+
                 Log.Info("MasterTimeline lifecycle handoff established: state=" + initialState + " startSatisfied=" + SawStart);
                 Active = this;
                 return true;
@@ -97,8 +102,59 @@ namespace ADOFAI.Renderist.Export
             return ReferenceEquals(_controller, instance);
         }
 
-        internal void MarkPlayRequested() { PlayRequested = true; }
+        internal void MarkPlayRequested()
+        {
+            PlayRequested = true;
+            _planetVisualTime?.MarkPlayRequested();
+        }
+
         internal void MarkPlayReturned() { PlayReturned = true; }
+
+        /// <summary>
+        /// 绑定本 session 的 generation authority（复用 FrameCaptureDriver 的单调 generation）。
+        /// 必须在 editor.Play() 之前调用，否则 ownership acquisition 不会启动。
+        /// </summary>
+        internal bool ArmPlanetVisualTimeOwnership(long generation)
+        {
+            if (_planetVisualTime == null)
+            {
+                Log.Warn("PlaybackLifecycleHandoff: PlanetVisualTimeOwnership 未安装，无法绑定 generation");
+                return false;
+            }
+            _planetVisualTime.Arm(generation);
+            return true;
+        }
+
+        /// <summary>
+        /// scheduler 的 Prepare 边界（pre-entry 与 gameplay 共用）唯一的视觉时间定位入口。
+        /// </summary>
+        internal bool TryPreparePlanetVisualTime(
+            long generation, long absoluteOutputFrameIndex, int frozenOutputFps, out string error)
+        {
+            if (_planetVisualTime == null)
+            {
+                error = "planet-visual-time-ownership-unavailable";
+                return false;
+            }
+            return _planetVisualTime.TryPrepareFrame(
+                generation, absoluteOutputFrameIndex, frozenOutputFps, out error);
+        }
+
+        internal bool HasResidualPlanetVisualTimeOwnership =>
+            _planetVisualTime != null && _planetVisualTime.HasResidualOwnership;
+
+        internal string DescribePlanetVisualTimeState =>
+            _planetVisualTime == null ? "unavailable" : _planetVisualTime.DescribeState();
+
+        /// <summary>
+        /// ownership acquisition 成功后记录既有 lifecycle marker。
+        /// 失败路径不会走到这里：fail-closed 由 ownership 自己转成 session 失败请求。
+        /// </summary>
+        private void MarkMusicScheduled()
+        {
+            SawMusicScheduled = true;
+            Log.Info("MasterTimeline lifecycle marker: OnMusicScheduled handoff=" + MarkerStatus);
+        }
 
         /// <summary>
         /// 生命周期是否已真正到达 playback 状态：Play 已请求并返回、Start / OnMusicScheduled /
@@ -131,21 +187,33 @@ namespace ADOFAI.Renderist.Export
 
         private static PlaybackLifecycleHandoff Active { get; set; }
 
-        private static void OnMusicScheduledPostfix(object __instance)
-        {
-            PlaybackLifecycleHandoff handoff = Active;
-            if (handoff != null && handoff.IsCurrentController(__instance) && handoff.PlayRequested)
-            {
-                handoff.SawMusicScheduled = true;
-                Log.Info("MasterTimeline lifecycle marker: OnMusicScheduled handoff=" + handoff.MarkerStatus);
-            }
-        }
-
         public bool TryDispose()
         {
             if (ReferenceEquals(Active, this)) Active = null;
 
             bool success = true;
+
+            // Planet 视觉时间 ownership：先失效 generation，再精确 Unpatch，最后按契约恢复。
+            // 它的失败与其它 cleanup 失败同等对待，绝不静默清空。
+            if (_planetVisualTime != null)
+            {
+                try
+                {
+                    if (_planetVisualTime.TryDispose(out string ownershipCleanupError))
+                        _planetVisualTime = null;
+                    else
+                    {
+                        success = false;
+                        Log.Warn("PlaybackLifecycleHandoff: PlanetVisualTimeOwnership cleanup 未收敛: " +
+                                 (ownershipCleanupError ?? "unknown"));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    success = false;
+                    Log.Exception("PlaybackLifecycleHandoff: PlanetVisualTimeOwnership cleanup 异常", ex);
+                }
+            }
 
             if (_changedSubscribed)
             {
@@ -166,38 +234,16 @@ namespace ADOFAI.Renderist.Export
                 }
             }
 
-            if (_musicScheduledPatched)
-            {
-                try
-                {
-                    MethodInfo postfix = AccessTools.Method(typeof(PlaybackLifecycleHandoff), nameof(OnMusicScheduledPostfix));
-                    if (_musicScheduled == null || postfix == null)
-                        success = false;
-                    else
-                    {
-                        _harmony.Unpatch(_musicScheduled, postfix);
-                        _musicScheduledPatched = false;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    success = false;
-                    Log.Exception("PlaybackLifecycleHandoff: OnMusicScheduled Postfix 撤销失败", ex);
-                }
-            }
-
             if (!_changedSubscribed)
             {
                 _changedEvent = null;
                 _changedHandler = null;
                 _stateMachine = null;
             }
-            if (!_musicScheduledPatched)
-                _musicScheduled = null;
-            if (!_changedSubscribed && !_musicScheduledPatched)
+            if (!_changedSubscribed && !HasResidualPlanetVisualTimeOwnership)
                 _controller = null;
 
-            return success && !_changedSubscribed && !_musicScheduledPatched;
+            return success && !_changedSubscribed && !HasResidualPlanetVisualTimeOwnership;
         }
 
         void IDisposable.Dispose()

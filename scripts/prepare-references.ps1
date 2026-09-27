@@ -346,6 +346,11 @@ if (-not (Test-BaselineVersion '0Harmony.dll' (Join-Path $resolvedUmmDir '0Harmo
 if (-not (Test-RequiredFile 'UnityEngine.CoreModule.dll' (Join-Path $managedDir 'UnityEngine.CoreModule.dll'))) { $missing++ }
 if (-not (Test-RequiredFile 'UnityEngine.IMGUIModule.dll' (Join-Path $managedDir 'UnityEngine.IMGUIModule.dll'))) { $missing++ }
 if (-not (Test-RequiredFile 'UnityEngine.ImageConversionModule.dll' (Join-Path $managedDir 'UnityEngine.ImageConversionModule.dll'))) { $missing++ }
+# DOTween.dll: Phase 3.9.0's PlanetVisualTimeOwnership has a compile-time reference to the
+# game's bundled tween engine. Only existence in the current target game's Managed directory
+# is verified here; there is no independently established DOTween version baseline, so this
+# check deliberately does not hardcode a version number.
+if (-not (Test-RequiredFile 'DOTween.dll' (Join-Path $managedDir 'DOTween.dll'))) { $missing++ }
 
 Write-Section 'Optional / informational DLL checks'
 $unityUmbrella = Join-Path $managedDir 'UnityEngine.dll'

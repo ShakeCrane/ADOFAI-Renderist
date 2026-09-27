@@ -101,6 +101,20 @@
     </Reference>
 
     <!--
+      DOTween: the tween engine bundled with ADOFAI. Phase 3.9.0's PlanetVisualTimeOwnership
+      references DG.Tweening types directly (DOTween.PlayingTweens / Tween / TweenerCore) instead
+      of locating them by reflection, because the ownership contract is expressed in those types
+      (getter/setter fields, active/isPlaying/position/fullPosition, the callback fields).
+      Private=false: the game's own DLL is never copied into bin/ or the release zip, and it is
+      never committed. Assembly-CSharp.dll is still intentionally NOT referenced.
+    -->
+    <Reference Include="DOTween">
+      <HintPath>$(AdofaiManagedDir)\DOTween.dll</HintPath>
+      <Private>false</Private>
+      <SpecificVersion>false</SpecificVersion>
+    </Reference>
+
+    <!--
       FFmpeg component management (Phase 3.8.0) needs safe ZIP extraction only.
       System.IO.Compression.FileSystem is already an implicit SDK reference for
       net48 (>= 4.5), but both are declared explicitly so the dependency is visible
