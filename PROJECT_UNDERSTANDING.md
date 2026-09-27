@@ -355,6 +355,7 @@ Gyan [构建页](https://www.gyan.dev/ffmpeg/builds/)同时列出原站包、SHA
 - **单帧在途**：第二帧并发提交**立即**返回 `busy`（回归断言 < 2 s 内返回），不建立队列。
 - **写入结果提交与在途标记释放在同一个临界区内完成**（GPT Work 复审修复，见 §2.8.1）：`FinishAsync` 只能观察到**完整的**写入终态 —— 要么仍在途（拒绝 Finish，`write-in-flight`），要么已计数 / 已锁定失败。不存在"已完整写出但未计数就进入 Finalizing"，也不存在"写入失败却继续正常 Finalizing"。部分写入失败会污染管道（`pipe-poisoned`），同一 stdin 不重试该帧；`WriteAsync` 成功**不代表** MP4 完成。
 - **取消不只依赖 WriteAsync 的 token**：取消会终止进程 → 对端管道关闭 → 被阻塞的写入立即失败。`Dispose` 只发起取消，收敛在可观察、可等待的 `CleanupTask` 上，**不在主线程等待进程退出**。
+- **L3 缓冲区寿命边界（`a8368c4` 源码审查）**：`TryWriteFrame` 后台写入直接读取调用方 `byte[]`；`WriteFrameCore` 返回后对应 `Completion` 才结束读取。取消/失败的 `CleanupTask` 等待进程与输出流收敛，但 `Teardown` 没有显式等待该帧写入任务。故 L3 在取消时必须同时观察该帧 `Completion` 与 `CleanupTask`：前者是数组可复用/释放的判据，后者是进程/临时产物的终态判据；仅看到 `CleanupTask` 完成不能推定数组已无人读取。
 - 合法 IO 背压**没有固定写入超时**；回归用"读取端停止消费"真实复现长时间背压。
 - **stdout/stderr 的 EOF 与读取异常必须区分**（GPT Work 复审修复）：排空泵正常 EOF 返回 `null`，读取失败返回该异常；任一侧失败都会阻止 `Completed`、阻止发布（`drain-failed` / `stdout-drain-failed` / `stderr-drain-failed`），且核验进程不会被启动。
 - **临时文件 ownership（GPT Work 复审修复）**：临时文件由本会话用 `FileMode.CreateNew` **原子创建**（不存在"先检查、后由 FFmpeg 创建"的窗口），并以 `FileShare.ReadWrite`（**不含** `FileShare.Delete`）的 ownership 句柄保持打开，直到发布或清理之前才释放。因此：外来文件绝不可能被覆盖（创建即失败 `temp-file-exists`），路径在 FFmpeg 打开窗口内不可能被删除或改名覆盖，取消/失败只删除本会话创建的那个文件。**剩余风险**：句柄释放后到 `Move`/`Delete` 完成之间存在一个极短窗口（见 §2.8.1）。
