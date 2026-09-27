@@ -10,7 +10,7 @@
 
 ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器内非实时渲染导出 Mod。
 
-当前**已实现**路线：编辑器内原生 Camera → Renderist-owned RenderTexture → PNG 序列 / Log-only；`MasterTimeline` 控制逻辑帧。`0.3.8.0` 阶段在保留两条现有路径的同时增加独立 MP4 输出（技术决策与待验证项见 §2.1）：**L1（FFmpeg 组件管理 + HTTPS 下载）已完成并通过实机验收**；**L2（独立 FFmpeg 视频进程管线）已实现为 Unity-free 模块，通过独立 net48 回归及一次目标游戏 Unity Mono 定向探针，仍未接入编辑器导出**（§2.8 / §2.8.3）；**L3（Unity MP4 帧事务）尚未实施**。
+当前**已实现**路线：编辑器内原生 Camera → Renderist-owned RenderTexture → PNG 序列 / Log-only；`MasterTimeline` 控制逻辑帧。`0.3.9.0` 阶段在保留两条现有路径的同时继续独立 MP4 输出方向（技术决策与待验证项见 §2.1）：**L1（FFmpeg 组件管理 + HTTPS 下载）已完成并通过实机验收**；**L2（独立 FFmpeg 视频进程管线）已实现为 Unity-free 模块，通过独立 net48 回归及一次目标游戏 Unity Mono 定向探针，仍未接入编辑器导出**（§2.8 / §2.8.3）；**L3 第一闭环（Planet 视觉时间 ownership）已正式实现并通过实机验收**（§2.2.4 / §2.2.6）；**L3 的 Unity MP4 帧事务与 RGB24 delivery 尚未实施**。
 
 硬边界：
 
@@ -31,14 +31,15 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 产品版本 | `0.3.8.0`（L2 实现轮与收敛轮均按用户要求**未递增第四位**） |
-| Phase | `Phase 3.8.0 FFmpeg Video Export Pipeline — L2 Video Process Pipeline`（L2 源码收敛轮更新；版本号不变，见 §12.3） |
-| 版本定位 | **当前 `0.3.8.0` = `Phase 3.8.0 FFmpeg Video Export Pipeline`**：**L1（组件管理 + HTTPS 下载）已完成并通过实机验收**，**L2（FFmpeg 视频进程管线）已完成源码阶段收敛并通过独立 net48 回归**（§2.8 / §2.8.1 / §2.8.2），**L3（Unity MP4 帧事务）未实施** —— 因此 `0.3.8.0` **仍然不代表** MP4 导出可用。其下 `0.3.7.1` = **Custom Resolution + Supersampling 双闭环稳定性收敛版**（**上一稳定基线**；`0.3.7.0` 功能不变、仅第四位递增）。第一闭环 Custom Resolution 与第二闭环 Supersampling **均已在当前 Gamma / Direct3D11 环境通过实机验收**；更早 `0.3.6.4` = **Log-only Frame Transactions（image output disabled）** |
+| 产品版本 | `0.3.9.0`（用户已明确批准；本轮为 L3 第一闭环**实机验收通过后的正式开发 commit 闭环**） |
+| Phase | `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions` |
+| 版本定位 | **当前 `0.3.9.0` = `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`**：**L1（组件管理 + HTTPS 下载）已完成并通过实机验收**；**L2（FFmpeg 视频进程管线）源码阶段已收敛并通过独立 net48 回归**（§2.8 / §2.8.1 / §2.8.2）；**L3 第一闭环（Planet 视觉时间 ownership）已正式实现并通过实机验收**（§2.2.4 / §2.2.6）；**L3 的 MP4 帧事务 / RGB24 delivery 仍未实施** —— 因此 `0.3.9.0` **仍然不代表** MP4 导出可用。其下 `0.3.7.1` = **Custom Resolution + Supersampling 双闭环稳定性收敛版**（**上一稳定实机基线**；`0.3.7.0` 功能不变、仅第四位递增）。第一闭环 Custom Resolution 与第二闭环 Supersampling **均已在当前 Gamma / Direct3D11 环境通过实机验收**；更早 `0.3.6.4` = **Log-only Frame Transactions（image output disabled）** |
 | 稳定实机基线 | **`0.3.7.1`**（= `0.3.7.0` 双闭环 + `ce34ad4` metadata 语义修正；构建身份见 §12）。`0.3.7.0` 第一闭环（Custom Resolution）与第二闭环（Supersampling，含 **scale=4 完整导出**）均已实机通过：第一闭环见 §9.1；第二闭环见 §9.7.1 + §9.7.3。更早的稳定基线 `0.3.6.4`（PNG 与 Log-only 同谱面跑通）仍见 §9.1。**未覆盖边界**（Linear 色彩空间、极端资源失败）见 §9.7.3。 |
 | L1 实机状态 | **`0.3.8.0`（DLL `AE2326D3…` / `+4d35801862d0828ea248d9934e8ebe74af11f2bb`）已通过用户最小实机验收**：UMM 显示 `0.3.8.0`、FFmpeg `Ready`、`libx264` / `mp4` / `rawvideo`、禁用并重新启用、无新可见异常。**L1 主路径已具备阶段性基线证据**；未覆盖边界（活动下载生命周期、异常网络、真实回调竞态）见 §2.7。 |
-| L2 实现状态 | **源码阶段已收敛，Unity Mono 定向探针正常/写入中取消两场景 PASS；未接入编辑器导出**：三个 Unity-free 模块 + 独立测试；真实 Gyan 9.0.2 fixture 回归 **141 / 0 / 0**。Mono 证据绑定临时诊断 DLL `0D90CA6A…`，清理后部署的正式 DLL `3FBB993F…` 尚未单独在游戏中重启验收；详见 §2.8.3。`CommitFrame` / `MasterTimeline` / `FrameCaptureDriver` / `DeterministicFrameScheduler` 未改。 |
-| 当前开发方向 | **`0.3.8.0 — FFmpeg Video Export Pipeline`：L1 完成并实机验收，L2 独立管线源码收敛及 Mono 定向验证完成（§2.8.3）；§2.2.1 已在单 session 同逻辑帧确认视觉漂移，并读取原生补间的运行时更新配置**。L2 阶段结束；视觉时间的正式 ownership 归入 L3。第二闭环仍然**未覆盖** Unity **Linear** 色彩空间与极端资源失败路径（详见 §9.7.3），不得由 Gamma 结果外推。 |
-| 下一阶段 | **`L3 — Unity MP4 Frame Transactions`**：需要设计原生补间等视觉状态与 `MasterTimeline` 逻辑时间的对齐和等待期控制（§2.2.1），再接入编辑器 MP4 帧事务。当前正式 DLL **不具备编辑器 MP4 导出能力**。 |
+| L2 实现状态 | **源码阶段已收敛，Unity Mono 定向探针正常/写入中取消两场景 PASS；未接入编辑器导出**：三个 Unity-free 模块 + 独立测试；历史真实 Gyan 9.0.2 fixture 回归 **141 / 0 / 0**（本轮离线回归 **129 / 0 / 12**，与既有基线一致；本轮真实 fixture 复跑受当前会话沙箱限制，见 §12.4）。Mono 证据绑定临时诊断 DLL `0D90CA6A…`；历史 L2 发布 DLL `3FBB993F…` 与 Probe 清理复建 DLL `45502098…` 均未以原样单独重启验收（§2.8.3 / §12.3）。L2 的三个模块本轮**未修改**。 |
+| L3 视觉时间 ownership 状态 | **`0.3.9.0` 已正式实现 `PlanetVisualTimeOwnership` 并完成正式 runtime 验收（§2.2.4 / §2.2.6）**：30 FPS 与 60 FPS 均 strict acquisition 唯一命中（`before=5 / after=6 / new=1 / accepted=1`）、`creationLeadSteps=4` 成立、terminal 于 30 FPS `N=11` / 60 FPS `N=26` 一次性定位、terminal-hold 连续跨 pre-entry → gameplay、normal completion cleanup 成功、Cancel→Restart generation `3→4` 无 residual / stale 污染。**MP4 / RGB24 delivery 未接入**；Trail / Particle / Animator / Camera / Shader 等其它视觉系统**未纳入** ownership。pre-terminal cancel 的 `restore-original-playing` 分支仍只有静态覆盖（§2.2.6）。 |
+| 当前开发方向 | **`0.3.9.0 — FFmpeg Video Export Pipeline`：L3 第一闭环已实现并通过实机验收（§2.2.4 / §2.2.6）**。§2.2.1 确认同逻辑帧视觉漂移，§2.2.2 的 Probe A/B/C 验证了目标 Planet Tween 的局部 ownership 模型，本轮 `PlanetVisualTimeOwnership` 是该模型的正式生产化并已实机通过。第二闭环仍**未覆盖** Unity **Linear** 色彩空间与极端资源失败路径（§9.7.3）。 |
+| 下一阶段 | **L3 Frame Transaction 正式集成设计**（MP4 帧事务 / Finalizing 关口 / RGB24 delivery）。当前正式 DLL **不具备编辑器 MP4 导出能力**；不得因为 ownership 已验收就宣称视觉确定性或 MP4 可用。 |
 
 `0.3.6.2` 相对 `0.3.6.1` 的四个 hardening 点（功能语义不变，只收敛异常路径与输入判定）：
 
@@ -88,15 +89,14 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 版本同步事实：
 
-- `scripts/set-version.ps1` 实际自动修改：`mod/Info.json Version`、csproj `<Version>`、`ModEntry.ModVersion`、`ModEntry` 启动日志里的 version + phase。
-- `-Phase` **不是全仓库 phase 同步器**：`EditorExportSession.PhaseLabel`、`ModEntry` / `FrameCaptureDriver` 类注释等 phase 文案仍需人工核对。脚本 DESCRIPTION 对“只修改三类文件”的描述是准确的，但 SYNOPSIS“Synchronizes ... version and phase text”容易被理解得过宽；当前属于非阻塞 tooling debt。
-- `package-release.ps1` 在打包前交叉校验 Info.json / csproj / `ModEntry.ModVersion`。
-- 本地编译引用由 `scripts/prepare-references.ps1` 从真实 ADOFAI / UMM 安装生成 ignored `build/local.props`；仓库不跟踪 `references/`。
-- `Assembly-CSharp.dll` 只作为当前游戏内部行为调查基线，不是 compile-time reference。
+- `scripts/set-version.ps1`（`0.3.9.0` 起）原子同步**全部实际存在的权威版本 / Phase 字符串**：`mod/Info.json Version`、csproj `<Version>`、`ModEntry.ModVersion`、`ModEntry` 启动日志 version + phase、`ModEntry` 标识性 phase 摘要注释（`/// Phase …`）、`EditorExportSession.PhaseLabel`。每个 pattern 都要求 unique match，失败即整体回滚；新增 `Assert-Contains` 正向核对每个新值，并把所有旧权威字符串作为 residual needle 复查。**仍然不是全仓库 phase 同步器**：`ModEntry` 中的功能溯源注释（如 `// ---- Phase 3.8.0: FFmpeg 组件管理 …`）与 `FrameCaptureDriver` / 其它类的历史 phase 注释属于“该功能引入时的阶段”记录，**刻意不改**。
+- `package-release.ps1` 在打包前交叉校验 Info.json / csproj / `ModEntry.ModVersion`（自身无独立 hard-coded 产品版本）。
+- 本地编译引用由 `scripts/prepare-references.ps1` 从真实 ADOFAI / UMM 安装生成 ignored `build/local.props`；仓库不跟踪 `references/`。`0.3.9.0` 起该脚本同时把 `$(AdofaiManagedDir)\DOTween.dll` 列入 required compile-time DLL 存在性检查（**不**硬编码版本号）。
+- `Assembly-CSharp.dll` 只作为当前游戏内部行为调查基线，不是 compile-time reference。`0.3.9.0` 起 `DOTween.dll` 是**唯一**新增的 compile-time reference（`Private=false`，不复制、不提交）。
 
 ---
 
-### 2.1 Event-Driven A+ 视频导出设计（L3 仍待实施；L2 已实现，见 §2.8）
+### 2.1 Event-Driven A+ 视频导出设计（L3 MP4 帧事务仍待实施；L2 已实现，见 §2.8；L3 第一闭环 ownership 已实现，见 §2.2.4）
 
 **调查依据**：本次在干净工作区核对 HEAD `01555e2300d38c938801d69d6d4387691ee96b58`、版本点、`MasterTimeline`、`DeterministicFrameScheduler`、`FrameCaptureDriver`、`OutputGeometryPolicy`、`EditorExportController`、`EditorExportSession`、Settings / GUI / preflight / metadata。以下“已确认”均指当前 `0.3.7.1` 源码静态事实，不是 MP4 实机验收。
 
@@ -127,7 +127,91 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 - **创建路径（当前 `Assembly-CSharp.dll` FileVersion `0.4.3.0` 静态核对）**：getter 读取闭包所持 planet 的 `cosmeticRadius`，setter 写回该字段；结束值为 `tileSize × currFloor.radiusScale`。`popuptime = min(50 / (bpm × song.pitch), 0.5s)`，后续对同一数值再做一次 `Min`。`OnMusicScheduled` 将 `DOTween.To` 返回值直接丢弃，调用点未设置 `target`、`id`、`SetUpdate`、`SetEase` 或 delay；满足条件的每个 player 循环项均可能创建实例，不能假定每次只创建一个。`scrController.Start_Rewind` 会先调用 `DOTween.KillAll`，再把 `OnMusicScheduled` 作为 `StartMusic` 回调；游戏场景切换路径也有 `KillAll`。若 L3 需要实例级控制，必须在创建时取得返回实例或建立等价局部 ownership。
 - **2026-09-26 实际 Unity Mono 字段**：临时只读 observer 精确过滤 `OnMusicScheduled` 的 float setter；最新 `Player.log` 两次创建记录（session `editor_20260926_213108` / `editor_20260926_213112`）一致：实例 `TweenerCore<float,float,FloatOptions>`，`updateType=Normal`、`isIndependentUpdate=False`、`easeType=OutQuad`、`delay=0`、`duration=0.5`、`active=True`、`isPlaying=True`、`target=null`、`id=null`、`position=0`。创建时 Unity `timeScale=1`、`deltaTime=0.0333333351`、`captureFramerate=30`，两次 `unscaledDeltaTime=0.0147263957` / `0.00427790545`；DOTween `defaultUpdateType=Normal`、`defaultTimeScaleIndependent=False`、`defaultEaseType=OutQuad`、`defaultAutoPlay=All`、`defaultAutoKill=True`、`timeScale=1`、`unscaledTimeScale=1`。这些是创建瞬间的值，不证明其它关卡、时段或 `timeScale≠1` 的实测行为。结合当前 bundled DOTween 的 Normal 更新实现，该实例按 Unity scaled delta 在每个 Unity Update 推进；本次 `captureFramerate=30` 使所记录的 `deltaTime` 为约 1/30 秒，**不能将该漂移解释为直接按真实等待秒数或 unscaled delta 推进**。`MobileMenuController.Update` 另有全局 `DOTween.ManualUpdate` 调用，不改变本实例的 `Normal` 归类；本次没有测量两个组件的具体 Update 执行顺序。
 - `scrPlanet.Update_RefreshAngles` 由 `scrPlanet.Update` 调用；其 IL 没有直接读取 `UnityEngine.Time` 或按 delta 累积的计时器，而是读取 songposition、floor、planet 与动画字段，重新计算 angle / floor-transition `cosmeticRadius`，再据派生位置写 `Transform.position`。所以它不是独立 wall-clock authority，但也不是只读纯函数：若其输入字段由别的系统推进，输出仍会变化。现有 A/B/C 没有冻结全部输入后重复调用该方法，故“固定 radius 后重复调用必得到相同全量 Transform”尚未实机证明。
-- **Visual Time Ownership 结论与 L3 边界**：同帧 A/B/C 已证明在逻辑 frame 0 pending、Unity Update 继续时，该 `Normal` / scaled tween 的 `cosmeticRadius`、星球位置与像素会漂移；`Time.captureFramerate` 给 Unity Update 固定 delta，却没有使更新次数服从 `MasterTimeline`。实例级 Pause/Resume **可以作为阻止这个 tween 在 pending 中额外推进的候选**，但没有实施或实测，且单靠它不能证明进入 frame N 时已有正确逻辑视觉时间、正常逐帧阶段与 `CommitFrame` 对齐，亦不能覆盖其它视觉时间源。严格 deterministic L3 需持有对应实例，明确创建锚点和每帧采样顺序，并用与 `MasterTimeline` 对应的 logical-time `Goto` 或等价显式定位控制视觉状态；具体实现和同帧复验属于 **L3 — Unity MP4 Frame Transactions**，本轮不做。不要用全局 `DOTween.PauseAll`、全局 `ManualUpdate` 代替局部 ownership。临时 observer / Harmony 观察代码已清理；无 Pause/Resume PoC、无新 A/B/C 像素采样，也未逐一排除 Trail / Particle / Shader 等其他漂移来源。L2 独立 FFmpeg 进程管线不包含 Unity 视觉时间控制，其 correctness 未被此次日志推翻，**L2 阶段结束**。
+- **Visual Time Ownership 结论与 L3 边界（本次同帧 A/B/C 实验当时状态；后续实例 Pause 结果见 §2.2.2）**：同帧 A/B/C 已证明在逻辑 frame 0 pending、Unity Update 继续时，该 `Normal` / scaled tween 的 `cosmeticRadius`、星球位置与像素会漂移；`Time.captureFramerate` 给 Unity Update 固定 delta，却没有使更新次数服从 `MasterTimeline`。本次 A/B/C 实验没有实施或实测实例级 Pause/Resume，且单靠 Pause 不能证明进入 frame N 时已有正确逻辑视觉时间、正常逐帧阶段与 `CommitFrame` 对齐，亦不能覆盖其它视觉时间源。严格 deterministic L3 需持有对应实例，明确创建锚点和每帧采样顺序，并用与 `MasterTimeline` 对应的 output-time `Goto` 或等价显式定位控制视觉状态；具体实现和同帧复验属于 **L3 — Unity MP4 Frame Transactions**，本次 A/B/C 实验未做。不要用全局 `DOTween.PauseAll`、全局 `ManualUpdate` 代替局部 ownership。该次临时 observer / Harmony 观察代码已清理；无新 A/B/C 像素采样，也未逐一排除 Trail / Particle / Shader 等其他漂移来源。L2 独立 FFmpeg 进程管线不包含 Unity 视觉时间控制，其 correctness 未被此次日志推翻，**L2 阶段结束**。
+
+### 2.2.2 Visual Time Ownership：Planet Tween 的 Probe A/B/C 最终结论（2026-09-26～27）
+
+证据限于当前游戏 `Assembly-CSharp.dll` FileVersion `0.4.3.0`、Unity Mono / bundled DOTween、指定谱面第一砖、30/60 FPS 的 Log-only 诊断；**本节的 Probe 结论来自正式 ownership 实现之前**（正式 `PlanetVisualTimeOwnership` 已在 `0.3.9.0` 实现，见 §2.2.4；L3 MP4 帧事务仍未实施）。Probe A 四次、Probe B 一次、Probe C 三次（30 FPS 一次、60 FPS 两次）的结果由各自 `Player.log` 核实，临时诊断源码已在上一轮清理。
+
+- **实例获取**：Probe A/B/C 各次 `scrController.OnMusicScheduled` 局部 Prefix/Postfix `DOTween.PlayingTweens()` 差分均为 `before=5 / after=6 / new=1 / accepted=1`；目标为 `TweenerCore<float,float,FloatOptions>`，getter `<OnMusicScheduled>b__0()`、setter `<OnMusicScheduled>b__1(float)` 共享闭包，闭包 planet 属于当前 controller。当前优先生产方案是局部差分加严格闭包/ownership 过滤；数量或身份不唯一须 fail-closed，不需全局 `DOTween.To` Patch。当前 DLL 的该 `DOTween.To` 返回值后立即 `pop`，没有链式 callback 注册；真实目标创建时与两次真实 Goto 前反射检查 `onStart/onPlay/onPause/onUpdate/onStepComplete/onComplete/onRewind/onKill/onWaypointChange` 均为空（只代表受测实例）。
+- **Pause 与 Goto 运行时语义**：真实目标创建时 active/playing 且 position/fullPosition 均为 0；Postfix 实例级 Pause 后，Unity 原生 Update 继续运行时该目标仍 active、paused、position=0，阻止了这个已识别 Tween 的自动 scaled-delta aging。synthetic float OutQuad Tween 上，`Goto(0,false)` 执行 setter/OnUpdate；`Goto(0.25,false)` 可正向定位，`Goto(duration=0.5,false)` 触发一次 OnComplete 且默认 autoKill=true 时仍 active/paused；可反向定位，回到 0 触发一次 OnRewind，重复回 0 不重复触发，显式 Kill 才 deactive/触发 OnKill。真实目标只在 position < duration 的 frame 0/1 做过 Goto，**duration 完成路径在 Probe 阶段尚未实测**——该路径已由正式实现在 `0.3.9.0` 实机覆盖（§2.2.6）；以上语义不得推广至其它 DOTween 版本。
+- **创建提前量**：Probe B 的 30 FPS shadow 在 `OnMusicScheduled` 创建时 position=0，从下一 Unity frame 开始每帧自然推进一次；输出 frame 0 EOF 为第 4 次、position=`0.13333334028720856`，frame 1 EOF 为第 5 次、position=`0.1666666716337204`，增量=`0.033333331346511841`。Probe C 两次独立 60 FPS session 均为创建至 frame 0 EOF 相差 4 个 Unity frame、自然更新 4 次，frame 0 age=`0.066666670143604279`；frame 1 age=`0.0833333358168602`、增量=`0.01666666567325592`。数值与累计 scaled delta、`1/OutputFps` 在 float 精度内一致。因此当前目标版本、已测 30/60 FPS 的这一条 OnMusicScheduled Planet Tween 的 **`creationLeadSteps=4`**；其它 FPS、谱面、生命周期尚未实测，不能提升为所有 Tween 的不变量。
+- **同帧消费**：pre-entry 的实际顺序为 `Conductor.Update Prefix → PreparePreEntry → Conductor.Update Postfix → DOTween native update → Planet.Update → Update_RefreshAngles → EOF`。30 FPS frame 0 Prepare 时 shadow 只有 3 steps、position≈0.1；第 4 次更新在 Prepare 后、Planet 前。Probe C 对回调审查通过的真实目标在 Prepare 直接 `Goto(4/30,false)`，position=`0.13333334028720856`、cosmeticRadius=`0.6933334`、playing=false；`RefreshAngles Postfix` 将 Blue Planet 从 `(0,0,0)` 写到约 `(0.436329,0.538821,0)`，EOF 保持。frame 1 `Goto(5/30,false)` 后 position=`0.1666666716337204`、radius=`0.8333334`、playing=false；Blue Planet 经 `RefreshAngles` 到约 `(0.628924,0.546716,0)`，EOF 保持。目标 Tween 到 EOF 没有额外 native aging。真实 endValue=`1.5`、duration=`0.5`、ease=`OutQuad`、updateType=`Normal`、independent=false；生产代码不得硬编码 endValue 或重建插值。
+- **获准的局部位置模型**：对严格拥有的此实例，`ownedTweenPosition(N) = clamp((4 + N) / frozenOutputFps, 0, actualDuration)`，`N` 是 **absolute** output frame index，跨 pre-entry / gameplay 不重置。Tween position authority 来自 `MasterTimeline` 的已准备输出帧与 session 冻结 FPS，不来自 chart songposition、wall-clock 或生产中的 `Time.frameCount`。Prepare-time Goto 应取本帧 Planet/EOF 的最终 visual age，不能取 Prepare 瞬间 shadow 的旧 position。保持 ADOFAI 创建的真实 Tween，由其自身 Goto 驱动 setter/ease/endValue。
+- **边界**：本证据只覆盖这个 Planet Tween；未证明 Trail、Particle、Animator、Camera、Shader time、effect manager 等视觉系统已冻结。Probe C 只测 pre-entry frame 0/1，未单独验证 gameplay、duration 完成、长等待或正式 MP4 IO 背压（其中 gameplay 连续性与 duration 完成已由正式实现于 `0.3.9.0` 实机覆盖，见 §2.2.6；长等待 / MP4 IO 背压仍未覆盖）。完整视觉确定性与正式非实时 MP4 导出仍待实现和验收。
+
+### 2.2.3 局部 ownership 实现约束（设计基线；已在 `0.3.9.0` 实现，见 §2.2.4）
+
+建议单独建立 `PlanetVisualTimeOwnership`，由现有 `PlaybackLifecycleHandoff` 在本 session 的 `OnMusicScheduled` Prefix/Postfix 转交局部 Tween 集合差分；先完成数量、闭包、controller/planet、回调字段和配置的严格检查，唯一确认后才 Pause。任何缺失、多实例、重复 schedule、失活或未知 callback 都使当前导出 fail-closed，不放宽过滤或安装全局 `DOTween.To` Patch。实例与当前 controller、session generation 绑定；scheduler 在 pre-entry 和 gameplay 的统一 Prepare 边界传入 **absolute** output frame index 与启动时冻结的 FPS，owner 只消费时间、不推进 `MasterTimeline`。对同一 N 重入、旧 generation、前一帧未 Commit 的调用必须拒绝。
+
+每帧目标位置按 §2.2.2 的局部公式计算并 clamp 至真实 duration，由原生 Tween 的 `Goto(target,false)` 写入半径；等待 EOF/交付期间保持 paused。首次到达 duration 时定位一次，检查 active/paused；后续相同终值避免无意义的重复 Goto，真实 Tween 在 duration 的结果仍须正式实现后实机回归。cleanup 先失效 generation，再精确解除 Hook；若同 controller、实例 active 且尚未到 duration，可恢复其原先 playing 状态，不 Kill 游戏 Tween；已完成或已被游戏销毁的实例不强行 Play。cleanup 失败纳入现有 residual ownership gate。正式模块宜直接引用游戏自带 `DOTween.dll`（`Private=false`，路径来自 ignored `build/local.props` 的 `AdofaiManagedDir`），并让 `prepare-references.ps1` 明确验证该文件存在；不提交 DLL、不新增 `Assembly-CSharp.dll` 编译引用。以上是待实施设计，不是已验证的生产行为。
+
+### 2.2.4 Planet 视觉时间 ownership 正式实现（`0.3.9.0`；源码级收敛，未实机验收）
+
+**实现状态**：新增 `src/ADOFAI.Renderist/Export/PlanetVisualTimeOwnership.cs`，职责单一：安装 / 卸载本次 `scrController.OnMusicScheduled` 的 Prefix/Postfix ownership observer、获取唯一目标 Tween、验证实例契约、Pause 并取得 ownership、保存 session generation / controller、在 Prepare frame N 时定位 Tween、cleanup / restore、fail-closed 状态报告。它**不是新的 clock**，也不包含 `MasterTimeline` / scheduler / EOF / capture / FFmpeg 逻辑。
+
+- **宿主与安装时机**：由 `PlaybackLifecycleHandoff` 持有，随 `Begin()` 在本 session 的 `editor.Play()` **之前**安装（`_harmony.Patch(_method, prefix, postfix)`，目标只有 `scrController.OnMusicScheduled`）。`SawMusicScheduled` 语义保留，但改为**只有 acquisition 完全成功后才由 ownership 回调 `MarkMusicScheduled()` 记录**；fail-closed 时不记录 marker，而是进入既有失败收敛路径。
+- **实例获取**：Prefix 对 `DOTween.PlayingTweens()` 做引用 identity 快照；Postfix 再取一次求新增实例（`before` / `after` / `new` 均入日志）。
+- **严格过滤（全为 fail-closed）**：新增必须**恰好 1 个**；目标必须是 `TweenerCore<float,float,FloatOptions>`；`getter` / `setter` 非空、共享同一闭包（`Target` 引用相等）、两者的 `Method.Name` 以 `<OnMusicScheduled>` 开头、闭包 `DeclaringType` 等于本次 controller 类型；闭包必须恰好持有一个 `scrPlanet` 类型字段且非空；该 planet 的 `planetarySystem` 必须与 `controller.playerOne.planetarySystem` 为**同一对象**，并且出现在该系统任一 `List<scrPlanet>` 字段中（不硬编码列表字段名）；9 个 callback 字段（`onStart` / `onPlay` / `onPause` / `onUpdate` / `onStepComplete` / `onComplete` / `onRewind` / `onKill` / `onWaypointChange`，其中 `onStart` 是 `ABSSequentiable` 上的 internal 字段，按成员反射读取）必须全部为空。**未安装、也不需要全局 `DOTween.To` Patch。**
+- **取得 ownership**：记录原始 active / playing / position / fullPosition / duration / controller / generation 后立即 `Pause()`，再验证 `active == true` 且 `playing == false`；不 Kill / 不 Rewind / 不 Resume / 不改 Ease / 不改 startValue·endValue / 不改 target·id / 不重建 Tween。**没有硬编码 endValue**（真实 endValue 由 `tileSize × radiusScale` 决定，本轮实测为 1.5，但代码不引用该数值）。
+- **时间 authority 与公式**：唯一 authority 仍是 `MasterTimeline` / scheduler 的 absolute output frame index；ownership 只消费 `(generation, absoluteOutputFrameIndex, frozenOutputFps)`。公式 `targetPosition = (CreationLeadSteps + N) / frozenOutputFps`（`CreationLeadSteps = 4`，见 §2.2.2），用 double 计算后再转 float，随后 `clamp(target, 0, actualDuration)`。**不**自增 frame、不读 wall clock / `Time.frameCount` / chart songposition、不在 gameplay 边界重置 position。
+- **Prepare 集成**：`PrepareFrame`（gameplay）与 `PreparePreEntryFrame`（pre-entry）调用**同一个**入口（scheduler 侧 `TryPreparePlanetVisualTime(index)` → `PlaybackLifecycleHandoff.TryPreparePlanetVisualTime` → ownership），都传同一个 absolute `_outputFrameIndex` 与冻结 `_outputFps`；调用点位于 `FrameCaptureDriver.RequestCapture` 之前，因此顺序是 `Prepare N → ownership Goto → ADOFAI native Update / Planet 视觉消费 → EOF → CommitFrame(N) → 才可能 Prepare N+1`。ownership **不**在 EOF callback / Commit / wall-clock 回调中推进；Awaiting / pending 期间 Tween 保持 paused。
+- **duration terminal（`0.3.9.0` 首次覆盖；已实机验证，见 §2.2.6）**：`targetPosition < duration` 时每帧 `Goto(target,false)`；首次 `targetPosition >= duration` 时**只**执行一次 `Goto(duration,false)`，验证 active / `playing == false` / `position` 与 `fullPosition` **两者**都在统一 float tolerance 内等于 duration，然后标记为 terminal-positioned；其后的 frame 不再重复 Goto，但每帧仍验证实例未恢复 playing、未变为 inactive（被 Kill / 被替换）、generation 与 controller 未变（terminal-hold 日志只在首次进入时记录一行，验证本身不降级）。该 terminal 契约来自正式 runtime 实测（30 FPS `N=11` 与 60 FPS `N=26` 上 `position == fullPosition == duration == 0.5`），**仅适用于当前目标版本、`loops=1` 的这条 Planet Tween，不是 DOTween 通用规则**。若游戏在 duration 后改变实例生命周期导致契约不成立 ⇒ fail-closed（不重建 Tween）。
+- **repeated `OnMusicScheduled`**：本 session 已拥有实例后同一 controller 再次触发 ⇒ 默认 fail-closed，reason `planet-visual-time-repeated-music-schedule`，绝不静默覆盖旧 instance。
+- **generation / stale 隔离**：复用 `FrameCaptureDriver` 每次成功 `Start` 分配的**单调 generation**（`++_generationCounter`，`Stop` 置 0），不新建第二套 generation 机制。generation 在 `editor.Play()` 之前由 scheduler 绑定（`ArmPlanetVisualTimeOwnership`）；Prefix / Postfix / Prepare / cleanup 全部校验 generation，`TryDispose` **先**使 generation 失效并清空 `Active`，再精确 Unpatch，因此旧 session 的快照 / Postfix / 实例 / 迟到回调都不会影响新 session。
+- **Stop / Cancel / Failure / Restart 收敛**：`PlanetVisualTimeOwnership.TryDispose` 顺序为 1) 失效 generation 2) 精确 `Unpatch` Prefix + Postfix 3) 仅在「原 playing、同一 owned instance、instance active、未 terminal-positioned、controller 仍属本 session」全部成立时用最小操作 `Play()` 恢复 4) 释放 snapshot / controller / Tween 引用；绝不 Kill 游戏 Tween。cleanup 失败时保留 ownership，`PlaybackLifecycleHandoff.TryDispose` 返回 false ⇒ scheduler 的 `_handoff` 保留 ⇒ 既有 `HasResidualOwnership()` / residual gate 继续阻止新 session。
+- **异常处理**：Prefix / Postfix 内异常被捕获并转成 session 失败请求（`planet-visual-time-schedule-prefix-exception` / `-postfix-exception`）；Prepare 异常转成 `planet-visual-time-prepare-exception`；scheduler 侧统一 `RequestStop("planet-visual-time-ownership-failed", …)`，由既有 `Tick → ProcessStop → RestoreAll` 收敛，不 throw 穿出 Unity Update，也没有 catch-all 吞异常。
+- **编译引用**：csproj 新增 `DOTween`（`HintPath=$(AdofaiManagedDir)\DOTween.dll`，`Private=false`、`SpecificVersion=false`）；`prepare-references.ps1` 把 `DOTween.dll` 加入 required 存在性检查（不硬编码版本号）；不复制 DLL 到输出、不提交 DLL、不新增 `Assembly-CSharp.dll` 编译引用。`build/local.props` 仍只提供 `AdofaiManagedDir`。
+- **明确未纳入**：MP4 / RGB24 delivery 未接入；Trail / Particle / Animator / Camera / Shader / effect manager 等其它视觉系统仍未纳入 ownership（§2.2.2 边界不变）。
+
+### 2.2.5 `0.3.9.0` ownership 最小实机验收矩阵（**已执行并通过**，结果见 §2.2.6）
+
+用户提供 `Player.log` 即可，不需要截图。三组都必须满足「无 `planet-visual-time-*` fail-closed、无 `cleanup-failed`、session 正常终止」：
+
+| 场景 | 配置 | 必须覆盖 | 期望日志证据 |
+| --- | --- | --- | --- |
+| A | 同一已知谱面、第一砖、**30 FPS**、Log-only | 运行**跨过 0.5 s Tween duration** 并继续进入 gameplay | `PlanetVisualTimeOwnership acquired: … before=5 after=6 new=1 accepted=1`（数值以实测为准）；frame 0/1 的 `absoluteOutputFrameIndex` + position；`terminal-positioned` 一次；之后 `terminal-hold`；无 `planet-visual-time-*` 失败 |
+| B | 同一谱面、第一砖、**60 FPS**、Log-only | 同样跨 duration + gameplay | 同上（60 FPS 下 creationLeadSteps 仍为 4，见 §2.2.2） |
+| C | 启动一次导出 → 中途取消 → **不退出编辑器** → 再启动第二次导出 | stale instance / generation / residual ownership 不阻止也不污染第二次 session | 第一次 session 的 cleanup 成功（无 `cleanup-failed`）；第二次 session 重新 `armed: sessionGeneration=<新值>` 并能正常 acquisition；旧 generation 的迟到回调被忽略 |
+
+验收时要特别确认：pre-entry → gameplay 边界**没有**把 owned Tween position 重新从 `4/FPS` 起算；duration 终值日志里 `position` 与 `fullPosition` 的真实取值（这是本轮唯一无实机证据的语义）。
+
+### 2.2.6 正式 runtime 验收结果（`0.3.9.0`；2026-09-27，已通过）
+
+证据来自用户在目标游戏内运行 `0.3.9.0` 预验收构建（DLL `7707EE14…`，§12.4）产生的 `Player.log`。以下为**已实测**事实，不再保留旧的"待 30/60/duration/gameplay/cancel-restart 验收"表述。
+
+**60 FPS（`sessionGeneration=1`）**：
+
+- strict acquisition：`before=5 / after=6 / new=1 / accepted=1`（唯一命中）。
+- frame 0 target = `4/60`。
+- `absoluteOutputFrameIndex=26`：`target=0.5`、`duration=0.5`、`position=0.5`、`fullPosition=0.5`、`active=true`、`playing=false`。
+- `terminal-positioned` **只发生一次**，其后稳定 `terminal-hold`。
+- pre-entry 最后 frame `118`；`gameplayStartOutputFrameIndex=119`；gameplay frame 0 使用 `absoluteOutputFrameIndex=119` —— **pre-entry → gameplay 连续，无 reset / rewind / reacquire**。
+- 最终 frame `492` 后 `Completed`（`canonical-completion-tail-drained`），cleanup `failureReason=null`。
+
+**30 FPS（`sessionGeneration=2`）**：
+
+- strict acquisition：`before=5 / after=6 / new=1 / accepted=1`。
+- `absoluteOutputFrameIndex=11`：`target=0.5`、`duration=0.5`、`position=0.5`、`fullPosition=0.5`、`active=true`、`playing=false`。
+- `terminal-positioned` 一次，其后稳定 `terminal-hold`。
+- pre-entry 最后 frame `59`；`gameplayStartOutputFrameIndex=60`；gameplay frame 0 使用 `absoluteOutputFrameIndex=60`，无 reset / rewind。
+- 最终 frame `253` 后 `Completed`，cleanup `failureReason=null`。
+
+**Cancel / Restart（同一游戏进程）**：
+
+- `sessionGeneration=3`：正常 acquisition、已进入 gameplay、`user-stop`；cleanup `terminalPositioned=true`、`failureReason=null`；`state=Cancelled` / `stopReason=user-stop`。
+- `sessionGeneration=4`（同一进程内 restart）：新 `armed generation=4`、新 acquisition `before=5 / after=6 / new=1 / accepted=1`、正常运行、gameplay 正常、最终 `Completed`、`failureReason=null`。
+- **无** `planet-visual-time-ownership-failed`、**无** `cleanup-failed`、**无** repeated schedule、无 stale instance 污染、residual ownership 未阻塞 restart。
+
+**由上述结果确立的结论**：
+
+- `creationLeadSteps=4` 正式实现成立（30 FPS terminal `N=11`、60 FPS terminal `N=26`，与 `(0.5 × fps) − 4` 一致）。
+- terminal runtime 契约：`position == fullPosition == duration`、`active=true`、`playing=false`。基于该实测，`0.3.9.0` 收敛轮把 terminal 校验从"两者之一到达"**收紧为两者都必须在 tolerance 内到达 duration**（不使用 `float ==`）。
+- terminal-hold 跨 pre-entry → gameplay 连续，且每帧契约验证保留（terminal-hold 日志只在首次进入时记录一行以降噪）。
+
+**仍未独立取得 runtime 证据的分支**：**pre-terminal cancel → 恢复 originalPlaying**。最新 Cancel session 是在 `terminal-positioned` **之后**取消，因此已覆盖的是 generation 失效、Patch 精确撤销、residual cleanup、terminal 实例不强行 Play 与同进程 restart。未 terminal 的 active owned Tween 被取消时走 `TryRestoreOriginalPlaying`：静态复审确认其条件为 `originalPlaying=true` **且** 同一 owned instance **且** 同一 controller/session **且** `active=true` **且** `terminalPositioned=false`，全部满足才用最小操作 `Play()`（不 Kill / 不 Restart / 不 Rewind / 不改 position），恢复后再校验 `IsPlaying()`。该分支为**静态覆盖，尚无独立 runtime 证据**，不得声称已实机验证；也未为此新建 Probe 或要求用户重测。
+
+**仍未成立的整体结论**：整体视觉确定性尚未成立；Trail / Particle / Animator / Camera / Shader / effect manager 等**未纳入** ownership；MP4 / RGB24 **尚未接入**；real FFmpeg fixture 本轮因环境 `Permission denied` 未复现，正式 release 前仍需在正常环境恢复真实 fixture 回归（§12.4）。
 
 ### 2.3 FFmpeg 构建、安装与独立进程取证（2026-09-23；未接入产品）
 
@@ -991,7 +1075,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 > 此处只列**当前未收敛事项**；已完成的 End Tail、pre-entry、Log-only、Custom Resolution 和 Supersampling 不再重复充当待办。历史验收数据见 §9，实施不变量见 §3–§8，当前 ADOFAI 内部事实见 §10。
 
-1. **0.3.8.0 视频导出（L1 完成并实机验收；L2 独立管线阶段结束；L3 未开始）**：当前 Phase 保持 `Phase 3.8.0 FFmpeg Video Export Pipeline — L2 Video Process Pipeline`。L1 完成通知与归档 ownership 缺陷已修复；主路径实机证据见 §2.6 / §2.7，仍未验收活动下载期间禁用/卸载、异常网络及真实回调竞态。L2 独立 net48 真实 Gyan fixture 回归 **141/0/0**；目标 Unity Mono 的正常 8 帧编码/核验/发布及写入中取消/回收两项定向探针均 PASS（§2.8.3），证据绑定临时 DLL `0D90CA6A…`。正式 L2 DLL `3FBB993F…` 已恢复部署，但尚未单独以原样 DLL 重启运行。**L3（编辑器 MP4 帧事务 / Finalizing 关口）未实施**，`0.3.8.0` 仍不能从编辑器导出 MP4。§2.2.1 已确认在同一逻辑帧 pending 期间 `OnMusicScheduled` 原生 DOTween 使星球位置与像素漂移，并实测该实例为 scaled `Normal` 更新；等待期冻结及逻辑时间定位属于 L3，不继续纳入 L2，也不能用 L2 Mono IO PASS 代替 L3 的视觉验证。
+1. **`0.3.9.0` 视频导出（L1 完成并实机验收；L2 独立管线阶段结束；L3 第一闭环 ownership 已实现并实机验收；L3 MP4 帧事务未开始）**：当前版本 `0.3.9.0` / Phase `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`。L1 完成通知与归档 ownership 缺陷已修复；主路径实机证据见 §2.6 / §2.7，仍未验收活动下载期间禁用/卸载、异常网络及真实回调竞态。L2 历史独立 net48 真实 Gyan fixture 回归 **141/0/0**（本轮离线回归 **129/0/12**，与既有基线一致）；目标 Unity Mono 的正常 8 帧编码/核验/发布及写入中取消/回收两项定向探针均 PASS（§2.8.3），证据绑定临时 DLL `0D90CA6A…`。**L3 第一闭环**：`PlanetVisualTimeOwnership` 已正式实现（§2.2.4）并完成正式 runtime 验收（§2.2.6）——30 / 60 FPS strict acquisition 唯一命中、`creationLeadSteps=4` 成立、terminal 一次性定位且 `position == fullPosition == duration`、terminal-hold 连续跨 pre-entry → gameplay、normal completion cleanup 成功、Cancel→Restart generation `3→4` 无 residual / stale 污染；**仅 pre-terminal cancel 的 `restore-original-playing` 分支仍只有静态覆盖**。**L3 的编辑器 MP4 帧事务 / Finalizing 关口 / RGB24 delivery 未实施**，`0.3.9.0` 仍不能从编辑器导出 MP4。整体视觉确定性未成立：Trail / Particle / Animator / Camera / Shader 等其它漂移来源仍未纳入 ownership；不能用 ownership 验收代替 L3 MP4 帧事务验收。
 2. **Linear 与极端 GPU 资源失败**：Supersampling 已在 Gamma / Direct3D11 的所述范围实机通过，**Linear 色彩空间从未实机覆盖**；接近硬件极限的 RT 分配与 GPU 状态恢复故障仍只有 stub / 静态证据。详见 §9.7.3。
 3. **真实 Unity 故障注入**：host Destroy、RT Release/Destroy、partial Camera assignment 的失败与重试，已有生产源码 + Unity stub 的确定性测试，**未在真实 Unity Player 注入这些异常**；正常路径与跨调用 residual 的既有实机结果不能替代异常证据（§3.5、§9.3）。
 4. **其余边界测试**：显式 safety frame-limit runtime trigger 与 `TryPrepareHitState` 故障注入主要依赖静态 / 纯计算证据；需要扩大 BPM change、Twirl、Midspin、event-heavy、特殊 startup、长谱面覆盖。无须为此设置人为帧数或时长上限。
@@ -1004,7 +1088,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 ## 12. 发布与部署
 
-- 当前产品版本为 **`0.3.8.0`**（**版本号未变**），Phase 为 **`Phase 3.8.0 FFmpeg Video Export Pipeline — L2 Video Process Pipeline`**（L2 源码收敛轮更新）。**L1** 已通过主路径实机验收；**L2** 已完成源码收敛、独立 net48 回归及目标 Unity Mono **定向探针**（§2.8.3），但未接入编辑器导出；**L3** 尚未实施，**MP4 导出不可用**。两份**正式**构建身份分别为 L1 实机验收版 §12.2 与 L2 源码收敛版 §12.3；另有一份已清理的**临时诊断** DLL `0D90CA6A…`，不可混同。引用 `0.3.8.0` 时须给出 DLL SHA256 或 `+hash`。其下 `0.3.7.1` 是 Custom Resolution + Supersampling 双闭环稳定性收敛版（上一稳定基线）；更早的 `0.3.7.0` / `0.3.6.4` 见历史记录。
+- 当前产品版本为 **`0.3.9.0`**（用户已批准 `0.3.9.0` / Phase 3.9.0），Phase 为 **`Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`**。**L1** 已通过主路径实机验收；**L2** 已完成源码收敛、独立 net48 回归及目标 Unity Mono **定向探针**（§2.8.3），但未接入编辑器导出；**L3 第一闭环**（Planet 视觉时间 ownership）已实现并通过实机验收（§2.2.4 / §2.2.6 / §12.4）；**L3 MP4 帧事务未实施**，**MP4 导出不可用**。历史**正式**构建身份分别为 L1 实机验收版 §12.2、L2 源码收敛版 §12.3 与 Probe 清理复建 DLL（§12.3 末尾说明）；另有一份已清理的**临时诊断** DLL `0D90CA6A…`，不可混同。引用版本时须给出 DLL SHA256 或 `+hash`。其下 `0.3.7.1` 是 Custom Resolution + Supersampling 双闭环稳定性收敛版（上一稳定实机基线）；更早的 `0.3.7.0` / `0.3.6.4` 见历史记录。
 - 本轮（0.3.7.0 第一闭环）相对基线 `70df55b` 的改动：新增 `OutputGeometryPolicy.cs`、`RenderEnvironmentInventory.cs`；修改 `Settings.cs`、`UiText.cs`、`ModEntry.cs`、`EditorExportReadiness.cs`、`EditorExportPreflight.cs`、`EditorExportController.cs`、`EditorExportSession.cs`、`DeterministicFrameScheduler.cs`、`FrameCaptureDriver.cs`；版本点 `mod/Info.json`、csproj `<Version>`、`ModEntry.ModVersion` 与 `ModEntry` 启动日志，外加**人工同步**的 `EditorExportSession.PhaseLabel` 与类注释 phase 文案（`set-version.ps1` 的已知范围限制，见 §2）。
 - 本轮**未**新增 Harmony Patch、未新增 ADOFAI 内部 API 依赖、未修改 README。
 - 发布包：`Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` ignored。本轮以 `scripts/package-release.ps1 -Configuration Release -Version 0.3.7.0 -Force` 打包，并在发布提交 `05a3b4a` 之后重新 Release Rebuild 并以 `-SkipBuild` 重新打包，产出 `dist/ADOFAI.Renderist.zip`（zip SHA256 `B251B6A4631401E44F96130E152FB834B70B47CE6E75CA45304DC43380A4155F`，sidecar `dist/ADOFAI.Renderist.zip.sha256` 同值）；`verify-release-package.ps1` 结果 **PASS 11 checks / 0 failures**，独立解包复核确认包内仅有 3 个顶层文件、无目录，且包内 DLL 与 `bin\Release` 逐字节一致。
@@ -1057,7 +1141,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 | 发布包 | `dist/ADOFAI.Renderist.zip`（`dist/` 为 gitignored，不入库） |
 | ZIP SHA256 | **`DB0F5B22CEB12D57241C347BCFDA55BE83E44224C9A0149BC529B85FD0476A3E`**（sidecar 同值） |
 | 包内容 | 仅 3 个顶层文件（`Info.json` / `ADOFAI.Renderist.dll` / `LICENSE`），**0 个嵌套目录，无 banned 内容**（独立解包复核） |
-| 当时的一致性 | 2026-09-24 15:07:02 部署时 `bin\Release` DLL == 包内 DLL == **当时游戏 `Mods` 内的 DLL**（三者 SHA256 均为 `AE2326D3…`，逐字节一致）。当时 `Info.json` 为 `0.3.8.0`，`LICENSE` 保留，`Settings.xml` 与托管 FFmpeg 未改动；并通过用户最小实机验收（§2.7）：UMM 显示 `0.3.8.0`、FFmpeg `Ready`、`libx264` / `mp4` / `rawvideo`、空闲状态禁用并重新启用、无新可见异常。**当前 Mods 已改为 §12.3 的正式 L2 DLL。** |
+| 当时的一致性 | 2026-09-24 15:07:02 部署时 `bin\Release` DLL == 包内 DLL == **当时游戏 `Mods` 内的 DLL**（三者 SHA256 均为 `AE2326D3…`，逐字节一致）。当时 `Info.json` 为 `0.3.8.0`，`LICENSE` 保留，`Settings.xml` 与托管 FFmpeg 未改动；并通过用户最小实机验收（§2.7）：UMM 显示 `0.3.8.0`、FFmpeg `Ready`、`libx264` / `mp4` / `rawvideo`、空闲状态禁用并重新启用、无新可见异常。**当前 Mods 状态已在 §12.3 后的清理复建说明更新。** |
 | 构建/验证 | 强制 Release Rebuild **0 error / 0 C# warning**（仅 `NU1900` 离线 NuGet 环境噪声）；package + verify（内置与独立各一次）**PASS 11 checks / 0 failures**；离线回归 **72 passed / 0 failed / 1 skipped**；真实 Gyan 9.0.2 fixture 回归 **73 passed / 0 failed / 0 skipped**；`git diff --check` clean |
 | 本轮源码改动 | 版本点（`Info.json` / csproj `<Version>` / `ModEntry.ModVersion` + 启动日志）+ `EditorExportSession.PhaseLabel` + `ModEntry` 类注释 Phase；**无功能性代码改动** |
 
@@ -1079,7 +1163,26 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 | 包内容 | 仅 3 个顶层文件（`Info.json` / `ADOFAI.Renderist.dll` / `LICENSE`），**0 个嵌套目录** |
 | 构建/验证 | 强制 Release Rebuild **0 error**（仅 `NU1900` 离线噪声）；package + 独立 verify 均 **PASS 11 checks / 0 failures**；`git diff --check` clean；**本轮实际执行**：离线回归 **129/0/12**、真实 Gyan 9.0.2 fixture 回归 **141/0/0**（§2.8） |
 | 与 §12.2 / §2.8.3 的关系 | **两份正式构建都是 `0.3.8.0`，内容不同**：§12.2 的 `AE2326D3…`（`+4d35801`）已通过 L1 主路径实机验收；本节 `3FBB993F…`（`+bb1503d`）是 **L2 源码收敛正式构建**，已在 Mono 探针结束、游戏退出后恢复部署，**尚未以该原样 DLL 单独重启运行**。§2.8.3 的 Mono L2 PASS 绑定临时诊断 DLL `0D90CA6A…`，其生产管线除短暂启用 stdin 包装缝外沿用正式实现；不能把该证据转写为 `3FBB993F…` 的原样实机验收。引用版本时必须同时给出 DLL SHA256 或 `ProductVersion` 的 `+hash`。 |
+
+**2026-09-27 Probe 清理后的当前本地部署**：Probe A/B/C 的临时代码与 DOTween 编译引用已移除，源码功能等于 `HEAD=67f1b1e79a03232bd78742ed091d10ad408fe673`。Release Rebuild 生成并部署的无探针 DLL 为 **SHA256 `45502098EE8F57FC1E9C2DBDE1C0444EAB8124FF66D304C3D234EDB2278F90FB`**（323072 字节），`FileVersion=0.3.8.0`、`ProductVersion=0.3.8.0+67f1b1e79a03232bd78742ed091d10ad408fe673`；构建与 Mods 文件哈希一致，Renderist 旧运行缓存已清理。该复建 DLL **尚未以原样实机重启验收**，也**不是**新的发布 ZIP；§12.3 表中的 `3FBB993F…` 仍是当时已发布 L2 包的身份。
 | 被取代的 L2 中间产物 | 早先两份 L2 包（DLL `C0092C4C…` / `+e475d96`、ZIP `B13ACCE2…`；DLL `5B16C9C1…` / `+cede25d`、ZIP `C8720F91…`）**均已被本表取代**，且从未部署、从未被任何人验收：不要再用它们指代 L2 构建。 |
 
-**`0.3.8.0` 的能力边界（不得误读）**：当前 Mods 已部署的正式 `3FBB993F…` 包含 **L1 组件管理**与独立、Unity-free 的 **L2 视频进程管线**，但 L2 尚未接入 Unity 编辑器导出；诊断版 Mono 定向证据见 §2.8.3。**L3（Unity MP4 Frame Transactions）未实施**，故正式 `0.3.8.0` DLL **不具备编辑器 MP4 导出能力**。Phase `… — L2 Video Process Pipeline` 表示独立管线阶段，不代表编辑器 MP4 可用。L1 构建 `AE2326D3…` 的用户最小实机验收仍见 §2.7，不外推到未单独重启的正式 L2 DLL。
+**`0.3.8.0` 的能力边界（不得误读）**：当时 Mods 部署的正式 `3FBB993F…` 包含 **L1 组件管理**与独立、Unity-free 的 **L2 视频进程管线**，但 L2 尚未接入 Unity 编辑器导出；诊断版 Mono 定向证据见 §2.8.3。**L3（Unity MP4 Frame Transactions）未实施**，故正式 `0.3.8.0` DLL **不具备编辑器 MP4 导出能力**。（当前 Mods 已由 §12.4 的 `0.3.9.0` 构建取代。）Phase `… — L2 Video Process Pipeline` 表示独立管线阶段，不代表编辑器 MP4 可用。L1 构建 `AE2326D3…` 的用户最小实机验收仍见 §2.7，不外推到未单独重启的正式 L2 DLL。
+
+### 12.4 `0.3.9.0` L3 第一闭环构建身份（实现 + runtime 验收）
+
+**`0.3.9.0` L3 第一闭环（Planet 视觉时间 ownership）**（2026-09-27；**不是**发布 ZIP，**没有**正式 release package）：
+
+| 项目 | 值 |
+| --- | --- |
+| 起始基线 | `HEAD = origin/main = 67f1b1e79a03232bd78742ed091d10ad408fe673`（本轮据此形成 3 个本地开发 commit，**未 push**） |
+| 产品版本 / Phase | `0.3.9.0` / `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions` |
+| **实机验收构建**（用户运行并产出本次验收 `Player.log`） | DLL SHA256 **`7707EE144DF3A6E0D2CB67D2EF282D222A75C88318D5A855D9E871E03F15939E`**（342016 字节）；`FileVersion=0.3.9.0`；`ProductVersion=0.3.9.0+67f1b1e79a03232bd78742ed091d10ad408fe673`（`+hash` 是**构建时 HEAD**，因该构建在 commit 之前生成，它**不**标识工作区改动，识别该构建必须用 DLL SHA256）。验收结果见 §2.2.6。 |
+| 最终实现构建（commit 后重建） | 在 3 个 commit 全部落地、working tree clean 之后强制 Release Rebuild，`ProductVersion = 0.3.9.0+<FINAL_HEAD>`，并重新部署。该重建**不产生任何 tracked diff**，因此其 DLL SHA256 **不写入本文档**（写入会立刻制造 tracked diff）；需要引用时以当轮工作报告给出的 `FINAL_HEAD` + build/deployed SHA256 为准。 |
+| 构建/验证 | 强制 Release Rebuild **0 error**（仅 `NU1900` 离线噪声）；`git diff --check` clean；离线 FFmpeg 回归 **129 / 0 / 12**（与既有基线一致，本轮未改 L2 源码） |
+| 部署 | `scripts/copy-to-mods.ps1` 部署到本机 `Mods\ADOFAI.Renderist\`（仅覆盖 Renderist 自身 DLL 与 `Info.json`），build 与 deployed 哈希逐字节一致；部署 `Info.json` Version = `0.3.9.0` |
+| 本轮源码改动 | 新增 `Export/PlanetVisualTimeOwnership.cs`；修改 `Export/PlaybackLifecycleHandoff.cs`、`Export/DeterministicFrameScheduler.cs`、`ADOFAI.Renderist.csproj`（新增 `DOTween` 编译引用）、`scripts/prepare-references.ps1`、`scripts/set-version.ps1`、版本点（`mod/Info.json` / csproj `<Version>` / `ModEntry.ModVersion` + 启动日志 + 标识性 phase 注释 / `EditorExportSession.PhaseLabel`）。**未改** `FfmpegVideoCommand` / `FfmpegVideoVerifier` / `FfmpegVideoPipeline` / `MasterTimeline` / `FrameCaptureDriver` / README。 |
+| 真实 fixture 回归边界 | 当前会话沙箱下外部 `ffmpeg.exe` **无法创建任何输出文件**（`Permission denied`，`exit -13`，与代码无关），因此真实 Gyan fixture 的 8 项写盘相关用例**未能在本会话复现**历史 `141/0/0`；离线回归 **129/0/12** 与既有基线完全一致。**正式 release 前必须在正常（非沙箱）环境重新执行真实 fixture 回归并取得通过证据**，不得把本轮环境失败当成代码测试通过。 |
+
+**本轮之后的边界**：ownership 仅覆盖这一条 `OnMusicScheduled` Planet `cosmeticRadius` Tween；Trail / Particle / Animator / Camera / Shader / effect manager 等未纳入；**MP4 / RGB24 未接入**。下一阶段是 **L3 Frame Transaction 正式集成设计**。仅 `pre-terminal cancel → restore-original-playing` 分支仍为静态覆盖（§2.2.6）。
 
