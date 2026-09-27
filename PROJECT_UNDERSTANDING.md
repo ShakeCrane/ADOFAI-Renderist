@@ -1083,7 +1083,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 5. **Log-only 取消覆盖**：pre-entry 阶段取消、End Tail 阶段取消、取消后切换 PNG 尚无**该模式**实机证据（§9.4）。`0.3.7.0` 的 PNG pre-entry 取消（session `152633`）不能代替 Log-only 验收。
 6. **Camera aspect 边界**：当前受测环境的三台 baseline 均一致（1.6）；Unity 自动 aspect 对屏幕 / camRT 的内部来源未确认。若游戏合法出现三台 Camera 不同 aspect，现有 baseline-incompatible gate 可能误拒绝；不得将该理论风险记成已经发生（§9.1、§10.1）。
 7. **原生 lifecycle / 音频遗留**：`lifecycleSongPosition` 与 raw DSP 非视觉 authority；count-in 文本/SFX 和未来音频同步仍待独立调查（§10.5）。曾见 `Coroutine couldn't be started ... Conductor is inactive` 的 native Esc teardown 警告，尚未做 disable-mod A/B。
-8. **工具债务**：`set-version.ps1 -Phase` 不同步全部 phase 文案，后续升级必须人工核查 `EditorExportSession.PhaseLabel` 与相关注释（§2）；不阻塞当前稳定基线。
+8. **工具债务**：`set-version.ps1` 自 `0.3.9.0` 起已原子同步全部**权威**版本 / Phase 字符串（含 `EditorExportSession.PhaseLabel` 与 `ModEntry` 标识性 `/// Phase` 注释），因此常规版本 / Phase 切换**不再需要**人工核查这两处。但它是**权威载体同步器，不是全仓库 phase 同步器**：功能溯源注释（如 `// ---- Phase 3.8.0: FFmpeg 组件管理 …`）与其它类的历史 phase 注释刻意不改。仅当后续新增权威版本 / Phase 载体（例如新的版本常量或启动横幅）时才需要扩展该脚本；不阻塞当前稳定基线。
 
 ---
 
