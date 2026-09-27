@@ -42,6 +42,17 @@ namespace ADOFAI.Renderist.Export
             Preparing,
             InitializationHold,
             Capturing,
+            /// <summary>
+            /// L3-A：本帧已 Prepare 并请求帧末事务，正在等 EOF 形成 CPU frame。
+            /// 该阶段**禁止**再次 Prepare，也**禁止**推进 outputFrameIndex。
+            /// </summary>
+            AwaitingEOF,
+            /// <summary>
+            /// L3-A：CPU frame 已形成并交付给 L2，正在等 Completion 回到 Unity 主线程。
+            /// 该阶段**禁止**推进 outputFrameIndex / forced chart time / Planet frame-local
+            /// position，也**禁止**开启下一个 EOF。合法 FFmpeg 背压可以持续任意长时间。
+            /// </summary>
+            AwaitingDelivery,
             Completed,
             Cancelled,
             Failed,
@@ -274,6 +285,18 @@ namespace ADOFAI.Renderist.Export
         // FrameCaptureDriver generation 隔离
         private static long _captureGeneration;
 
+        // ---- L3-A: 单帧 RGB24 交付事务 ----
+        //
+        // 形态：scheduler 只做编排（Prepare → AwaitingEOF → AwaitingDelivery → 校验 → Commit），
+        // 事务语义本身由 Unity-free 的 Rgb24FrameTransaction 持有，便于独立回归覆盖。
+        //
+        // 本 session 是否走 RGB24 交付路径，由新增的 delivery context 是否存在决定：
+        // context 为 null 时行为与 0.3.9.x 完全一致（PNG / log-only 不退化）。
+        private static Rgb24DeliveryContext _rgb24Delivery;
+        private static bool _rgb24DeliveryEnabled;
+        /// <summary>启动路径是否已把本 **下一次** TryStart 标记为 RGB24 交付 session。每次 TryStart 消费并清零。</summary>
+        private static bool _rgb24DeliveryArmed;
+
         // saved Unity timing state is itself ownership until restoration succeeds
         private static bool _ownsUnityTiming;
 
@@ -448,6 +471,15 @@ namespace ADOFAI.Renderist.Export
 
                 _outputFps = outputFps;
                 _imageOutputEnabled = imageOutputEnabled;
+                // L3-A：RGB24 交付模式在 session 开始时一次性冻结（armed 标记只对本次 TryStart 生效）。
+                _rgb24DeliveryEnabled = _rgb24DeliveryArmed && _rgb24Delivery != null;
+                _rgb24DeliveryArmed = false;
+                if (_rgb24DeliveryEnabled && imageOutputEnabled)
+                {
+                    // PNG 与 RGB24 交付互斥：绝不允许两个图像输出模式同时冻结。
+                    return "output-mode-conflict:png-and-rgb24";
+                }
+                if (_rgb24Delivery != null) _rgb24Delivery.Reset();
                 SafetyLimitResolution safety = SafetyFrameLimitPolicy.Resolve(configuredSafetyFrameLimit);
                 _safetyFrameLimit = safety.FrameLimit;
                 _safetyPolicyKind = safety.Kind;
@@ -545,9 +577,16 @@ namespace ADOFAI.Renderist.Export
                     return FailStart("autoplay-api-unavailable:" + autoPlayError);
                 }
 
-                // ---- 5) 帧末事务后端（PNG / log-only 由冻结模式决定；两者共用同一套 host / EOF / cleanup）----
+                // ---- 5) 帧末事务后端（PNG / log-only / RGB24 由冻结模式决定；三者共用同一套
+                // host / EOF / cleanup；RGB24 模式额外要求本 session 已提供 delivery context）----
+                if (_rgb24DeliveryEnabled && _rgb24Delivery == null)
+                {
+                    return FailStart("rgb24-delivery-context-missing");
+                }
+
                 if (!FrameCaptureDriver.Start(outputDirectory, FramePrefix, ZeroPadWidth,
-                        OnCaptureResult, _imageOutputEnabled, out long captureGeneration, out string captureError))
+                        OnCaptureResult, _imageOutputEnabled, _rgb24DeliveryEnabled,
+                        out long captureGeneration, out string captureError))
                 {
                     return FailStart("capture-driver-start-failed:" + captureError);
                 }
@@ -849,6 +888,9 @@ namespace ADOFAI.Renderist.Export
                    // 也是 residual ownership —— 未收敛前绝不允许开始下一 session。
                    FrameCaptureDriver.HasOwnedDownsampleChain ||
                    FrameCaptureDriver.HasResidualGpuState ||
+                   // L3-A：帧 Completion 与 pipeline cleanup 未各自收敛前，RGB24 lease 仍然是
+                   // residual ownership（CleanupTask 完成**不能**推导 frame buffer 已可复用）。
+                   (_rgb24Delivery != null && _rgb24Delivery.HasResidualOwnership) ||
                    _inputGuardHooks.Count > 0 ||
                    EditorVisualClock.HasTrackedHooks ||
                    _patchedConductorUpdate != null || _patchedAsyncInputAdjustAngle != null ||
@@ -966,6 +1008,16 @@ namespace ADOFAI.Renderist.Export
                         break;
                     case SchedulerStatus.Capturing:
                         TickCapturing();
+                        break;
+                    case SchedulerStatus.AwaitingEOF:
+                        // 等 EOF：只保留既有 capture deadline（EOF 本身是 Unity 帧末事件），
+                        // 不推进任何时间或帧号。
+                        CheckArmedCaptureWatchdogs();
+                        break;
+                    case SchedulerStatus.AwaitingDelivery:
+                        // 交付中：**刻意不检查** frame-progress / capture deadline。
+                        // 合法 FFmpeg 背压可以持续任意长时间。
+                        TickAwaitingDelivery();
                         break;
                 }
             }
@@ -1597,11 +1649,11 @@ namespace ADOFAI.Renderist.Export
             }
 
             _frameTransactionRequestCount++;
-            // captureRequestCount 只统计 PNG 图像请求；log-only 模式下保持 0。
+            // captureRequestCount 只统计 PNG 图像请求；log-only / RGB24 模式下保持 0。
             if (_imageOutputEnabled) _captureRequestCount++;
-            if (!FrameCaptureDriver.RequestCapture(_captureGeneration, index))
+            if (!TryRequestFrameCapture(index, out string captureRequestError))
             {
-                RequestStop("capture-failed", "capture-request-rejected");
+                RequestStop("capture-failed", captureRequestError ?? "capture-request-rejected");
                 return;
             }
             _pendingCapture = true;
@@ -2028,11 +2080,11 @@ namespace ADOFAI.Renderist.Export
             }
 
             _frameTransactionRequestCount++;
-            // captureRequestCount 只统计 PNG 图像请求；log-only 模式下保持 0。
+            // captureRequestCount 只统计 PNG 图像请求；log-only / RGB24 模式下保持 0。
             if (_imageOutputEnabled) _captureRequestCount++;
-            if (!FrameCaptureDriver.RequestCapture(_captureGeneration, index))
+            if (!TryRequestFrameCapture(index, out string preEntryCaptureRequestError))
             {
-                RequestStop("capture-failed", "preentry-capture-request-rejected");
+                RequestStop("capture-failed", preEntryCaptureRequestError ?? "preentry-capture-request-rejected");
                 return;
             }
 
@@ -2045,6 +2097,117 @@ namespace ADOFAI.Renderist.Export
         // ================================================================
         // Capture / Commit（WaitForEndOfFrame）
         // ================================================================
+
+        /// <summary>
+        /// L3-A：绑定本 session 的 RGB24 交付上下文（必须在 TryStart **之前**由启动路径
+        /// 在 Unity 主线程调用；context 已在此刻捕获 SynchronizationContext 与主线程身份）。
+        /// 未绑定即表示本 session 不使用 RGB24 交付路径。
+        /// </summary>
+        public static void ArmRgb24Delivery(Rgb24DeliveryContext context)
+        {
+            _rgb24Delivery = context;
+            _rgb24DeliveryArmed = context != null;
+            if (context != null) context.LogBridgeIdentity();
+        }
+
+        /// <summary>
+        /// L3-A：统一的帧捕获请求入口。三种冻结模式共用同一个 EOF 事务边界，
+        /// 区别只在"帧末事务产出什么"：
+        ///   * PNG：读回 → EncodeToPNG → 写盘；
+        ///   * log-only：只做帧末校验；
+        ///   * RGB24：读回 → 写入归本事务所有的 managed 分段缓冲，**交付由本 scheduler 负责**
+        ///     （driver 绝不调用 L2 TryWriteFrame）。
+        /// RGB24 模式下本方法同时完成事务的 Idle → AwaitingEOF 迁移。
+        /// </summary>
+        private static bool TryRequestFrameCapture(long frameIndex, out string error)
+        {
+            error = null;
+
+            if (_rgb24DeliveryEnabled)
+            {
+                Rgb24FrameTransaction transaction = _rgb24Delivery.Transaction;
+
+                Rgb24TransactionOutcome begin = transaction.TryBeginFrame(_captureGeneration, frameIndex, out string beginError);
+                if (begin != Rgb24TransactionOutcome.Accepted)
+                {
+                    error = beginError ?? "rgb24-begin-frame-rejected";
+                    return false;
+                }
+
+                OwnedRgb24Frame frame = transaction.CurrentFrame;
+                if (frame == null)
+                {
+                    transaction.TryAbort(out string abortError);
+                    error = "rgb24-current-frame-missing:" + (abortError ?? "none");
+                    return false;
+                }
+
+                if (!FrameCaptureDriver.RequestRgb24Capture(_captureGeneration, frameIndex, frame))
+                {
+                    transaction.TryAbort(out string abortError);
+                    error = "rgb24-capture-request-rejected:" + (abortError ?? "none");
+                    return false;
+                }
+
+                _status = SchedulerStatus.AwaitingEOF;
+                return true;
+            }
+
+            if (!FrameCaptureDriver.RequestCapture(_captureGeneration, frameIndex))
+            {
+                error = "capture-request-rejected";
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// L3-A：AwaitingDelivery 阶段的主线程驱动。它**不**轮询 FFmpeg，
+        /// 只消费由 main-thread 上下文投递过来的完成信封（事件驱动）。
+        /// 合法 FFmpeg stdin 背压可以持续任意长时间：这里没有任何帧推进 deadline。
+        /// </summary>
+        private static void TickAwaitingDelivery()
+        {
+            Rgb24DeliveryEnvelope envelope;
+            string bridgeError;
+            if (!_rgb24Delivery.TryTakePendingEnvelope(out envelope, out bridgeError))
+            {
+                if (bridgeError != null)
+                {
+                    // Post 抛错 / Task 已结束但主线程交接始终没有完成：内部桥接不变量失败。
+                    RequestStop("rgb24-bridge-failed", bridgeError);
+                }
+                return;
+            }
+
+            string errorCode;
+            string errorDetail;
+            Rgb24TransactionOutcome outcome =
+                _rgb24Delivery.Transaction.ConsumeEnvelope(envelope, out errorCode, out errorDetail);
+
+            switch (outcome)
+            {
+                case Rgb24TransactionOutcome.Committed:
+                    _status = SchedulerStatus.Capturing;
+                    CommitFrame(envelope.AbsoluteFrameIndex, false, null);
+                    return;
+
+                case Rgb24TransactionOutcome.Failed:
+                    RequestStop("rgb24-delivery-failed", errorCode ?? "rgb24-delivery-failed");
+                    return;
+
+                case Rgb24TransactionOutcome.RejectedStaleGeneration:
+                    // 旧 generation 的完成通知：只允许被忽略，绝不允许污染当前 session。
+                    Log.Debug("DeterministicFrameScheduler: stale rgb24 delivery generation ignored");
+                    return;
+
+                default:
+                    // duplicate / wrong-frame / token-mismatch / wrong-phase 都是 invariant failure。
+                    RequestStop("rgb24-invariant-failed", errorCode ?? outcome.ToString());
+                    return;
+            }
+        }
 
         private static void OnCaptureResult(
             long generation, long frameIndex, bool success, bool imageWritten, string filePath, string error)
@@ -2089,7 +2252,50 @@ namespace ADOFAI.Renderist.Export
                     error ?? "unknown"));
                 // 只有 PNG 模式才可能写盘失败；log-only 不写图像，失败原因是帧末事务本身。
                 RequestStop("capture-failed",
-                    _imageOutputEnabled ? "write-png-failed" : "frame-transaction-failed");
+                    _rgb24DeliveryEnabled ? "rgb24-capture-failed"
+                    : (_imageOutputEnabled ? "write-png-failed" : "frame-transaction-failed"));
+                return;
+            }
+
+            // ---- L3-A：RGB24 交付 ----
+            // EOF 已形成完整的 owned CPU frame：AwaitingEOF → AwaitingDelivery，然后立刻交付。
+            // 本分支**绝不**在这里 CommitFrame：只有主线程消费到 Completion 之后才允许提交。
+            if (_rgb24DeliveryEnabled)
+            {
+                Rgb24FrameTransaction transaction = _rgb24Delivery.Transaction;
+
+                OwnedRgb24Frame ownedFrame;
+                Rgb24TransactionOutcome eofOutcome = transaction.TryCompleteEof(
+                    generation, frameIndex, out ownedFrame, out string eofError);
+                if (eofOutcome != Rgb24TransactionOutcome.Accepted)
+                {
+                    RequestStop("rgb24-transaction-failed", eofError ?? "rgb24-eof-rejected");
+                    return;
+                }
+
+                _status = SchedulerStatus.AwaitingDelivery;
+
+                Rgb24TransactionOutcome deliveryOutcome =
+                    transaction.TryBeginDelivery(out string deliveryError, out string deliveryDetail);
+                if (deliveryOutcome == Rgb24TransactionOutcome.RejectedBusy)
+                {
+                    // 全链路最多一帧在途：busy 只能是 scheduler invariant failure。
+                    RequestStop("rgb24-invariant-failed", "rgb24-transport-busy");
+                    return;
+                }
+
+                if (deliveryOutcome != Rgb24TransactionOutcome.Accepted)
+                {
+                    RequestStop("rgb24-delivery-rejected",
+                        (deliveryError ?? "rgb24-delivery-rejected") +
+                        (string.IsNullOrEmpty(deliveryDetail) ? "" : (":" + deliveryDetail)));
+                    return;
+                }
+
+                Log.Debug("DeterministicFrameScheduler: rgb24 frame delivered frameIndex=" +
+                          frameIndex.ToString(CultureInfo.InvariantCulture) +
+                          " token=" + transaction.LeaseTokenId.ToString(CultureInfo.InvariantCulture) +
+                          " awaiting main-thread completion");
                 return;
             }
 

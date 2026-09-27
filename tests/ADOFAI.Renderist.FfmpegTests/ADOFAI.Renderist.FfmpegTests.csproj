@@ -36,6 +36,13 @@
     <!-- 直接编译生产源码（同一份源文件，不是副本）。 -->
     <Compile Include="..\..\src\ADOFAI.Renderist\Ffmpeg\*.cs" LinkBase="Production" />
     <Compile Include="..\..\src\ADOFAI.Renderist\UnityFfmpegDownloadDriver.cs" LinkBase="Production" />
+
+    <!-- L3-A：RGB24 帧 ownership 事务。这些源文件刻意 Unity-free，因此可以直接编译。 -->
+    <Compile Include="..\..\src\ADOFAI.Renderist\Export\Rgb24FrameLayout.cs" LinkBase="Production" />
+    <Compile Include="..\..\src\ADOFAI.Renderist\Export\Rgb24RowOrderPolicy.cs" LinkBase="Production" />
+    <Compile Include="..\..\src\ADOFAI.Renderist\Export\Rgb24FrameBufferPool.cs" LinkBase="Production" />
+    <Compile Include="..\..\src\ADOFAI.Renderist\Export\Rgb24FrameTransaction.cs" LinkBase="Production" />
+    <Compile Include="..\..\src\ADOFAI.Renderist\Export\FfmpegRgb24FrameTransport.cs" LinkBase="Production" />
   </ItemGroup>
 
 </Project>

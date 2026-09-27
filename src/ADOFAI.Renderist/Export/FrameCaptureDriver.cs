@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Globalization;
 using System.IO;
+using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using ADOFAI.Renderist.Logging;
@@ -128,6 +129,22 @@ namespace ADOFAI.Renderist.Export
 
         /// <summary>session 开始时冻结的输出模式（PNG / log-only）。仅用于决定是否创建降采样链。</summary>
         private static bool _imageOutputEnabled = true;
+
+        /// <summary>
+        /// L3-A：本 session 冻结的 RGB24 交付模式（MP4 方向）。
+        /// 与 <see cref="_imageOutputEnabled"/> 互斥；为 true 时帧末事务从**同一个**读回源
+        /// （scale&gt;1 时即降采样链末级）分块读取 RGB24 CPU 数据并写入 scheduler 拥有的
+        /// OwnedRgb24Frame。driver **不**调用 L2 TryWriteFrame：交付由 scheduler 负责。
+        /// </summary>
+        private static bool _rgb24DeliveryEnabled;
+
+        /// <summary>
+        /// 分块读回的**内存预算**（字节）：每个 band 的 staging / scratch texture 不超过它。
+        /// 这是内存表达粒度，不是分辨率上限；超宽帧只会退化成更少的行数（最小 1 行）。
+        /// NativeArray view → staging 用 <c>CopyTo</c> 批量复制，因此每个 band 不产生
+        /// managed 分配（GetRawTextureData&lt;T&gt;() 返回的是视图，不是副本）。
+        /// </summary>
+        private const int Rgb24ReadbackBandByteBudget = 4 << 20;
 
         // ---- Render Source ownership（只在本 session 内有效）----
         //
@@ -291,6 +308,7 @@ namespace ADOFAI.Renderist.Export
             int zeroPadWidth,
             CaptureResultCallback onResult,
             bool imageOutputEnabled,
+            bool rgb24DeliveryEnabled,
             out long generation,
             out string error)
         {
@@ -309,6 +327,13 @@ namespace ADOFAI.Renderist.Export
                 return false;
             }
 
+            if (imageOutputEnabled && rgb24DeliveryEnabled)
+            {
+                // 输出模式必须互斥：PNG 与 RGB24 交付不能同时冻结在同一 session。
+                error = "output-mode-conflict";
+                return false;
+            }
+
             GameObject host = null;
             CaptureHostBehaviour behaviour = null;
             try
@@ -320,6 +345,7 @@ namespace ADOFAI.Renderist.Export
                 _aspectAssignedCount = 0;
                 // 输出模式在 session 开始时冻结一次：降采样链是否创建只取决于本值。
                 _imageOutputEnabled = imageOutputEnabled;
+                _rgb24DeliveryEnabled = rgb24DeliveryEnabled;
                 _downsampleTargets = EmptyDownsampleTargets;
                 _supersamplingScale = OutputGeometryPolicy.DefaultSupersamplingScale;
 
@@ -329,7 +355,8 @@ namespace ADOFAI.Renderist.Export
 
                 behaviour = host.AddComponent<CaptureHostBehaviour>();
                 behaviour.Configure(outputDirectory, string.IsNullOrEmpty(prefix) ? "frame_" : prefix,
-                    zeroPadWidth < 1 ? 1 : zeroPadWidth, onResult, generation, imageOutputEnabled);
+                    zeroPadWidth < 1 ? 1 : zeroPadWidth, onResult, generation, imageOutputEnabled,
+                    rgb24DeliveryEnabled);
 
                 // 静态 ownership 只在全部启动步骤成功后交接；此前 host/behaviour
                 // 属于局部 ownership，中途异常由 catch 就地清理。
@@ -486,8 +513,10 @@ namespace ADOFAI.Renderist.Export
                 return false;
             }
 
-            // ---- 2) 降采样链（仅 PNG 且 scale>1）：构造成功即登记 ----
-            if (_imageOutputEnabled && supersamplingScale > 1)
+            // ---- 2) 降采样链（PNG 或 RGB24 交付且 scale>1）：构造成功即登记 ----
+            // RGB24 交付与 PNG 使用**同一条**降采样链与同一个读回源（最终 output 尺寸），
+            // 因此这里对两种图像输出模式一视同仁；log-only 仍然绝不创建链。
+            if ((_imageOutputEnabled || _rgb24DeliveryEnabled) && supersamplingScale > 1)
             {
                 if (!OutputGeometryPolicy.TryBuildDownsampleSteps(
                         outputWidth, outputHeight, supersamplingScale,
@@ -736,6 +765,26 @@ namespace ADOFAI.Renderist.Export
             CaptureHostBehaviour b = _behaviour;
             if (b == null) return false;
             b.RequestCapture(frameIndex);
+            return true;
+        }
+
+        /// <summary>
+        /// L3-A：请求在下一个 WaitForEndOfFrame 为本帧形成**归 scheduler 所有**的 RGB24 CPU 帧。
+        /// 与 <see cref="RequestCapture"/> 共用同一个 EOF coroutine 与同一个帧末事务边界；
+        /// 只是把"读回 → 编码 → 写盘"替换为"读回 → 写入 caller 提供的 OwnedRgb24Frame 分段"。
+        ///
+        /// frame 由 scheduler 的事务在 Prepare 时取得（会话内复用、全链路最多一帧在途）。
+        /// driver 只填充它，**绝不**调用 L2 TryWriteFrame。
+        /// </summary>
+        public static bool RequestRgb24Capture(long generation, long frameIndex, OwnedRgb24Frame frame)
+        {
+            if (frame == null) return false;
+            if (generation != _activeGeneration) return false;
+            if (!_rgb24DeliveryEnabled) return false;
+            if (!_sourceActive || _captureTarget == null) return false;
+            CaptureHostBehaviour b = _behaviour;
+            if (b == null) return false;
+            b.RequestRgb24Capture(frameIndex, frame);
             return true;
         }
 
@@ -1407,13 +1456,27 @@ namespace ADOFAI.Renderist.Export
             /// </summary>
             private bool _imageOutputEnabled = true;
 
+            /// <summary>L3-A：本 session 是否使用 RGB24 交付路径（与 PNG 互斥）。</summary>
+            private bool _rgb24DeliveryEnabled;
+
             private bool _pending;
             private long _pendingIndex;
             private Texture2D _texture;
             private bool _stopped;
 
+            /// <summary>本帧要填充的归 scheduler 所有的 RGB24 帧；只在帧末事务期间有效。</summary>
+            private OwnedRgb24Frame _pendingRgb24Frame;
+
+            /// <summary>分块读回的 RGB24 scratch（只作为 ReadPixels 的 CPU 读回目标）。</summary>
+            private Texture2D _scratch;
+            /// <summary>每个 band 的暂存区（整段 CopyTo，避免逐 band 的 managed 分配）。</summary>
+            private byte[] _staging;
+            /// <summary>本 session 冻结的 band 行数（由内存预算与 output 宽度共同决定）。</summary>
+            private int _rgb24BandRows;
+
             public void Configure(string outputDirectory, string prefix, int zeroPadWidth,
-                CaptureResultCallback onResult, long generation, bool imageOutputEnabled)
+                CaptureResultCallback onResult, long generation, bool imageOutputEnabled,
+                bool rgb24DeliveryEnabled)
             {
                 _outputDirectory = outputDirectory;
                 _prefix = prefix;
@@ -1421,8 +1484,10 @@ namespace ADOFAI.Renderist.Export
                 _onResult = onResult;
                 _generation = generation;
                 _imageOutputEnabled = imageOutputEnabled;
+                _rgb24DeliveryEnabled = rgb24DeliveryEnabled;
                 _pending = false;
                 _pendingIndex = -1;
+                _pendingRgb24Frame = null;
                 _stopped = false;
 
                 if (_routine == null)
@@ -1442,12 +1507,30 @@ namespace ADOFAI.Renderist.Export
                 // 同帧重复请求只保留首次，避免重复捕获。
             }
 
+            /// <summary>
+            /// L3-A：为指定帧请求 RGB24 帧末事务。frame 由 scheduler 的帧事务提供
+            /// （会话内复用、全链路最多一帧在途），driver 只填充它。
+            /// </summary>
+            public void RequestRgb24Capture(long frameIndex, OwnedRgb24Frame frame)
+            {
+                if (_stopped || _generation != _activeGeneration) return;
+                if (frame == null) return;
+                if (!_pending)
+                {
+                    _pending = true;
+                    _pendingIndex = frameIndex;
+                    _pendingRgb24Frame = frame;
+                }
+                // 同帧重复请求只保留首次：绝不覆盖已登记的 owned frame。
+            }
+
             /// <summary>同步失效：停止 coroutine、清 pending / callback。调用后再 Destroy host。</summary>
             public void Shutdown()
             {
                 _stopped = true;
                 _pending = false;
                 _pendingIndex = -1;
+                _pendingRgb24Frame = null;
                 _onResult = null;
 
                 if (_routine != null)
@@ -1466,10 +1549,12 @@ namespace ADOFAI.Renderist.Export
                     if (!_pending) continue;
 
                     long index = _pendingIndex;
+                    OwnedRgb24Frame rgb24Frame = _pendingRgb24Frame;
                     _pending = false;
+                    _pendingRgb24Frame = null;
                     if (index == 0) Log.Info("MasterTimeline Stage=Frame0 AFTER_EOF frameIndex=0");
                     _pendingIndex = -1;
-                    CaptureNow(index);
+                    CaptureNow(index, rgb24Frame);
                 }
             }
 
@@ -1484,7 +1569,7 @@ namespace ADOFAI.Renderist.Export
                 }
             }
 
-            private void CaptureNow(long frameIndex)
+            private void CaptureNow(long frameIndex, OwnedRgb24Frame rgb24Frame)
             {
                 if (_stopped || _generation != _activeGeneration) return;
 
@@ -1504,6 +1589,37 @@ namespace ADOFAI.Renderist.Export
                         _outputWidth <= 0 || _outputHeight <= 0)
                     {
                         throw new InvalidOperationException("capture-dimensions-invalid");
+                    }
+
+                    // ---- L3-A：RGB24 CPU frame ownership ----
+                    // 与 PNG 共用同一个 EOF coroutine、同一个降采样链与同一个读回源，
+                    // 只是把"读回 → EncodeToPNG → 写盘"换成"分块读回 → 写进 owned 分段缓冲"。
+                    // driver 只负责产生 owned RGB24 结果，绝不调用 L2 TryWriteFrame。
+                    if (_rgb24DeliveryEnabled)
+                    {
+                        if (rgb24Frame == null)
+                            throw new InvalidOperationException("rgb24-owned-frame-missing");
+
+                        // 冻结几何必须与 scheduler 分配 lease 时使用的布局完全一致，
+                        // 否则写出的行偏移会错位：这种情况 fail-closed，不做任何猜测。
+                        if (rgb24Frame.Width != _outputWidth || rgb24Frame.Height != _outputHeight)
+                            throw new InvalidOperationException("rgb24-owned-frame-geometry-mismatch");
+
+                        if (!TryRunRgb24CapturePipeline(rgb24Frame, out string rgb24Error))
+                        {
+                            if (_stopped || _generation != _activeGeneration) return;
+                            throw new InvalidOperationException(rgb24Error ?? "rgb24-capture-pipeline-failed");
+                        }
+
+                        if (_stopped || _generation != _activeGeneration) return;
+
+                        Log.Debug("FrameCaptureDriver: rgb24 frame-end transaction frameIndex=" +
+                                  frameIndex.ToString(CultureInfo.InvariantCulture) +
+                                  " bytes=" + rgb24Frame.ByteLength.ToString(CultureInfo.InvariantCulture) +
+                                  " segments=" + rgb24Frame.SegmentCount.ToString(CultureInfo.InvariantCulture));
+                        // imageWritten=false：本模式不写图像文件，mode 校验由 scheduler 按 RGB24 分支处理。
+                        _onResult?.Invoke(_generation, frameIndex, true, false, null, null);
+                        return;
                     }
 
                     // ---- Log-only：跳过高分辨率链 / 图像读回 / 编码 / 写盘 ----
@@ -1577,7 +1693,89 @@ namespace ADOFAI.Renderist.Export
                 bool trackSrgbWrite = _linearColorSpace && _downsampleTargets != null &&
                                       _downsampleTargets.Length > 0;
 
-                // ---- 1) 保存（在任何修改之前）----
+                if (!TrySaveGpuState(trackSrgbWrite, out error))
+                    return false;
+
+                string pipelineError = null;
+                try
+                {
+                    RenderTexture readback = BlitDownsampleChain(trackSrgbWrite);
+                    RenderTexture.active = readback;
+                    _texture.ReadPixels(new Rect(0, 0, _outputWidth, _outputHeight), 0, 0);
+                }
+                catch (Exception ex)
+                {
+                    pipelineError = ex.Message;
+                }
+
+                if (!TryRestoreGpuState(out error))
+                    return false;
+
+                if (pipelineError != null)
+                {
+                    error = pipelineError;
+                    return false;
+                }
+
+                return true;
+            }
+
+            /// <summary>
+            /// L3-A 帧末 GPU 临界区：与 PNG **完全同一条**降采样链和同一个读回源，但用小型
+            /// 可复用 RGB24 scratch 分块 ReadPixels，并立即把 CPU 数据复制进归 scheduler 所有的
+            /// managed 分段缓冲。
+            ///
+            /// 刻意不做的事：
+            ///   * 不调用 <c>Apply()</c>：Apply 是 CPU→GPU 上传，读回路径不需要它，
+            ///     每块调用只会制造无谓上传；
+            ///   * 不把 <c>NativeArray</c> 视图交给后台：视图只在主线程内被 CopyTo 到 staging；
+            ///   * 不在 driver 内翻转行序：行序只由 Rgb24RowOrderPolicy 决定。
+            /// </summary>
+            private bool TryRunRgb24CapturePipeline(OwnedRgb24Frame frame, out string error)
+            {
+                error = null;
+
+                bool trackSrgbWrite = _linearColorSpace && _downsampleTargets != null &&
+                                      _downsampleTargets.Length > 0;
+
+                if (!TrySaveGpuState(trackSrgbWrite, out error))
+                    return false;
+
+                string pipelineError = null;
+                try
+                {
+                    RenderTexture readback = BlitDownsampleChain(trackSrgbWrite);
+                    if (trackSrgbWrite)
+                        GL.sRGBWrite = GraphicsFormatUtility.IsSRGBFormat(readback.graphicsFormat);
+
+                    RenderTexture.active = readback;
+                    ReadBackRgb24Bands(frame);
+                }
+                catch (Exception ex)
+                {
+                    pipelineError = ex.Message;
+                }
+
+                if (!TryRestoreGpuState(out error))
+                    return false;
+
+                if (pipelineError != null)
+                {
+                    error = pipelineError;
+                    return false;
+                }
+
+                return true;
+            }
+
+            /// <summary>
+            /// 保存 GPU 状态并**在保存成功后立即**登记 ownership。
+            /// 保存失败且尚未修改任何状态时不登记 token（不产生虚假 residual）。
+            /// </summary>
+            private bool TrySaveGpuState(bool trackSrgbWrite, out string error)
+            {
+                error = null;
+
                 RenderTexture previousActive;
                 try
                 {
@@ -1585,7 +1783,6 @@ namespace ADOFAI.Renderist.Export
                 }
                 catch (Exception ex)
                 {
-                    // 保存失败且未做任何修改：不登记 ownership，不产生虚假 residual。
                     error = "gpu-state-save-failed:" + ex.Message;
                     return false;
                 }
@@ -1604,7 +1801,6 @@ namespace ADOFAI.Renderist.Export
                     }
                 }
 
-                // ---- 2) 登记 ownership（此时才开始拥有）----
                 _savedActiveState = previousActive;
                 _activeStateOwned = true;
                 if (trackSrgbWrite)
@@ -1613,42 +1809,16 @@ namespace ADOFAI.Renderist.Export
                     _srgbWriteOwned = true;
                 }
 
-                // ---- 3) 降采样链 + ReadPixels ----
-                string pipelineError = null;
-                try
-                {
-                    RenderTexture source = _captureTarget;
-                    for (int i = 0; i < _downsampleTargets.Length; i++)
-                    {
-                        RenderTexture destination = _downsampleTargets[i];
-                        if (destination == null)
-                            throw new InvalidOperationException("downsample-target-missing:" + i);
-                        if (ReferenceEquals(source, destination))
-                            throw new InvalidOperationException("downsample-source-equals-destination:" + i);
+                return true;
+            }
 
-                        if (trackSrgbWrite)
-                            GL.sRGBWrite = GraphicsFormatUtility.IsSRGBFormat(destination.graphicsFormat);
+            /// <summary>
+            /// 两个 token **独立**恢复；任一失败即保留该 token（residual）并返回 false。
+            /// </summary>
+            private bool TryRestoreGpuState(out string error)
+            {
+                error = null;
 
-                        Graphics.Blit(source, destination);
-                        source = destination;
-                    }
-
-                    RenderTexture readback = ReadbackTarget;
-                    if (readback == null)
-                        throw new InvalidOperationException("readback-target-missing");
-
-                    if (trackSrgbWrite)
-                        GL.sRGBWrite = GraphicsFormatUtility.IsSRGBFormat(readback.graphicsFormat);
-
-                    RenderTexture.active = readback;
-                    _texture.ReadPixels(new Rect(0, 0, _outputWidth, _outputHeight), 0, 0);
-                }
-                catch (Exception ex)
-                {
-                    pipelineError = ex.Message;
-                }
-
-                // ---- 4) 两个 token 独立恢复 ----
                 bool activeRestored = true;
                 if (_activeStateOwned)
                 {
@@ -1686,13 +1856,116 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
-                if (pipelineError != null)
+                return true;
+            }
+
+            /// <summary>
+            /// 执行降采样链 Blit（若有）并返回本帧读回源。必须在已保存 GPU 状态的临界区内调用。
+            /// </summary>
+            private RenderTexture BlitDownsampleChain(bool trackSrgbWrite)
+            {
+                RenderTexture source = _captureTarget;
+                for (int i = 0; i < _downsampleTargets.Length; i++)
                 {
-                    error = pipelineError;
-                    return false;
+                    RenderTexture destination = _downsampleTargets[i];
+                    if (destination == null)
+                        throw new InvalidOperationException("downsample-target-missing:" + i);
+                    if (ReferenceEquals(source, destination))
+                        throw new InvalidOperationException("downsample-source-equals-destination:" + i);
+
+                    if (trackSrgbWrite)
+                        GL.sRGBWrite = GraphicsFormatUtility.IsSRGBFormat(destination.graphicsFormat);
+
+                    Graphics.Blit(source, destination);
+                    source = destination;
                 }
 
-                return true;
+                RenderTexture readback = ReadbackTarget;
+                if (readback == null)
+                    throw new InvalidOperationException("readback-target-missing");
+
+                return readback;
+            }
+
+            /// <summary>
+            /// 分块从已激活的读回源读取 RGB24 并写入 owned frame。
+            ///
+            /// band 规划：每个 band 的行数由 <see cref="Rgb24ReadbackBandByteBudget"/> 与 output
+            /// 宽度共同决定（至少 1 行）。末段刻意与上一段**重叠**，使每个 band 都是满高的，
+            /// 从而 <c>view.Length == _staging.Length</c> 恒成立，可以整段 <c>CopyTo</c>，
+            /// 每个 band 不产生任何 managed 分配。重叠行使同一源行被写入两次，内容完全相同（幂等）。
+            /// </summary>
+            private void ReadBackRgb24Bands(OwnedRgb24Frame frame)
+            {
+                EnsureRgb24Scratch();
+
+                int width = _outputWidth;
+                int height = _outputHeight;
+                int bandRows = _rgb24BandRows;
+                long rowBytes = (long)width * Rgb24FrameLayout.BytesPerPixel;
+
+                int start = 0;
+                while (start < height)
+                {
+                    int rows = bandRows;
+                    if (start + rows > height)
+                    {
+                        start = height - rows;
+                    }
+
+                    // ReadPixels 的 dest 原点在左下：scratch 第 r 行对应源行 (start + r)。
+                    _scratch.ReadPixels(new Rect(0, start, width, rows), 0, 0);
+
+                    NativeArray<byte> view = _scratch.GetRawTextureData<byte>();
+                    if (!view.IsCreated || view.Length != _staging.Length)
+                        throw new InvalidOperationException("rgb24-readback-view-mismatch");
+
+                    view.CopyTo(_staging);
+
+                    for (int r = 0; r < rows; r++)
+                    {
+                        frame.CopyStagedSourceRowToDelivery(start + r, _staging, (int)(r * rowBytes));
+                    }
+
+                    start += rows;
+                }
+            }
+
+            /// <summary>
+            /// 建立 / 复用本 session 的 RGB24 scratch 与 staging。几何在 session 内冻结，
+            /// 因此正常情况下只分配一次。
+            /// </summary>
+            private void EnsureRgb24Scratch()
+            {
+                long rowBytes = (long)_outputWidth * Rgb24FrameLayout.BytesPerPixel;
+                long budget = Rgb24ReadbackBandByteBudget;
+
+                long rows = rowBytes > 0 ? budget / rowBytes : 1;
+                if (rows < 1) rows = 1;
+                if (rows > _outputHeight) rows = _outputHeight;
+
+                int bandRows = (int)rows;
+                long stagingLength = (long)bandRows * rowBytes;
+
+                if (_scratch != null && _scratch.width == _outputWidth &&
+                    _scratch.height == bandRows && _staging != null &&
+                    _staging.Length == (int)stagingLength)
+                {
+                    _rgb24BandRows = bandRows;
+                    return;
+                }
+
+                if (_scratch != null)
+                {
+                    try { UnityEngine.Object.Destroy(_scratch); } catch { }
+                    _scratch = null;
+                }
+
+                // RGB24 scratch 只作为 ReadPixels 的 CPU 读回目标，从不被渲染，也不需要 mipmap。
+                _scratch = new Texture2D(_outputWidth, bandRows, TextureFormat.RGB24, false);
+                // 分配失败（OutOfMemory）由外层帧末事务如实转成失败，绝不偷偷降低几何。
+                _staging = new byte[(int)stagingLength];
+                _rgb24BandRows = bandRows;
             }
 
             private void EnsureTexture()
@@ -1740,6 +2013,18 @@ namespace ADOFAI.Renderist.Export
                     try { UnityEngine.Object.Destroy(_texture); } catch { }
                     _texture = null;
                 }
+
+                // L3-A：RGB24 读回资产只属于本 host，销毁 host 时一并释放。
+                // staging 是纯 managed 缓冲，直接丢引用即可（不代表任何外部 ownership）。
+                if (_scratch != null)
+                {
+                    try { UnityEngine.Object.Destroy(_scratch); } catch { }
+                    _scratch = null;
+                }
+
+                _staging = null;
+                _pendingRgb24Frame = null;
+                _rgb24BandRows = 0;
             }
         }
     }
