@@ -10,7 +10,7 @@
 
 ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器内非实时渲染导出 Mod。
 
-当前**已实现**路线：编辑器内原生 Camera → Renderist-owned RenderTexture → PNG 序列 / Log-only；`MasterTimeline` 控制逻辑帧。`0.3.9.0` 阶段在保留两条现有路径的同时继续独立 MP4 输出方向（技术决策与待验证项见 §2.1）：**L1（FFmpeg 组件管理 + HTTPS 下载）已完成并通过实机验收**；**L2（独立 FFmpeg 视频进程管线）已实现为 Unity-free 模块，通过独立 net48 回归及一次目标游戏 Unity Mono 定向探针，仍未接入编辑器导出**（§2.8 / §2.8.3）；**L3 第一闭环（Planet 视觉时间 ownership）已正式实现并通过实机验收**（§2.2.4 / §2.2.6）；**L3 的 Unity MP4 帧事务与 RGB24 delivery 尚未实施**。
+当前**已实现**路线：编辑器内原生 Camera → Renderist-owned RenderTexture → PNG 序列 / Log-only；`MasterTimeline` 控制逻辑帧。`0.3.9.1` 阶段在保留两条现有路径的同时继续独立 MP4 输出方向（技术决策与待验证项见 §2.1）：**L1（FFmpeg 组件管理 + HTTPS 下载）已完成并通过实机验收**；**L2（独立 FFmpeg 视频进程管线）已实现为 Unity-free 模块，通过独立 net48 回归及一次目标游戏 Unity Mono 定向探针，仍未接入编辑器导出**（§2.8 / §2.8.3）；**L3 第一闭环（Planet 视觉时间 ownership）已正式实现并通过实机验收**（§2.2.4 / §2.2.6）；**L3 的 Unity MP4 帧事务与 RGB24 delivery 尚未实施**。
 
 硬边界：
 
@@ -31,14 +31,14 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 产品版本 | `0.3.9.0`（用户已明确批准；本轮为 L3 第一闭环**实机验收通过后的正式开发 commit 闭环**） |
+| 产品版本 | `0.3.9.1`（用户已明确批准；= `0.3.9.0` 的第四位稳定性收敛，**仅版本字符串变化、无功能代码改动**，独立可回退节点见 §12.5。`0.3.9.0` = L3 第一闭环**实机验收通过后的正式开发 commit 闭环**） |
 | Phase | `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions` |
-| 版本定位 | **当前 `0.3.9.0` = `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`**：**L1（组件管理 + HTTPS 下载）已完成并通过实机验收**；**L2（FFmpeg 视频进程管线）源码阶段已收敛并通过独立 net48 回归**（§2.8 / §2.8.1 / §2.8.2）；**L3 第一闭环（Planet 视觉时间 ownership）已正式实现并通过实机验收**（§2.2.4 / §2.2.6）；**L3 的 MP4 帧事务 / RGB24 delivery 仍未实施** —— 因此 `0.3.9.0` **仍然不代表** MP4 导出可用。其下 `0.3.7.1` = **Custom Resolution + Supersampling 双闭环稳定性收敛版**（**上一稳定实机基线**；`0.3.7.0` 功能不变、仅第四位递增）。第一闭环 Custom Resolution 与第二闭环 Supersampling **均已在当前 Gamma / Direct3D11 环境通过实机验收**；更早 `0.3.6.4` = **Log-only Frame Transactions（image output disabled）** |
-| 稳定实机基线 | **`0.3.7.1`**（= `0.3.7.0` 双闭环 + `ce34ad4` metadata 语义修正；构建身份见 §12）。`0.3.7.0` 第一闭环（Custom Resolution）与第二闭环（Supersampling，含 **scale=4 完整导出**）均已实机通过：第一闭环见 §9.1；第二闭环见 §9.7.1 + §9.7.3。更早的稳定基线 `0.3.6.4`（PNG 与 Log-only 同谱面跑通）仍见 §9.1。**未覆盖边界**（Linear 色彩空间、极端资源失败）见 §9.7.3。 |
+| 版本定位 | **当前 `0.3.9.1` = `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`**：**L1（组件管理 + HTTPS 下载）已完成并通过实机验收**；**L2（FFmpeg 视频进程管线）源码阶段已收敛并通过独立 net48 回归**（§2.8 / §2.8.1 / §2.8.2）；**L3 第一闭环（Planet 视觉时间 ownership）已正式实现并通过实机验收**（§2.2.4 / §2.2.6）；**L3 的 MP4 帧事务 / RGB24 delivery 仍未实施** —— 因此 `0.3.9.1` **仍然不代表** MP4 导出可用。其下 `0.3.7.1` = **Custom Resolution + Supersampling 双闭环稳定性收敛版**（**上一稳定实机基线**；`0.3.7.0` 功能不变、仅第四位递增）。第一闭环 Custom Resolution 与第二闭环 Supersampling **均已在当前 Gamma / Direct3D11 环境通过实机验收**；更早 `0.3.6.4` = **Log-only Frame Transactions（image output disabled）** |
+| 稳定实机基线 | **`0.3.9.1`**（= `0.3.9.0` 的第四位收敛节点，`.cs` 功能代码逐字节等价；Planet 视觉时间 ownership 的 runtime 验收证据绑定 `0.3.9.0` 预验收构建 `7707EE14…`，见 §2.2.6 / §12.4 / §12.5）。上一稳定实机基线 **`0.3.7.1`**（= `0.3.7.0` 双闭环 + `ce34ad4` metadata 语义修正；构建身份见 §12）。`0.3.7.0` 第一闭环（Custom Resolution）与第二闭环（Supersampling，含 **scale=4 完整导出**）均已实机通过：第一闭环见 §9.1；第二闭环见 §9.7.1 + §9.7.3。更早的稳定基线 `0.3.6.4`（PNG 与 Log-only 同谱面跑通）仍见 §9.1。**未覆盖边界**（Linear 色彩空间、极端资源失败）见 §9.7.3。 |
 | L1 实机状态 | **`0.3.8.0`（DLL `AE2326D3…` / `+4d35801862d0828ea248d9934e8ebe74af11f2bb`）已通过用户最小实机验收**：UMM 显示 `0.3.8.0`、FFmpeg `Ready`、`libx264` / `mp4` / `rawvideo`、禁用并重新启用、无新可见异常。**L1 主路径已具备阶段性基线证据**；未覆盖边界（活动下载生命周期、异常网络、真实回调竞态）见 §2.7。 |
 | L2 实现状态 | **源码阶段已收敛，Unity Mono 定向探针正常/写入中取消两场景 PASS；未接入编辑器导出**：三个 Unity-free 模块 + 独立测试；历史真实 Gyan 9.0.2 fixture 回归 **141 / 0 / 0**（本轮离线回归 **129 / 0 / 12**，与既有基线一致；本轮真实 fixture 复跑受当前会话沙箱限制，见 §12.4）。Mono 证据绑定临时诊断 DLL `0D90CA6A…`；历史 L2 发布 DLL `3FBB993F…` 与 Probe 清理复建 DLL `45502098…` 均未以原样单独重启验收（§2.8.3 / §12.3）。L2 的三个模块本轮**未修改**。 |
-| L3 视觉时间 ownership 状态 | **`0.3.9.0` 已正式实现 `PlanetVisualTimeOwnership` 并完成正式 runtime 验收（§2.2.4 / §2.2.6）**：30 FPS 与 60 FPS 均 strict acquisition 唯一命中（`before=5 / after=6 / new=1 / accepted=1`）、`creationLeadSteps=4` 成立、terminal 于 30 FPS `N=11` / 60 FPS `N=26` 一次性定位、terminal-hold 连续跨 pre-entry → gameplay、normal completion cleanup 成功、Cancel→Restart generation `3→4` 无 residual / stale 污染。**MP4 / RGB24 delivery 未接入**；Trail / Particle / Animator / Camera / Shader 等其它视觉系统**未纳入** ownership。pre-terminal cancel 的 `restore-original-playing` 分支仍只有静态覆盖（§2.2.6）。 |
-| 当前开发方向 | **`0.3.9.0 — FFmpeg Video Export Pipeline`：L3 第一闭环已实现并通过实机验收（§2.2.4 / §2.2.6）**。§2.2.1 确认同逻辑帧视觉漂移，§2.2.2 的 Probe A/B/C 验证了目标 Planet Tween 的局部 ownership 模型，本轮 `PlanetVisualTimeOwnership` 是该模型的正式生产化并已实机通过。第二闭环仍**未覆盖** Unity **Linear** 色彩空间与极端资源失败路径（§9.7.3）。 |
+| L3 视觉时间 ownership 状态 | **`0.3.9.0` 已正式实现 `PlanetVisualTimeOwnership` 并完成正式 runtime 验收（`0.3.9.1` 仅第四位收敛、实现未变；§2.2.4 / §2.2.6）**：30 FPS 与 60 FPS 均 strict acquisition 唯一命中（`before=5 / after=6 / new=1 / accepted=1`）、`creationLeadSteps=4` 成立、terminal 于 30 FPS `N=11` / 60 FPS `N=26` 一次性定位、terminal-hold 连续跨 pre-entry → gameplay、normal completion cleanup 成功、Cancel→Restart generation `3→4` 无 residual / stale 污染。**MP4 / RGB24 delivery 未接入**；Trail / Particle / Animator / Camera / Shader 等其它视觉系统**未纳入** ownership。pre-terminal cancel 的 `restore-original-playing` 分支仍只有静态覆盖（§2.2.6）。 |
+| 当前开发方向 | **`0.3.9.1 — FFmpeg Video Export Pipeline`：L3 第一闭环已实现并通过实机验收（§2.2.4 / §2.2.6）**。§2.2.1 确认同逻辑帧视觉漂移，§2.2.2 的 Probe A/B/C 验证了目标 Planet Tween 的局部 ownership 模型，本轮 `PlanetVisualTimeOwnership` 是该模型的正式生产化并已实机通过。第二闭环仍**未覆盖** Unity **Linear** 色彩空间与极端资源失败路径（§9.7.3）。 |
 | 下一阶段 | **L3 Frame Transaction 正式集成设计**（MP4 帧事务 / Finalizing 关口 / RGB24 delivery）。当前正式 DLL **不具备编辑器 MP4 导出能力**；不得因为 ownership 已验收就宣称视觉确定性或 MP4 可用。 |
 
 `0.3.6.2` 相对 `0.3.6.1` 的四个 hardening 点（功能语义不变，只收敛异常路径与输入判定）：
@@ -1076,7 +1076,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 > 此处只列**当前未收敛事项**；已完成的 End Tail、pre-entry、Log-only、Custom Resolution 和 Supersampling 不再重复充当待办。历史验收数据见 §9，实施不变量见 §3–§8，当前 ADOFAI 内部事实见 §10。
 
-1. **`0.3.9.0` 视频导出（L1 完成并实机验收；L2 独立管线阶段结束；L3 第一闭环 ownership 已实现并实机验收；L3 MP4 帧事务未开始）**：当前版本 `0.3.9.0` / Phase `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`。L1 完成通知与归档 ownership 缺陷已修复；主路径实机证据见 §2.6 / §2.7，仍未验收活动下载期间禁用/卸载、异常网络及真实回调竞态。L2 历史独立 net48 真实 Gyan fixture 回归 **141/0/0**（本轮离线回归 **129/0/12**，与既有基线一致）；目标 Unity Mono 的正常 8 帧编码/核验/发布及写入中取消/回收两项定向探针均 PASS（§2.8.3），证据绑定临时 DLL `0D90CA6A…`。**L3 第一闭环**：`PlanetVisualTimeOwnership` 已正式实现（§2.2.4）并完成正式 runtime 验收（§2.2.6）——30 / 60 FPS strict acquisition 唯一命中、`creationLeadSteps=4` 成立、terminal 一次性定位且 `position == fullPosition == duration`、terminal-hold 连续跨 pre-entry → gameplay、normal completion cleanup 成功、Cancel→Restart generation `3→4` 无 residual / stale 污染；**仅 pre-terminal cancel 的 `restore-original-playing` 分支仍只有静态覆盖**。**L3 的编辑器 MP4 帧事务 / Finalizing 关口 / RGB24 delivery 未实施**，`0.3.9.0` 仍不能从编辑器导出 MP4。整体视觉确定性未成立：Trail / Particle / Animator / Camera / Shader 等其它漂移来源仍未纳入 ownership；不能用 ownership 验收代替 L3 MP4 帧事务验收。
+1. **`0.3.9.1` 视频导出（L1 完成并实机验收；L2 独立管线阶段结束；L3 第一闭环 ownership 已实现并实机验收；L3 MP4 帧事务未开始）**：当前版本 `0.3.9.1` / Phase `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`。L1 完成通知与归档 ownership 缺陷已修复；主路径实机证据见 §2.6 / §2.7，仍未验收活动下载期间禁用/卸载、异常网络及真实回调竞态。L2 历史独立 net48 真实 Gyan fixture 回归 **141/0/0**（本轮离线回归 **129/0/12**，与既有基线一致）；目标 Unity Mono 的正常 8 帧编码/核验/发布及写入中取消/回收两项定向探针均 PASS（§2.8.3），证据绑定临时 DLL `0D90CA6A…`。**L3 第一闭环**：`PlanetVisualTimeOwnership` 已正式实现（§2.2.4）并完成正式 runtime 验收（§2.2.6）——30 / 60 FPS strict acquisition 唯一命中、`creationLeadSteps=4` 成立、terminal 一次性定位且 `position == fullPosition == duration`、terminal-hold 连续跨 pre-entry → gameplay、normal completion cleanup 成功、Cancel→Restart generation `3→4` 无 residual / stale 污染；**仅 pre-terminal cancel 的 `restore-original-playing` 分支仍只有静态覆盖**。**L3 的编辑器 MP4 帧事务 / Finalizing 关口 / RGB24 delivery 未实施**，`0.3.9.1` 仍不能从编辑器导出 MP4。整体视觉确定性未成立：Trail / Particle / Animator / Camera / Shader 等其它漂移来源仍未纳入 ownership；不能用 ownership 验收代替 L3 MP4 帧事务验收。
 2. **Linear 与极端 GPU 资源失败**：Supersampling 已在 Gamma / Direct3D11 的所述范围实机通过，**Linear 色彩空间从未实机覆盖**；接近硬件极限的 RT 分配与 GPU 状态恢复故障仍只有 stub / 静态证据。详见 §9.7.3。
 3. **真实 Unity 故障注入**：host Destroy、RT Release/Destroy、partial Camera assignment 的失败与重试，已有生产源码 + Unity stub 的确定性测试，**未在真实 Unity Player 注入这些异常**；正常路径与跨调用 residual 的既有实机结果不能替代异常证据（§3.5、§9.3）。
 4. **其余边界测试**：显式 safety frame-limit runtime trigger 与 `TryPrepareHitState` 故障注入主要依赖静态 / 纯计算证据；需要扩大 BPM change、Twirl、Midspin、event-heavy、特殊 startup、长谱面覆盖。无须为此设置人为帧数或时长上限。
@@ -1089,7 +1089,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 ## 12. 发布与部署
 
-- 当前产品版本为 **`0.3.9.0`**（用户已批准 `0.3.9.0` / Phase 3.9.0），Phase 为 **`Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`**。**L1** 已通过主路径实机验收；**L2** 已完成源码收敛、独立 net48 回归及目标 Unity Mono **定向探针**（§2.8.3），但未接入编辑器导出；**L3 第一闭环**（Planet 视觉时间 ownership）已实现并通过实机验收（§2.2.4 / §2.2.6 / §12.4）；**L3 MP4 帧事务未实施**，**MP4 导出不可用**。历史**正式**构建身份分别为 L1 实机验收版 §12.2、L2 源码收敛版 §12.3 与 Probe 清理复建 DLL（§12.3 末尾说明）；另有一份已清理的**临时诊断** DLL `0D90CA6A…`，不可混同。引用版本时须给出 DLL SHA256 或 `+hash`。其下 `0.3.7.1` 是 Custom Resolution + Supersampling 双闭环稳定性收敛版（上一稳定实机基线）；更早的 `0.3.7.0` / `0.3.6.4` 见历史记录。
+- 当前产品版本为 **`0.3.9.1`**（用户已批准 `0.3.9.1` / Phase 3.9.0；= `0.3.9.0` 的第四位收敛，见 §12.5），Phase 为 **`Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`**。**L1** 已通过主路径实机验收；**L2** 已完成源码收敛、独立 net48 回归及目标 Unity Mono **定向探针**（§2.8.3），但未接入编辑器导出；**L3 第一闭环**（Planet 视觉时间 ownership）已实现并通过实机验收（§2.2.4 / §2.2.6 / §12.4）；**L3 MP4 帧事务未实施**，**MP4 导出不可用**。历史**正式**构建身份分别为 L1 实机验收版 §12.2、L2 源码收敛版 §12.3 与 Probe 清理复建 DLL（§12.3 末尾说明）；另有一份已清理的**临时诊断** DLL `0D90CA6A…`，不可混同。引用版本时须给出 DLL SHA256 或 `+hash`。其下 `0.3.7.1` 是 Custom Resolution + Supersampling 双闭环稳定性收敛版（上一稳定实机基线）；更早的 `0.3.7.0` / `0.3.6.4` 见历史记录。
 - 本轮（0.3.7.0 第一闭环）相对基线 `70df55b` 的改动：新增 `OutputGeometryPolicy.cs`、`RenderEnvironmentInventory.cs`；修改 `Settings.cs`、`UiText.cs`、`ModEntry.cs`、`EditorExportReadiness.cs`、`EditorExportPreflight.cs`、`EditorExportController.cs`、`EditorExportSession.cs`、`DeterministicFrameScheduler.cs`、`FrameCaptureDriver.cs`；版本点 `mod/Info.json`、csproj `<Version>`、`ModEntry.ModVersion` 与 `ModEntry` 启动日志，外加**人工同步**的 `EditorExportSession.PhaseLabel` 与类注释 phase 文案（`set-version.ps1` 的已知范围限制，见 §2）。
 - 本轮**未**新增 Harmony Patch、未新增 ADOFAI 内部 API 依赖、未修改 README。
 - 发布包：`Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`；`dist/` ignored。本轮以 `scripts/package-release.ps1 -Configuration Release -Version 0.3.7.0 -Force` 打包，并在发布提交 `05a3b4a` 之后重新 Release Rebuild 并以 `-SkipBuild` 重新打包，产出 `dist/ADOFAI.Renderist.zip`（zip SHA256 `B251B6A4631401E44F96130E152FB834B70B47CE6E75CA45304DC43380A4155F`，sidecar `dist/ADOFAI.Renderist.zip.sha256` 同值）；`verify-release-package.ps1` 结果 **PASS 11 checks / 0 failures**，独立解包复核确认包内仅有 3 个顶层文件、无目录，且包内 DLL 与 `bin\Release` 逐字节一致。
@@ -1186,4 +1186,19 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 | 真实 fixture 回归边界 | 当前会话沙箱下外部 `ffmpeg.exe` **无法创建任何输出文件**（`Permission denied`，`exit -13`，与代码无关），因此真实 Gyan fixture 的 8 项写盘相关用例**未能在本会话复现**历史 `141/0/0`；离线回归 **129/0/12** 与既有基线完全一致。**正式 release 前必须在正常（非沙箱）环境重新执行真实 fixture 回归并取得通过证据**，不得把本轮环境失败当成代码测试通过。 |
 
 **本轮之后的边界**：ownership 仅覆盖这一条 `OnMusicScheduled` Planet `cosmeticRadius` Tween；Trail / Particle / Animator / Camera / Shader / effect manager 等未纳入；**MP4 / RGB24 未接入**。下一阶段是 **L3 Frame Transaction 正式集成设计**。仅 `pre-terminal cancel → restore-original-playing` 分支仍为静态覆盖（§2.2.6）。
+
+### 12.5 `0.3.9.1` Planet 视觉时间 ownership 稳定节点（版本收敛）
+
+**`0.3.9.1`**（2026-09-27；`chore(release): 0.3.9.1`）把 `0.3.9.0` 的 Planet Visual Time Ownership 稳定基线收敛为独立、可回退的第四位修订版本节点。**这是版本收敛节点，不是功能节点。**
+
+| 项目 | 值 |
+| --- | --- |
+| 起始基线 | `HEAD = origin/main = a8368c4d5a1359103c1d750e485a044af3ffe191`（`0.3.9.0` 文档收敛提交，起始 working tree clean） |
+| 产品版本 / FileVersion | `0.3.9.1` |
+| Phase | `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`（**未变**：本轮只递增第四位版本号，Phase 的阶段号继续为 `3.9.0`，不得写成阶段号 `3.9.1`） |
+| 版本同步位置 | `mod/Info.json` Version、csproj `<Version>`、`ModEntry.ModVersion`、`ModEntry` 启动日志 version。`EditorExportSession.PhaseLabel` 与 `ModEntry` 标识性 phase 注释因 Phase 不变而被 `set-version.ps1` 判为 no-op，**未改写**。 |
+| 功能差异 | **无**：相对 `0.3.9.0` 只有版本字符串变化，`.cs` 功能代码逐字节等价；Planet ownership 实现与 L2 FFmpeg 模块均未触碰。 |
+| 构建/验证 | 强制 Release Rebuild **0 error**（仅 `NU1900` 离线 NuGet 噪声）；`package-release.ps1` 与独立 `verify-release-package.ps1` 均 **PASS 11 checks / 0 failures**；发布 ZIP 仍严格只有 `Info.json` / `ADOFAI.Renderist.dll` / `LICENSE` 三个顶层文件，无嵌套目录与 banned 内容；`git diff --check` clean。 |
+| 身份 | 构建 / ZIP 的 SHA256 与 `ProductVersion` 见当轮工作报告；**刻意不写入本文档**（写入会在 release commit 之后制造 tracked diff，理由同 §12.4）。本节点**未** push，也**未**部署到游戏 `Mods`（`Mods` 仍是 §12.4 的 `0.3.9.0` 构建）。 |
+| 边界 | 本节点**不新增** Frame Transaction 正式实现、RGB24 capture、`TryWriteFrame` 接线、`AwaitingEOF` / `AwaitingDelivery` 生产逻辑或 MP4 GUI 模式；**MP4 导出仍不可用**；下一阶段仍是 L3 Frame Transaction 正式集成设计。 |
 
