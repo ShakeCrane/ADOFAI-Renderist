@@ -64,6 +64,38 @@ namespace ADOFAI.Renderist.Export
         /// （image output disabled；帧事务照常，但不写图像，仍写 metadata）。
         /// </summary>
         public bool ImageOutputEnabled;
+
+        // ---- Phase 3.9.0 / L3-A: 输出模式与 MP4 冻结参数 ----
+
+        /// <summary>
+        /// 本 session 冻结的输出模式标签（png-sequence | mp4-rgb24 | log-only）。
+        /// 这是 output mode 的唯一 authority；<see cref="ImageOutputEnabled"/> 由它派生，
+        /// 不是第二个模式 authority。
+        /// </summary>
+        public string OutputMode;
+        /// <summary>本 session 唯一的最终视频目标路径（MP4 模式；仅记录目标，不代表已产出成品）。</summary>
+        public string FinalVideoPath;
+        /// <summary>L1 冻结的 FFmpeg 可执行文件绝对路径（MP4 模式）。</summary>
+        public string FfmpegExecutablePath;
+        /// <summary>L1 冻结的 FFmpeg 内容 SHA-256（MP4 模式）。</summary>
+        public string FfmpegExecutableSha256;
+        /// <summary>L1 冻结的版本行（诊断用）。</summary>
+        public string FfmpegVersionLine;
+        /// <summary>本 session 冻结的 MP4 CRF。</summary>
+        public long? Mp4Crf;
+        /// <summary>本 session 冻结的 MP4 preset。</summary>
+        public string Mp4Preset;
+        /// <summary>输入像素格式：恒为 rgb24（L3-A 交付格式）。</summary>
+        public string Mp4InputPixelFormat;
+        /// <summary>
+        /// 输出像素格式策略：由 L2 按真实几何选择，本层不预设。
+        /// </summary>
+        public string Mp4OutputPixelFormatPolicy;
+        /// <summary>
+        /// true = 本 session 在终态边界 fail-closed，**没有**执行 FFmpeg Finish / 核验 / 发布，
+        /// 因此不存在可用的最终 MP4 成品（L3-A 验证边界）。绝不把临时产物当作成功成品。
+        /// </summary>
+        public bool FinalizingNotImplemented;
         public long TailFramesCommitted;
         public long TailFramesCaptured;
         public long FrameTransactionRequestCount;
@@ -254,6 +286,17 @@ namespace ADOFAI.Renderist.Export
             AppendString(sb, "phase", PhaseLabel, true);
             AppendString(sb, "mode", Mode, true);
             AppendBool(sb, "imageOutputEnabled", ImageOutputEnabled, true);
+            // 以下 MP4 字段由冻结后的 output mode 派生 / 关联，不构成第二个模式 authority。
+            AppendStringNullable(sb, "outputMode", OutputMode, true);
+            AppendStringNullable(sb, "finalVideoPath", FinalVideoPath, true);
+            AppendStringNullable(sb, "ffmpegExecutablePath", FfmpegExecutablePath, true);
+            AppendStringNullable(sb, "ffmpegExecutableSha256", FfmpegExecutableSha256, true);
+            AppendStringNullable(sb, "ffmpegVersionLine", FfmpegVersionLine, true);
+            AppendLongNullable(sb, "mp4Crf", Mp4Crf, true);
+            AppendStringNullable(sb, "mp4Preset", Mp4Preset, true);
+            AppendStringNullable(sb, "mp4InputPixelFormat", Mp4InputPixelFormat, true);
+            AppendStringNullable(sb, "mp4OutputPixelFormatPolicy", Mp4OutputPixelFormatPolicy, true);
+            AppendBool(sb, "finalizingNotImplemented", FinalizingNotImplemented, true);
             AppendString(sb, "sessionId", SessionId ?? string.Empty, true);
             AppendStringNullable(sb, "createdAt", IsoUtc(StartedAtUtc), true);
             AppendStringNullable(sb, "endedAt", IsoUtc(EndedAtUtc), true);

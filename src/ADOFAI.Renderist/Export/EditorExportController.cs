@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.IO;
+using ADOFAI.Renderist.Ffmpeg;
 using ADOFAI.Renderist.Logging;
 using UnityEngine;
 
@@ -26,6 +27,23 @@ namespace ADOFAI.Renderist.Export
         private static bool _terminalRearmPending;
         private static double _terminalRearmDeadlineRealtime;
 
+        /// <summary>
+        /// 本 session 冻结的输出模式（唯一 authority）。只在 StartSession 内一次性解析。
+        /// 运行中修改 Settings 不影响本 session。
+        /// </summary>
+        private static CaptureOutputMode _frozenOutputMode = CaptureOutputMode.PngSequence;
+
+        /// <summary>
+        /// L3-A 启动阶段的收敛槽：pipeline 已构造/已启动，但尚未被 scheduler 接管（Arm 失败或
+        /// TryStart 被拒绝）时，由本槽持有同一个 <see cref="Rgb24DeliveryContext"/>。
+        /// 它**不是**第二套 process owner：收敛仍然全部经 L2 自己的 Cancel / CleanupTask，
+        /// 只是把 residual 门禁与重试入口接到既有 Tick 上。
+        /// </summary>
+        private static Rgb24DeliveryContext _startupContext;
+
+        /// <summary>本 session 冻结的输出模式（唯一 authority）。</summary>
+        public static CaptureOutputMode FrozenOutputMode => _frozenOutputMode;
+
         /// <summary>当前会话（可能为 null 或处于终止状态）。</summary>
         public static EditorExportSession CurrentSession => _session;
 
@@ -33,9 +51,10 @@ namespace ADOFAI.Renderist.Export
         public static EditorExportState CurrentState =>
             _terminalRearmPending ? EditorExportState.Preparing : _session?.State ?? EditorExportState.Idle;
 
-        /// <summary>是否占用：Preparing / Running，或终态 RGB24 资源仍在收敛。</summary>
+        /// <summary>是否仍占用：Preparing / Running，或终态 RGB24 资源仍在收敛。</summary>
         public static bool IsBusy =>
-            _terminalRearmPending || DeterministicFrameScheduler.HasPendingRgb24Cleanup ||
+            _terminalRearmPending || _startupContext != null ||
+            DeterministicFrameScheduler.HasPendingRgb24Cleanup ||
             (_session != null &&
              (_session.State == EditorExportState.Preparing ||
               _session.State == EditorExportState.Running));
@@ -146,6 +165,110 @@ namespace ADOFAI.Renderist.Export
         }
 
         /// <summary>
+        /// L3-A：把启动阶段尚未被 scheduler 接管的 context 收敛掉（幂等、非阻塞）。
+        /// 收敛全部经 <see cref="Rgb24DeliveryContext.TryStopAndDrain"/>：它转发既有 L2 Cancel，
+        /// 并分别检查 frame Completion 与 pipeline CleanupTask。未收敛前保持占用（IsBusy）。
+        /// </summary>
+        private static void TickStartupContextConvergence()
+        {
+            Rgb24DeliveryContext context = _startupContext;
+            if (context == null) return;
+
+            string error;
+            if (context.TryStopAndDrain("mp4-startup-abandoned", out error))
+            {
+                _startupContext = null;
+                Log.Info("EditorExportController: L3-A 启动阶段 context 已收敛。");
+                return;
+            }
+
+            Log.Debug("EditorExportController: L3-A 启动阶段 context 仍在收敛： " + (error ?? "unknown"));
+        }
+
+        // 失败路径统一先尝试收敛；未能收敛时保留引用，由 Tick 继续 + IsBusy 门禁。
+        private static void RetireStartupContext(Rgb24DeliveryContext context)
+        {
+            if (context == null) return;
+            string error;
+            if (context.TryStopAndDrain("mp4-startup-failed", out error))
+                return;
+            _startupContext = context;
+        }
+
+        /// <summary>
+        /// L3-A：在 editor.Play() / <c>TryStart</c> **之前**建立本 session 的 MP4 交付链路。
+        ///
+        /// 顺序：冻结参数与 L1 Ready 身份 → 解析唯一最终路径 → 构造唯一 L2 pipeline →
+        /// 建立 Rgb24DeliveryContext（此刻在主线程捕获 SynchronizationContext）→ Start pipeline
+        /// → Arm。任一失败都不会留下没有 owner 的已启动进程：context 建立之前失败时进程尚未
+        /// 启动；之后失败时经 context 的 TryStopAndDrain 收敛。
+        /// </summary>
+        private static bool TryStartMp4Session(
+            EditorExportSession session, GeometryResolution geometry, int outputFps, Settings settings,
+            out Rgb24DeliveryContext delivery, out string error)
+        {
+            delivery = null;
+            error = null;
+
+            FfmpegComponentReport report;
+            if (!ModEntry.TryGetFfmpegComponentReport(out report))
+            {
+                error = "ffmpeg-report-unavailable";
+                return false;
+            }
+
+            var inputs = new Mp4StartupInputs
+            {
+                OutputWidth = geometry.Width,
+                OutputHeight = geometry.Height,
+                OutputFps = outputFps,
+                Crf = settings.EditorMp4Crf,
+                Preset = settings.EditorMp4Preset,
+                SessionDirectory = session.OutputDirectory,
+                Report = report,
+            };
+
+            Mp4StartupResult frozen = Mp4SessionStartup.Freeze(inputs);
+            if (!frozen.Succeeded)
+            {
+                error = frozen.ErrorCode +
+                        (string.IsNullOrEmpty(frozen.ErrorDetail) ? string.Empty : (":" + frozen.ErrorDetail));
+                return false;
+            }
+
+            session.FinalVideoPath = frozen.FinalVideoPath;
+            session.FfmpegExecutablePath = frozen.Identity.ExecutablePath;
+            session.FfmpegExecutableSha256 = frozen.Identity.ExecutableSha256;
+            session.FfmpegVersionLine = frozen.Identity.VersionLine;
+            session.Mp4Crf = frozen.Settings.Crf;
+            session.Mp4Preset = frozen.Settings.Preset;
+            session.Mp4InputPixelFormat = "rgb24";
+            session.Mp4OutputPixelFormatPolicy = "auto-by-geometry";
+
+            Mp4SessionBinding binding = Mp4SessionStartup.Bind(
+                frozen, geometry.Width, geometry.Height,
+                FfmpegPipelineFactory.Instance, DefaultMp4DeliveryFactory.Instance);
+            if (!binding.Succeeded)
+            {
+                _startupContext = binding.PendingConvergence;
+                error = binding.ErrorCode +
+                        (string.IsNullOrEmpty(binding.ErrorDetail) ? string.Empty : (":" + binding.ErrorDetail));
+                return false;
+            }
+
+            string armError;
+            if (!DeterministicFrameScheduler.ArmRgb24Delivery(binding.Context, out armError))
+            {
+                _startupContext = Mp4SessionStartup.RetireOrKeep(binding.Context);
+                error = "mp4-arm-failed:" + (armError ?? "unknown");
+                return false;
+            }
+
+            delivery = binding.Context;
+            return true;
+        }
+
+        /// <summary>
         /// 只有完成 terminal controller re-arm 且重新通过普通 gate 后，才创建
         /// session 目录并进入唯一一次 editor.Play()。
         /// </summary>
@@ -181,9 +304,34 @@ namespace ADOFAI.Renderist.Export
                 var endTailInput = new EndTailInput(
                     settings.EditorEndTailValue, settings.EditorEndTailUnit);
 
-                // 输出模式在 session 开始时一次性冻结：这里读取一次，随后只由 scheduler
-                // 自己的 _imageOutputEnabled 持有，运行中修改 GUI 不影响本 session。
-                bool imageOutputEnabled = settings.EditorImageOutputEnabled;
+                // 输出模式在 session 开始时一次性冻结，并且是**唯一** authority：
+                // 旧的 EditorImageOutputEnabled 只作为一次性迁移输入（true → PNG，
+                // false → Log-only）；MP4 只能由用户显式选择。此后 image-output 相关字段
+                // 一律由冻结后的模式派生，不再是第二个模式 authority。
+                CaptureOutputMode outputMode;
+                bool modeMigrated;
+                string modeError;
+                if (!settings.TryResolveOutputMode(out outputMode, out modeMigrated, out modeError))
+                {
+                    LastStartRejectReason = "输出模式非法：" + modeError;
+                    Log.Warn(UiText.Format(UiText.LogEditorExportStartRejectedFormat, LastStartRejectReason));
+                    return false;
+                }
+
+                if (modeMigrated)
+                {
+                    settings.EditorOutputModeValue = (int)outputMode;
+                    try { settings.Save(ModEntry.Mod); }
+                    catch (Exception migrateEx)
+                    {
+                        Log.Exception("EditorExportController: 输出模式迁移保存失败（本 session 仍继续）", migrateEx);
+                    }
+                    Log.Info("EditorExportController: output mode migrated from legacy image-output flag -> " +
+                             OutputModePolicy.Label(outputMode));
+                }
+
+                _frozenOutputMode = outputMode;
+                bool imageOutputEnabled = OutputModePolicy.IsImageOutput(outputMode);
 
                 // 输出几何同样在 session 开始时一次性冻结。authority 是 scheduler 自己用
                 // 同一个纯函数解析的结果；这里先按同一配置解析一次，用于启动前写 metadata。
@@ -201,6 +349,9 @@ namespace ADOFAI.Renderist.Export
                     StateDetail = "正在启动确定性帧调度器。",
                     OutputFps = outputFps,
                     ImageOutputEnabled = imageOutputEnabled,
+                    OutputMode = OutputModePolicy.Label(outputMode),
+                    // L3-A 终态边界：本轮没有 Finalizing，因此本 session 到达终态时不会产出成品。
+                    FinalizingNotImplemented = OutputModePolicy.IsMp4(outputMode),
                     OutputGeometryMode = OutputGeometryPolicy.KindLabel(geometry.Mode),
                     GeometryCustomResolutionEnabled = geometryInput.CustomResolutionEnabled,
                     GeometryConfiguredWidth = geometryInput.Width,
@@ -243,6 +394,27 @@ namespace ADOFAI.Renderist.Export
                     return false;
                 }
 
+                // ---- L3-A：MP4 交付链路必须在 editor.Play() / TryStart 之前就绪 ----
+                // 顺序严格：冻结参数与 L1 Ready 身份 → 唯一最终路径 → 唯一 L2 pipeline →
+                // Rgb24DeliveryContext（主线程捕获 SynchronizationContext）→ Start → Arm。
+                // 绝不出现"editor.Play() 已开始但 pipeline/context 尚未 Ready"。
+                Rgb24DeliveryContext delivery = null;
+                if (OutputModePolicy.IsMp4(outputMode))
+                {
+                    if (!TryStartMp4Session(session, geometry, outputFps, settings, out delivery,
+                            out string mp4Error))
+                    {
+                        LastStartRejectReason = "MP4 启动失败：" + mp4Error;
+                        Log.Warn(UiText.Format(UiText.LogEditorExportStartRejectedFormat, LastStartRejectReason));
+                        MarkSessionFailed(session, "无法建立 MP4 帧事务链路：" + mp4Error, "mp4-startup-failed");
+                        // 已 Arm 的 context 已在失败路径退休；若仍有 residual，由 Tick 继续收敛。
+                        TickStartupContextConvergence();
+                        return false;
+                    }
+
+                    TryWriteMetadataBestEffort(session);
+                }
+
                 // 这里是 terminal re-arm 后的正常路径；只允许一次 official Play。
                 string reject = DeterministicFrameScheduler.TryStart(
                     session.OutputDirectory, outputFps, configuredSafetyFrameLimit, endTailInput,
@@ -251,6 +423,8 @@ namespace ADOFAI.Renderist.Export
                 {
                     LastStartRejectReason = reject;
                     Log.Warn(UiText.Format(UiText.LogEditorExportStartRejectedFormat, reject));
+                    if (delivery != null) RetireStartupContext(delivery);
+                    TickStartupContextConvergence();
                     MarkSessionFailed(session, "无法启动确定性帧调度器：" + reject, "failed");
                     return false;
                 }
@@ -460,6 +634,8 @@ namespace ADOFAI.Renderist.Export
         public static void Tick()
         {
             DeterministicFrameScheduler.TickResidualOwnership();
+            // L3-A 启动阶段残留：非阻塞收敛入口（与 scheduler 的同一个 TryStopAndDrain）。
+            TickStartupContextConvergence();
             if (_terminalRearmPending)
             {
                 TickTerminalControllerRearm();
@@ -507,6 +683,19 @@ namespace ADOFAI.Renderist.Export
             switch (status)
             {
                 case DeterministicFrameScheduler.SchedulerStatus.Completed:
+                    if (!Mp4TerminalBoundaryPolicy.CanMapToCompleted(_frozenOutputMode))
+                    {
+                        // L3-A 验证边界：本轮**没有** L3-C Finalizing（无 FinishAsync / 核验 /
+                        // 原子发布），因此到达导出终态绝不等于成功导出。fail-closed，并且绝不
+                        // 把只存在于 L2 ownership 下的临时产物呈现为最终 MP4 成品。
+                        s.State = EditorExportState.Failed;
+                        s.StopReason = Mp4TerminalBoundaryPolicy.ValidationBoundaryStopReason;
+                        s.StateDetail = Mp4TerminalBoundaryPolicy.ValidationBoundaryDetail;
+                        s.TerminationKind = "l3a-validation-boundary";
+                        Log.Warn("EditorExportController: L3-A 验证边界到达导出终态（未执行 FFmpeg " +
+                                 "Finish / 核验 / 发布）。本 session 记为 Failed，且没有可用的最终 MP4 成品。");
+                        break;
+                    }
                     s.State = EditorExportState.Completed;
                     s.StopReason = DeterministicFrameScheduler.StopReason ?? "completed";
                     s.StateDetail = "已观察到 canonical completion，且视觉尾帧已排空。";

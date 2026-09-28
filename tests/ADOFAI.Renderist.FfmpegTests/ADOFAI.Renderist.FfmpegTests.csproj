@@ -47,6 +47,10 @@
     <Compile Include="..\..\src\ADOFAI.Renderist\Export\Rgb24FrameBufferPool.cs" LinkBase="Production" />
     <Compile Include="..\..\src\ADOFAI.Renderist\Export\Rgb24FrameTransaction.cs" LinkBase="Production" />
     <Compile Include="..\..\src\ADOFAI.Renderist\Export\FfmpegRgb24FrameTransport.cs" LinkBase="Production" />
+
+    <!-- L3-A：MP4 session 启动接线（输出模式 authority / 冻结 / L1 gate / 失败收敛）。 -->
+    <Compile Include="..\..\src\ADOFAI.Renderist\Export\OutputModePolicy.cs" LinkBase="Production" />
+    <Compile Include="..\..\src\ADOFAI.Renderist\Export\Mp4SessionStartup.cs" LinkBase="Production" />
   </ItemGroup>
 
 </Project>

@@ -1,5 +1,6 @@
 using UnityModManagerNet;
 using ADOFAI.Renderist.Export;
+using ADOFAI.Renderist.Ffmpeg;
 
 namespace ADOFAI.Renderist
 {
@@ -55,6 +56,38 @@ namespace ADOFAI.Renderist
         /// 与 VerboseLogging 无关。
         /// </summary>
         public bool EditorImageOutputEnabled = true;
+
+        // ---------------- Phase 3.9.0 / L3-A: 统一输出模式 ----------------
+
+        /// <summary>
+        /// 本 session 的输出模式（持久化的**唯一** authority）。取值是
+        /// <see cref="OutputModePolicy"/> 定义的 int：0 = PNG 序列、1 = MP4（L3-A RGB24 交付）、
+        /// 2 = Log-only；<see cref="OutputModePolicy.UnsetSentinel"/>（-1）= 尚未迁移。
+        ///
+        /// 迁移规则（只在未设置时执行一次）：旧 <see cref="EditorImageOutputEnabled"/> = true → PNG，
+        /// false → Log-only。MP4 只能由用户显式选择，绝不从旧设置推断。
+        ///
+        /// 灰度：模式在 session 开始时一次性冻结；运行中修改 GUI 不影响当前 session。
+        /// <see cref="EditorImageOutputEnabled"/> 此后只是兼容视图，由本字段派生，不再是第二个 authority。
+        /// </summary>
+        public int EditorOutputModeValue = OutputModePolicy.UnsetSentinel;
+
+        /// <summary>MP4 编码 CRF（默认取 L2 的默认值）。session 开始时冻结。</summary>
+        public int EditorMp4Crf = FfmpegVideoCommand.DefaultCrf;
+
+        /// <summary>MP4 编码 preset（默认取 L2 的默认值）。session 开始时冻结。
+        /// 合法值由 L2 的编码命令构建判定，本层不复制第二套验证。</summary>
+        public string EditorMp4Preset = FfmpegVideoCommand.DefaultPreset;
+
+        /// <summary>
+        /// 解析本 session 的输出模式。未迁移时返回迁移结果并置 migrated = true，
+        /// 调用方应把 <see cref="EditorOutputModeValue"/> 写回并保存。
+        /// </summary>
+        internal bool TryResolveOutputMode(out CaptureOutputMode mode, out bool migrated, out string error)
+        {
+            return OutputModePolicy.TryResolve(
+                EditorOutputModeValue, EditorImageOutputEnabled, out mode, out migrated, out error);
+        }
 
         // ---------------- Phase 3.7.0: custom output resolution ----------------
 

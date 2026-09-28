@@ -603,20 +603,120 @@ namespace ADOFAI.Renderist
             bool previousEnabled = GUI.enabled;
             GUI.enabled = previousEnabled && !EditorExportController.IsBusy;
 
-            bool newValue = GUILayout.Toggle(
-                Settings.EditorImageOutputEnabled,
-                UiText.GuiImageOutputToggle);
-            if (newValue != Settings.EditorImageOutputEnabled)
+            // 唯一 authority 是 Settings.EditorOutputModeValue（int，-1 = 尚未迁移）。
+            CaptureOutputMode current;
+            bool migrated;
+            string modeError;
+            if (!Settings.TryResolveOutputMode(out current, out migrated, out modeError))
             {
-                Settings.EditorImageOutputEnabled = newValue;
+                GUILayout.Label("输出模式非法（" + modeError + "）；导出将 fail-closed，请显式改正。",
+                    GUI.skin.label);
+                GUI.enabled = previousEnabled;
+                return;
             }
 
-            GUI.enabled = previousEnabled;
+            if (migrated)
+            {
+                Settings.EditorOutputModeValue = (int)current;
+                Settings.EditorImageOutputEnabled = OutputModePolicy.IsImageOutput(current);
+            }
 
-            if (!Settings.EditorImageOutputEnabled)
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Toggle(current == CaptureOutputMode.PngSequence, "PNG 序列") &&
+                current != CaptureOutputMode.PngSequence)
+            {
+                SetOutputMode(CaptureOutputMode.PngSequence);
+            }
+            if (GUILayout.Toggle(current == CaptureOutputMode.Mp4Rgb24, "MP4（L3-A）") &&
+                current != CaptureOutputMode.Mp4Rgb24)
+            {
+                SetOutputMode(CaptureOutputMode.Mp4Rgb24);
+            }
+            if (GUILayout.Toggle(current == CaptureOutputMode.LogOnly, "Log-only") &&
+                current != CaptureOutputMode.LogOnly)
+            {
+                SetOutputMode(CaptureOutputMode.LogOnly);
+            }
+            GUILayout.EndHorizontal();
+
+            if (current == CaptureOutputMode.Mp4Rgb24)
+            {
+                // L3-A：冻结参数入口。CRF / preset 的合法性由 L2 编码命令判定，本层不复制验证。
+                GUILayout.Label("MP4 编码（L3-A 验证用；本轮不产出最终成品）：", GUI.skin.label);
+
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("CRF", GUI.skin.label, GUILayout.Width(60f));
+                string crfText = GUILayout.TextField(
+                    Settings.EditorMp4Crf.ToString(CultureInfo.InvariantCulture), GUILayout.Width(80f));
+                int parsedCrf;
+                if (int.TryParse(crfText, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsedCrf) &&
+                    parsedCrf >= 0 && parsedCrf <= 63 && parsedCrf != Settings.EditorMp4Crf)
+                {
+                    Settings.EditorMp4Crf = parsedCrf;
+                }
+                GUILayout.EndHorizontal();
+
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("preset", GUI.skin.label, GUILayout.Width(60f));
+                string presetText = GUILayout.TextField(Settings.EditorMp4Preset ?? string.Empty,
+                    GUILayout.Width(160f));
+                if (!string.IsNullOrWhiteSpace(presetText) && presetText != Settings.EditorMp4Preset)
+                {
+                    Settings.EditorMp4Preset = presetText.Trim();
+                }
+                GUILayout.EndHorizontal();
+
+                if (_cachedFfmpegReport == null ||
+                    _cachedFfmpegReport.State != FfmpegComponentState.Ready)
+                {
+                    GUILayout.Label("FFmpeg 组件必须为 Ready 才能启动 MP4 session（当前：" +
+                                    (_cachedFfmpegReport == null
+                                        ? "尚未检查"
+                                        : FfmpegStateText(_cachedFfmpegReport.State)) + "）。", GUI.skin.label);
+                }
+
+                GUILayout.Label("L3-A 验证边界：到达导出终态时不会执行 Finish / 核验 / 发布，" +
+                                "因此本模式不会产出可用的最终 MP4 成品。", GUI.skin.label);
+            }
+            else if (current == CaptureOutputMode.PngSequence)
+            {
+                GUILayout.Label("每个 output frame 写一个 PNG（既有行为）。", GUI.skin.label);
+            }
+            else
             {
                 GUILayout.Label(UiText.GuiImageOutputDisabledHint, GUI.skin.label);
             }
+
+            GUI.enabled = previousEnabled;
+        }
+
+        /// <summary>
+        /// 写 persisted 输出模式。旧布尔只作为派生镜像保留，不再是 authority。
+        /// 模式在 session 开始时冻结，因此这里只影响下一次 session。
+        /// </summary>
+        private static void SetOutputMode(CaptureOutputMode mode)
+        {
+            Settings.EditorOutputModeValue = (int)mode;
+            Settings.EditorImageOutputEnabled = OutputModePolicy.IsImageOutput(mode);
+            // MP4 需要 FFmpeg Ready：让组件检查与 readiness 缓存重新评估。
+            _ffmpegReportDirty = true;
+            _lastReadinessCacheRealtime = float.NegativeInfinity;
+        }
+
+        /// <summary>
+        /// 供启动路径读取最近一次已完成的 L1 组件报告。返回 false = 尚无可用报告
+        /// （此时 MP4 启动必须 fail-closed，绝不猜测 FFmpeg 身份）。
+        /// </summary>
+        internal static bool TryGetFfmpegComponentReport(out FfmpegComponentReport report)
+        {
+            report = _cachedFfmpegReport;
+            if (report == null)
+            {
+                // 触发一次检查；本次启动仍按 fail-closed 处理。
+                _ffmpegReportDirty = true;
+                return false;
+            }
+            return true;
         }
 
         /// <summary>
