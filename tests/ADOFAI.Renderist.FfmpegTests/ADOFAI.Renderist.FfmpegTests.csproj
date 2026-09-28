@@ -39,6 +39,10 @@
 
     <!-- L3-A：RGB24 帧 ownership 事务。这些源文件刻意 Unity-free，因此可以直接编译。 -->
     <Compile Include="..\..\src\ADOFAI.Renderist\Export\Rgb24FrameLayout.cs" LinkBase="Production" />
+    <Compile Include="..\..\src\ADOFAI.Renderist\Export\Rgb24DeliveryContext.cs" LinkBase="Production" />
+    <Compile Include="..\..\src\ADOFAI.Renderist\Export\Rgb24ReadbackBand.cs" LinkBase="Production" />
+    <Compile Include="..\..\src\ADOFAI.Renderist\Export\DeterministicFrameScheduler.State.cs" LinkBase="Production" />
+
     <Compile Include="..\..\src\ADOFAI.Renderist\Export\Rgb24RowOrderPolicy.cs" LinkBase="Production" />
     <Compile Include="..\..\src\ADOFAI.Renderist\Export\Rgb24FrameBufferPool.cs" LinkBase="Production" />
     <Compile Include="..\..\src\ADOFAI.Renderist\Export\Rgb24FrameTransaction.cs" LinkBase="Production" />

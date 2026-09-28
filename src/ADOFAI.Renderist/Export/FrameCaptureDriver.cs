@@ -1745,9 +1745,6 @@ namespace ADOFAI.Renderist.Export
                 try
                 {
                     RenderTexture readback = BlitDownsampleChain(trackSrgbWrite);
-                    if (trackSrgbWrite)
-                        GL.sRGBWrite = GraphicsFormatUtility.IsSRGBFormat(readback.graphicsFormat);
-
                     RenderTexture.active = readback;
                     ReadBackRgb24Bands(frame);
                 }
@@ -1884,6 +1881,9 @@ namespace ADOFAI.Renderist.Export
                 if (readback == null)
                     throw new InvalidOperationException("readback-target-missing");
 
+                // PNG 与 RGB24 均恢复原始 Linear 读回契约；Gamma/scale=1 不触碰此状态。
+                if (trackSrgbWrite)
+                    GL.sRGBWrite = GraphicsFormatUtility.IsSRGBFormat(readback.graphicsFormat);
                 return readback;
             }
 
@@ -1904,14 +1904,11 @@ namespace ADOFAI.Renderist.Export
                 int bandRows = _rgb24BandRows;
                 long rowBytes = (long)width * Rgb24FrameLayout.BytesPerPixel;
 
-                int start = 0;
-                while (start < height)
+                int nextRow = 0;
+                while (Rgb24ReadbackBand.TryPlan(height, bandRows, nextRow, out var band))
                 {
-                    int rows = bandRows;
-                    if (start + rows > height)
-                    {
-                        start = height - rows;
-                    }
+                    int start = band.StartRow;
+                    int rows = band.RowCount;
 
                     // ReadPixels 的 dest 原点在左下：scratch 第 r 行对应源行 (start + r)。
                     _scratch.ReadPixels(new Rect(0, start, width, rows), 0, 0);
@@ -1927,7 +1924,7 @@ namespace ADOFAI.Renderist.Export
                         frame.CopyStagedSourceRowToDelivery(start + r, _staging, (int)(r * rowBytes));
                     }
 
-                    start += rows;
+                    nextRow = band.NextRow;
                 }
             }
 
@@ -1945,7 +1942,9 @@ namespace ADOFAI.Renderist.Export
                 if (rows > _outputHeight) rows = _outputHeight;
 
                 int bandRows = (int)rows;
-                long stagingLength = (long)bandRows * rowBytes;
+                long stagingLength = checked((long)bandRows * rowBytes);
+                if (stagingLength > int.MaxValue)
+                    throw new InvalidOperationException("rgb24-scratch-row-not-representable");
 
                 if (_scratch != null && _scratch.width == _outputWidth &&
                     _scratch.height == bandRows && _staging != null &&

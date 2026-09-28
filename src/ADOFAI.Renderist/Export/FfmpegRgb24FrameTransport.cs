@@ -17,7 +17,7 @@ namespace ADOFAI.Renderist.Export
     /// 这些 <c>byte[]</c> 段，直到该帧的 Completion 结束。因此 lease 必须在 Completion 被消费
     /// 之前保持 pin（见 Rgb24FrameTransaction / Rgb24FrameBufferPool）。
     /// </summary>
-    internal sealed class FfmpegRgb24FrameTransport : IRgb24FrameTransport
+    internal sealed class FfmpegRgb24FrameTransport : IRgb24FrameTransport, IRgb24PipelineLifetime
     {
         private readonly FfmpegVideoPipeline _pipeline;
 
@@ -28,6 +28,8 @@ namespace ADOFAI.Renderist.Export
         }
 
         internal FfmpegVideoPipeline Pipeline { get { return _pipeline; } }
+        public Task<FfmpegVideoOutcome> CleanupTask => _pipeline.CleanupTask;
+        public void RequestStop(string reason) { _pipeline.Cancel(reason); }
 
         public Rgb24TransportAttempt TryBeginWrite(OwnedRgb24Frame frame)
         {

@@ -53,6 +53,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 UnityFfmpegDownloadDriverTests.Run(_workRoot);
                 FfmpegVideoPipelineTests.Run(_workRoot);
                 Rgb24FrameTransactionTests.Run();
+            Rgb24LifecycleTests.Run();
             }
             catch (Exception ex)
             {

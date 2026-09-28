@@ -12,7 +12,7 @@ namespace ADOFAI.Renderist.FfmpegTests
     ///
     /// 覆盖的生产源码刻意**不依赖 Unity**（Rgb24FrameLayout / Rgb24RowOrderPolicy /
     /// Rgb24FrameBufferPool / Rgb24FrameTransaction 与薄适配器 FfmpegRgb24FrameTransport
-    /// 直接编译进本测试程序集），因此这里可以确定性覆盖全部分支。
+    /// 直接编译进本测试程序集）；真实 Unity 接线另由源码契约检查及实机验收覆盖。
     ///
     /// 断言的是**行为契约**，不是某次实验的数值：
     ///   * 事务阶段推进的唯一合法路径，以及 Awaiting* 期间禁止第二次 Prepare；
@@ -122,7 +122,7 @@ namespace ADOFAI.Renderist.FfmpegTests
             fixture.Pool = new Rgb24FrameBufferPool(DefaultLayout());
             fixture.Transport = new FakeRgb24Transport();
             fixture.Transaction = new Rgb24FrameTransaction(
-                fixture.Pool, fixture.Transport, CaptureBridge(pumpContext), envelope => { });
+                fixture.Pool, fixture.Transport, CaptureBridge(pumpContext));
 
             string error;
             TestKit.CheckEqual(
@@ -169,7 +169,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 "pending envelope expected, bridge error: " + bridgeError);
             TestKit.Check(envelope != null, "envelope must not be null");
 
-            return fixture.Transaction.ConsumeEnvelope(envelope, out errorCode, out errorDetail);
+            return fixture.Transaction.ConsumeEnvelope(true, envelope, out errorCode, out errorDetail);
         }
 
         private static void CheckPhase(Rgb24FrameTransaction transaction, Rgb24TransactionPhase expected, string what)
@@ -353,7 +353,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 string errorDetail;
                 TestKit.CheckEqual(
                     Rgb24TransactionOutcome.RejectedStaleGeneration,
-                    fixture.Transaction.ConsumeEnvelope(stale, out errorCode, out errorDetail),
+                    fixture.Transaction.ConsumeEnvelope(true, stale, out errorCode, out errorDetail),
                     "stale generation envelope: " + errorCode);
                 TestKit.CheckEqual("rgb24-envelope-stale-generation", errorCode, "error code");
                 TestKit.CheckEqual(null, errorDetail, "error detail");
@@ -378,7 +378,7 @@ namespace ADOFAI.Renderist.FfmpegTests
 
                 string secondCode;
                 string secondDetail;
-                Rgb24TransactionOutcome second = fixture.Transaction.ConsumeEnvelope(
+                Rgb24TransactionOutcome second = fixture.Transaction.ConsumeEnvelope(true,
                     Envelope(DefaultGeneration, DefaultFrameIndex, fixture.TokenId, SuccessOutcome()),
                     out secondCode, out secondDetail);
 
@@ -404,7 +404,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 // 同一个信封（已消费）再次投递：必须被拒绝，绝不产生第二次提交、第二次释放。
                 string secondCode;
                 string secondDetail;
-                Rgb24TransactionOutcome second = fixture.Transaction.ConsumeEnvelope(
+                Rgb24TransactionOutcome second = fixture.Transaction.ConsumeEnvelope(true,
                     Envelope(DefaultGeneration, DefaultFrameIndex, fixture.TokenId, SuccessOutcome()),
                     out secondCode, out secondDetail);
 
@@ -431,7 +431,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 string errorDetail;
                 TestKit.CheckEqual(
                     Rgb24TransactionOutcome.RejectedWrongFrame,
-                    fixture.Transaction.ConsumeEnvelope(wrongFrame, out errorCode, out errorDetail),
+                    fixture.Transaction.ConsumeEnvelope(true, wrongFrame, out errorCode, out errorDetail),
                     "wrong frame envelope");
                 TestKit.CheckEqual("rgb24-envelope-wrong-frame", errorCode, "error code");
                 CheckPhase(fixture.Transaction, Rgb24TransactionPhase.AwaitingDelivery, "phase must not advance");
@@ -450,7 +450,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 string errorDetail;
                 TestKit.CheckEqual(
                     Rgb24TransactionOutcome.RejectedTokenMismatch,
-                    fixture.Transaction.ConsumeEnvelope(wrongToken, out errorCode, out errorDetail),
+                    fixture.Transaction.ConsumeEnvelope(true, wrongToken, out errorCode, out errorDetail),
                     "token mismatch envelope");
                 TestKit.CheckEqual("rgb24-envelope-token-mismatch", errorCode, "error code");
                 TestKit.CheckEqual(true, fixture.Pool.OutstandingLease.DeliveryPinned,
@@ -481,7 +481,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 string secondDetail;
                 TestKit.CheckEqual(
                     Rgb24TransactionOutcome.RejectedDuplicateCompletion,
-                    fixture.Transaction.ConsumeEnvelope(
+                    fixture.Transaction.ConsumeEnvelope(true,
                         Envelope(DefaultGeneration, DefaultFrameIndex, fixture.TokenId, SuccessOutcome()),
                         out secondCode, out secondDetail),
                     "a committed frame cannot be consumed again");
@@ -920,7 +920,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 // 必须走 RejectedTransportRejected 且不 pin。
                 var transactionPool = new Rgb24FrameBufferPool(DefaultLayout());
                 var transaction = new Rgb24FrameTransaction(
-                    transactionPool, adapter, CaptureBridge(new InlineSyncContext()), envelope => { });
+                    transactionPool, adapter, CaptureBridge(new InlineSyncContext()));
 
                 string error;
                 TestKit.CheckEqual(
@@ -1063,7 +1063,7 @@ namespace ADOFAI.Renderist.FfmpegTests
 
                     var pool = new Rgb24FrameBufferPool(DefaultLayout());
                     var transport = new FakeRgb24Transport();
-                    var transaction = new Rgb24FrameTransaction(pool, transport, bridge, envelope => { });
+                    var transaction = new Rgb24FrameTransaction(pool, transport, bridge);
 
                     string error;
                     TestKit.CheckEqual(
@@ -1107,7 +1107,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                     string errorDetail;
                     TestKit.CheckEqual(
                         Rgb24TransactionOutcome.Committed,
-                        transaction.ConsumeEnvelope(envelope, out errorCode, out errorDetail),
+                        transaction.ConsumeEnvelope(true, envelope, out errorCode, out errorDetail),
                         "consume: " + errorCode);
                 }
                 finally
@@ -1128,7 +1128,7 @@ namespace ADOFAI.Renderist.FfmpegTests
 
                     var pool = new Rgb24FrameBufferPool(DefaultLayout());
                     var transport = new FakeRgb24Transport();
-                    var transaction = new Rgb24FrameTransaction(pool, transport, bridge, envelope => { });
+                    var transaction = new Rgb24FrameTransaction(pool, transport, bridge);
 
                     string error;
                     TestKit.CheckEqual(
@@ -1185,7 +1185,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                     string errorDetail;
                     TestKit.CheckEqual(
                         Rgb24TransactionOutcome.Committed,
-                        transaction.ConsumeEnvelope(envelope, out errorCode, out errorDetail),
+                        transaction.ConsumeEnvelope(true, envelope, out errorCode, out errorDetail),
                         "consume: " + errorCode);
                 }
                 finally
@@ -1214,12 +1214,11 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.CheckEqual("rgb24-abort-delivery-in-flight", abortError,
                     "the refusal must name the in-flight delivery");
 
-                string errorCode;
-                string errorDetail;
-                TestKit.CheckEqual(
-                    Rgb24TransactionOutcome.Committed,
-                    CompleteAndConsume(fixture, pump, SuccessOutcome(), out errorCode, out errorDetail),
-                    "consume: " + errorCode);
+                fixture.Transport.Complete(SuccessOutcome());
+                TestKit.Check(pump.WaitForHandOff(30000), "completion handoff");
+                pump.Pump();
+                TestKit.CheckEqual(1L, fixture.Pool.ReleaseCount, "cancelled completion retires once");
+                TestKit.Check(!fixture.Transaction.TryTakePendingEnvelope(out _, out _), "no commit envelope after cancellation");
 
                 TestKit.Check(!fixture.Pool.HasOutstandingLease, "the pool must have no outstanding lease");
                 TestKit.Check(!fixture.Transaction.HasResidualOwnership, "no residual ownership");
@@ -1246,7 +1245,7 @@ namespace ADOFAI.Renderist.FfmpegTests
 
                     var pool = new Rgb24FrameBufferPool(DefaultLayout());
                     var transport = new FakeRgb24Transport();
-                    var transaction = new Rgb24FrameTransaction(pool, transport, bridge, envelope => { });
+                    var transaction = new Rgb24FrameTransaction(pool, transport, bridge);
 
                     string error;
                     TestKit.CheckEqual(
@@ -1316,7 +1315,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 Pool = pool;
                 Transport = transport;
                 Transaction = new Rgb24FrameTransaction(
-                    pool, transport, CaptureBridge(context), envelope => { });
+                    pool, transport, CaptureBridge(context));
             }
 
             internal Rgb24FrameBufferPool Pool { get; private set; }

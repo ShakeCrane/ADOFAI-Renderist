@@ -1891,6 +1891,7 @@ namespace ADOFAI.Renderist
                 //   * 禁用后仍会兜底收敛（即使 OnToggle 的清理已被其它路径绕过）。
                 // 该调用不依赖 GUI 被打开。
                 PumpFfmpegComponentLifecycle();
+                DeterministicFrameScheduler.TickResidualOwnership();
 
                 if (!Enabled) return;
 

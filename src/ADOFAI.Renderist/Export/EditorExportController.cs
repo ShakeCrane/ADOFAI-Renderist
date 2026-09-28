@@ -33,9 +33,9 @@ namespace ADOFAI.Renderist.Export
         public static EditorExportState CurrentState =>
             _terminalRearmPending ? EditorExportState.Preparing : _session?.State ?? EditorExportState.Idle;
 
-        /// <summary>是否占用：Preparing / Running。</summary>
+        /// <summary>是否占用：Preparing / Running，或终态 RGB24 资源仍在收敛。</summary>
         public static bool IsBusy =>
-            _terminalRearmPending ||
+            _terminalRearmPending || DeterministicFrameScheduler.HasPendingRgb24Cleanup ||
             (_session != null &&
              (_session.State == EditorExportState.Preparing ||
               _session.State == EditorExportState.Running));
@@ -459,6 +459,7 @@ namespace ADOFAI.Renderist.Export
         /// <summary>每 OnUpdate 调用。推进 scheduler 并观察终态。</summary>
         public static void Tick()
         {
+            DeterministicFrameScheduler.TickResidualOwnership();
             if (_terminalRearmPending)
             {
                 TickTerminalControllerRearm();

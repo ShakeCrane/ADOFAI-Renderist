@@ -34,30 +34,8 @@ namespace ADOFAI.Renderist.Export
     ///     绝不推进 timeline。
     ///   * audible audio 不推进 chart timeline（Renderist 不拥有 audio timeline）。
     /// </summary>
-    internal static class DeterministicFrameScheduler
+    internal static partial class DeterministicFrameScheduler
     {
-        public enum SchedulerStatus
-        {
-            Idle,
-            Preparing,
-            InitializationHold,
-            Capturing,
-            /// <summary>
-            /// L3-A：本帧已 Prepare 并请求帧末事务，正在等 EOF 形成 CPU frame。
-            /// 该阶段**禁止**再次 Prepare，也**禁止**推进 outputFrameIndex。
-            /// </summary>
-            AwaitingEOF,
-            /// <summary>
-            /// L3-A：CPU frame 已形成并交付给 L2，正在等 Completion 回到 Unity 主线程。
-            /// 该阶段**禁止**推进 outputFrameIndex / forced chart time / Planet frame-local
-            /// position，也**禁止**开启下一个 EOF。合法 FFmpeg 背压可以持续任意长时间。
-            /// </summary>
-            AwaitingDelivery,
-            Completed,
-            Cancelled,
-            Failed,
-        }
-
         private const int DefaultOutputFps = OutputFpsPolicy.Default;
         /// <summary>End Tail 默认值；玩家可改为 Frames / Seconds / Beats。</summary>
         public const long DefaultTailFrameCount = 12;
@@ -171,6 +149,7 @@ namespace ADOFAI.Renderist.Export
         private static int _awaitFrameCount;
         private static int _activationUnityFrame = -1;
         private static int _lastPrepareUnityFrame = -1;
+        private static long _lastAutoplayFrameIndex = -1;
         private static bool _clockActive;
         private static bool _pendingCapture;
         private static long _pendingCaptureIndex = -1;
@@ -287,8 +266,8 @@ namespace ADOFAI.Renderist.Export
 
         // ---- L3-A: 单帧 RGB24 交付事务 ----
         //
-        // 形态：scheduler 只做编排（Prepare → AwaitingEOF → AwaitingDelivery → 校验 → Commit），
-        // 事务语义本身由 Unity-free 的 Rgb24FrameTransaction 持有，便于独立回归覆盖。
+        // scheduler 是阶段 authority；transaction 仅保留 lease/readback/accepted-write guard，
+        // 不决定下一逻辑阶段。局部 guard 与纯状态判定均可独立回归。
         //
         // 本 session 是否走 RGB24 交付路径，由新增的 delivery context 是否存在决定：
         // context 为 null 时行为与 0.3.9.x 完全一致（PNG / log-only 不退化）。
@@ -424,6 +403,8 @@ namespace ADOFAI.Renderist.Export
 
             if (!EnsurePreviousRunCleanedUp(out string residualError))
             {
+                _rgb24DeliveryArmed = false;
+                TickResidualOwnership();
                 return "cleanup-failed:" + residualError;
             }
 
@@ -477,9 +458,9 @@ namespace ADOFAI.Renderist.Export
                 if (_rgb24DeliveryEnabled && imageOutputEnabled)
                 {
                     // PNG 与 RGB24 交付互斥：绝不允许两个图像输出模式同时冻结。
-                    return "output-mode-conflict:png-and-rgb24";
+                    return FailStart("output-mode-conflict:png-and-rgb24");
                 }
-                if (_rgb24Delivery != null) _rgb24Delivery.Reset();
+                // 新 context 已由 Arm gate 核验；绝不 Reset 仍被旧写入持有的池。
                 SafetyLimitResolution safety = SafetyFrameLimitPolicy.Resolve(configuredSafetyFrameLimit);
                 _safetyFrameLimit = safety.FrameLimit;
                 _safetyPolicyKind = safety.Kind;
@@ -712,6 +693,15 @@ namespace ADOFAI.Renderist.Export
                 FailStart("start-exception:" + ex.Message);
                 return "start-exception";
             }
+            finally
+            {
+                // 几何/前置校验拒绝发生于 activation 前时，也收回已经 Arm 的 L2 ownership。
+                if (_rgb24DeliveryArmed)
+                {
+                    _rgb24DeliveryArmed = false;
+                    TickResidualOwnership();
+                }
+            }
         }
 
         /// <summary>
@@ -833,6 +823,7 @@ namespace ADOFAI.Renderist.Export
             _awaitFrameCount = 0;
             _activationUnityFrame = -1;
             _lastPrepareUnityFrame = -1;
+            _lastAutoplayFrameIndex = -1;
             _clockActive = false;
             _pendingCapture = false;
             _pendingCaptureIndex = -1;
@@ -890,7 +881,7 @@ namespace ADOFAI.Renderist.Export
                    FrameCaptureDriver.HasResidualGpuState ||
                    // L3-A：帧 Completion 与 pipeline cleanup 未各自收敛前，RGB24 lease 仍然是
                    // residual ownership（CleanupTask 完成**不能**推导 frame buffer 已可复用）。
-                   (_rgb24Delivery != null && _rgb24Delivery.HasResidualOwnership) ||
+                   (!_rgb24DeliveryArmed && _rgb24Delivery != null && _rgb24Delivery.HasResidualOwnership) ||
                    _inputGuardHooks.Count > 0 ||
                    EditorVisualClock.HasTrackedHooks ||
                    _patchedConductorUpdate != null || _patchedAsyncInputAdjustAngle != null ||
@@ -907,6 +898,7 @@ namespace ADOFAI.Renderist.Export
         private static bool EnsurePreviousRunCleanedUp(out string error)
         {
             error = null;
+            TickResidualOwnership();
             if (!HasResidualOwnership())
             {
                 _restored = true;
@@ -974,6 +966,7 @@ namespace ADOFAI.Renderist.Export
             {
                 StopNow(stopEvent, stopReason);
             }
+            _rgb24DeliveryArmed = false;
             return EnsurePreviousRunCleanedUp(out _);
         }
 
@@ -983,6 +976,7 @@ namespace ADOFAI.Renderist.Export
 
         public static void Tick()
         {
+            TickResidualOwnership();
             if (!_running) return;
 
             try
@@ -1443,6 +1437,11 @@ namespace ADOFAI.Renderist.Export
             }
 
             if (_status != SchedulerStatus.Capturing) return;
+            if (!CanPrepareGameplay(_status, _preEntryCapturing, _timeline != null))
+            {
+                RequestStop("rgb24-invariant-failed", "gameplay-prepare-before-handoff");
+                return;
+            }
 
             int frame = Time.frameCount;
 
@@ -1482,8 +1481,11 @@ namespace ADOFAI.Renderist.Export
                 return;
             }
 
-            if (!_running || _pendingStopReason != null || _status != SchedulerStatus.Capturing || !_clockActive)
+            if (!_running || _pendingStopReason != null || !_clockActive ||
+                !CanObservePreparedGameplay(_status, _preEntryCapturing, _pendingCapture) ||
+                _lastAutoplayFrameIndex == _outputFrameIndex)
                 return;
+            _lastAutoplayFrameIndex = _outputFrameIndex;
 
             LogFrame0Stage(_outputFrameIndex, "AFTER_CONDUCTOR");
             LogFrame0Stage(_outputFrameIndex, "BEFORE_AUTOPLAY");
@@ -2103,11 +2105,40 @@ namespace ADOFAI.Renderist.Export
         /// 在 Unity 主线程调用；context 已在此刻捕获 SynchronizationContext 与主线程身份）。
         /// 未绑定即表示本 session 不使用 RGB24 交付路径。
         /// </summary>
-        public static void ArmRgb24Delivery(Rgb24DeliveryContext context)
+        public static bool ArmRgb24Delivery(Rgb24DeliveryContext context, out string error)
         {
-            _rgb24Delivery = context;
+            error = null;
+            if ((context != null && !context.Bridge.IsMainThread) ||
+                (_rgb24Delivery != null && !_rgb24Delivery.Bridge.IsMainThread))
+            {
+                error = "rgb24-wrong-main-thread";
+                return false;
+            }
+            TickResidualOwnership();
+            if (_running || (!Terminal && _status != SchedulerStatus.Idle) || _rgb24DeliveryArmed)
+            {
+                error = "rgb24-context-active-or-armed";
+                return false;
+            }
+            if (!EnsurePreviousRunCleanedUp(out error)) return false;
+            if (!Rgb24DeliveryContext.TryReplace(ref _rgb24Delivery, context, _running, out error))
+                return false;
             _rgb24DeliveryArmed = context != null;
-            if (context != null) context.LogBridgeIdentity();
+            return true;
+        }
+
+        public static bool HasPendingRgb24Cleanup =>
+            !_rgb24DeliveryArmed && _rgb24Delivery != null && _rgb24Delivery.HasResidualOwnership;
+
+        // 逻辑终态之后仍执行；只退休旧 context，不推进 scheduler、不 Commit、不操作新 generation。
+        public static void TickResidualOwnership()
+        {
+            if (_running || _rgb24DeliveryArmed || _rgb24Delivery == null) return;
+            if (_rgb24Delivery.TryStopAndDrain(_terminalStopReason ?? "session-stopped", out _))
+            {
+                _rgb24Delivery = null;
+                _rgb24DeliveryEnabled = false;
+            }
         }
 
         /// <summary>
@@ -2183,13 +2214,25 @@ namespace ADOFAI.Renderist.Export
 
             string errorCode;
             string errorDetail;
+            if (!_rgb24Delivery.Bridge.IsMainThread) return;
+            if (envelope.Generation != _captureGeneration)
+            {
+                // 旧通知只属于旧 context；不得进入当前 lease 的消费路径。
+                return;
+            }
+            if (envelope.AbsoluteFrameIndex != _outputFrameIndex)
+            {
+                RequestStop("rgb24-invariant-failed", "rgb24-scheduler-frame-mismatch");
+                return;
+            }
             Rgb24TransactionOutcome outcome =
-                _rgb24Delivery.Transaction.ConsumeEnvelope(envelope, out errorCode, out errorDetail);
+                _rgb24Delivery.Transaction.ConsumeEnvelope(
+                    _status == SchedulerStatus.AwaitingDelivery, envelope, out errorCode, out errorDetail);
 
             switch (outcome)
             {
                 case Rgb24TransactionOutcome.Committed:
-                    _status = SchedulerStatus.Capturing;
+                    _status = ResumeAfterRgb24Delivery(_preEntryCapturing);
                     CommitFrame(envelope.AbsoluteFrameIndex, false, null);
                     return;
 
@@ -2227,7 +2270,15 @@ namespace ADOFAI.Renderist.Export
 
             if (_pendingCaptureIndex != frameIndex)
             {
-                Log.Debug("DeterministicFrameScheduler: stale capture result " + frameIndex);
+                if (_rgb24DeliveryEnabled)
+                    RequestStop("rgb24-invariant-failed", "rgb24-eof-frame-mismatch");
+                else
+                    Log.Debug("DeterministicFrameScheduler: stale capture result " + frameIndex);
+                return;
+            }
+            if (_rgb24DeliveryEnabled && _status != SchedulerStatus.AwaitingEOF)
+            {
+                RequestStop("rgb24-invariant-failed", "rgb24-eof-wrong-scheduler-phase");
                 return;
             }
 
@@ -2477,7 +2528,7 @@ namespace ADOFAI.Renderist.Export
         private static void OnCanonicalCompletionRequested(object instance)
         {
             if (!_running || _pendingStopReason != null ||
-                _status != SchedulerStatus.Capturing)
+                !CanObservePreparedGameplay(_status, _preEntryCapturing, _pendingCapture))
                 return;
 
             object controller = EditorGameReflection.Controller();
@@ -2644,8 +2695,7 @@ namespace ADOFAI.Renderist.Export
         private static bool IsInputGuardActive()
         {
             return _running && _pendingStopReason == null && _inputGuardHooks.Count > 0 &&
-                   (_status == SchedulerStatus.InitializationHold ||
-                    _status == SchedulerStatus.Capturing);
+                   IsPlaybackPhase(_status);
         }
 
         private static bool AnyValidInputWasTriggeredPrefix(ref bool __result)
@@ -2770,6 +2820,11 @@ namespace ADOFAI.Renderist.Export
                                  _preEntryLifecycleSavedTimeScale.ToString("0.######", CultureInfo.InvariantCulture));
                     }
                 }
+
+                // RGB24 资源独立收敛：未完成的 Task 保留为 residual，不能阻塞主线程。
+                _rgb24DeliveryArmed = false;
+                if (_rgb24Delivery != null)
+                    _rgb24Delivery.TryStopAndDrain(_terminalStopReason ?? "session-stopped", out _);
 
                 // 先撤 Hook 与捕获后端，再恢复 RDC.auto 与 Editor 播放状态，最后恢复 Unity 时间。
                 bool captureStopped;
@@ -2964,9 +3019,9 @@ namespace ADOFAI.Renderist.Export
 
                 if (failures.Count == 0)
                 {
-                    _restored = true;
                     _savedRdcAuto = null;
                     _savedSelectedFloorSeqs.Clear();
+                    _restored = !HasResidualOwnership();
                     Log.Debug("DeterministicFrameScheduler: restored captureFramerate=" + _savedCaptureFramerate +
                               " targetFrameRate=" + _savedTargetFrameRate +
                               " vSyncCount=" + _savedVSyncCount +
@@ -3644,8 +3699,7 @@ namespace ADOFAI.Renderist.Export
                 return;
 
             // 只在本次 session 已经进入 native playback 生命周期之后才视为停止信号。
-            if (_status != SchedulerStatus.InitializationHold &&
-                _status != SchedulerStatus.Capturing)
+            if (!IsPlaybackPhase(_status))
                 return;
 
             Log.Info("MasterTimeline native editor SwitchToEditMode observed: status=" +
@@ -3816,7 +3870,7 @@ namespace ADOFAI.Renderist.Export
 
         private static bool AsyncInputAdjustAnglePrefix(object __0, ulong __1)
         {
-            if (!_running || _pendingStopReason != null || _status != SchedulerStatus.Capturing || !_clockActive)
+            if (!_running || _pendingStopReason != null || !IsPlaybackPhase(_status) || !_clockActive)
                 return true;
 
             object controller = EditorGameReflection.Controller();

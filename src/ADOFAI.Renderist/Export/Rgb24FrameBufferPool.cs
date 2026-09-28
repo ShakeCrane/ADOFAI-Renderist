@@ -273,6 +273,8 @@ namespace ADOFAI.Renderist.Export
         /// <summary>会话结束：丢弃引用，不保留跨 session 状态。</summary>
         internal void Reset()
         {
+            if (_outstanding != null)
+                throw new InvalidOperationException("rgb24-pool-reset-with-outstanding-lease");
             _outstanding = null;
             _segments = null;
             _tokenCounter = 0;

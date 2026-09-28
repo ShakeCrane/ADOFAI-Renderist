@@ -90,23 +90,28 @@ namespace ADOFAI.Renderist.Export
 
     /// <summary>
     /// 不可变的交付结果信封。它是**后台 → Unity 主线程**唯一允许跨越边界的对象：
-    /// 只含值类型与字符串，不含 Unity 对象、不含 scheduler 可变状态、不含 buffer 引用。
+    /// 包含不可变结果与不透明 frame/Task 身份，不含 Unity 对象或 scheduler 可变状态。
     /// </summary>
     internal sealed class Rgb24DeliveryEnvelope
     {
         internal Rgb24DeliveryEnvelope(
-            long generation, long absoluteFrameIndex, long tokenId, Rgb24FrameWriteOutcome outcome)
+            long generation, long absoluteFrameIndex, long tokenId, Rgb24FrameWriteOutcome outcome,
+            object frameIdentity = null, Task<Rgb24FrameWriteOutcome> completion = null)
         {
             Generation = generation;
             AbsoluteFrameIndex = absoluteFrameIndex;
             TokenId = tokenId;
             Outcome = outcome ?? Rgb24FrameWriteOutcome.Failure("rgb24-delivery-no-outcome", null);
+            FrameIdentity = frameIdentity;
+            Completion = completion;
         }
 
         internal long Generation { get; private set; }
         internal long AbsoluteFrameIndex { get; private set; }
         internal long TokenId { get; private set; }
         internal Rgb24FrameWriteOutcome Outcome { get; private set; }
+        internal object FrameIdentity { get; private set; }
+        internal Task<Rgb24FrameWriteOutcome> Completion { get; private set; }
 
         internal bool Success { get { return Outcome.Success; } }
         internal string ErrorCode { get { return Outcome.ErrorCode; } }
@@ -166,7 +171,8 @@ namespace ADOFAI.Renderist.Export
         }
 
         /// <summary>从任意线程调用；回调在捕获到的上下文（Unity 主线程）上执行。</summary>
-        internal bool TryPost(Rgb24DeliveryEnvelope envelope, Action<Rgb24DeliveryEnvelope> onMainThread, out string error)
+        internal bool TryPost(Rgb24DeliveryEnvelope envelope, Action<Rgb24DeliveryEnvelope> onMainThread,
+            out string error, Action<string> onFailure = null)
         {
             error = null;
             if (envelope == null)
@@ -183,7 +189,15 @@ namespace ADOFAI.Renderist.Export
 
             try
             {
-                _context.Post(state => onMainThread((Rgb24DeliveryEnvelope)state), envelope);
+                _context.Post(state =>
+                {
+                    if (!IsMainThread)
+                    {
+                        onFailure?.Invoke("rgb24-bridge-wrong-thread");
+                        return;
+                    }
+                    onMainThread((Rgb24DeliveryEnvelope)state);
+                }, envelope);
                 return true;
             }
             catch (Exception ex)
@@ -194,7 +208,7 @@ namespace ADOFAI.Renderist.Export
         }
     }
 
-    /// <summary>事务阶段。**不是**第二套 scheduler 状态机：scheduler 的 SchedulerStatus 只是它的镜像。</summary>
+    /// <summary>局部 lease/readback guard 的只读投影；不决定 scheduler 的下一阶段。</summary>
     internal enum Rgb24TransactionPhase
     {
         Idle = 0,
@@ -202,7 +216,7 @@ namespace ADOFAI.Renderist.Export
         /// <summary>本帧已 Prepare 并请求 EOF；此时**禁止**再次 Prepare。</summary>
         AwaitingEOF = 1,
 
-        /// <summary>CPU frame 已形成并交付；此时**禁止**推进 outputFrameIndex / forced time / 下一个 EOF。</summary>
+        /// <summary>CPU frame 已形成；接受事实另外由本 lease 的 write identity 表达。</summary>
         AwaitingDelivery = 2,
     }
 
@@ -220,12 +234,14 @@ namespace ADOFAI.Renderist.Export
         RejectedBusy = 9,
         RejectedLeaseAcquireFailed = 10,
         RejectedTransportRejected = 11,
+        RejectedWrongThread = 12,
+        RejectedCompletionIdentity = 13,
     }
 
     /// <summary>
     /// L3-A 单帧 RGB24 事务（Unity-free，可被独立 net48 harness 完整覆盖）。
     ///
-    /// 主链路的中间三段由本类拥有：
+    /// 本类只验证 scheduler 发起的操作与局部 ownership 是否一致：
     ///   Prepare(N) → **AwaitingEOF** → EOF 形成 CPU frame → **AwaitingDelivery**
     ///   → 交付（L2 TryWriteFrame）→ Completion → Unity 主线程校验 → 允许 CommitFrame(N)
     ///
@@ -234,182 +250,112 @@ namespace ADOFAI.Renderist.Export
     /// </summary>
     internal sealed class Rgb24FrameTransaction
     {
-        /// <summary>
-        /// "Completion 已结束但主线程交接始终没有到达"的内部桥接不变量上限（主线程观察次数）。
-        /// 这是**内部桥接** deadline，不是 IO timeout：合法 FFmpeg 背压可以任意长，
-        /// 只有"Task 已完成却始终没有信封"才计数。
-        /// </summary>
         internal const int BridgeStallTickLimit = 120;
-
-        private readonly object _sync = new object();
         private readonly Rgb24FrameBufferPool _pool;
         private readonly IRgb24FrameTransport _transport;
         private readonly Rgb24MainThreadBridge _bridge;
-        private readonly Action<Rgb24DeliveryEnvelope> _onEnvelopePosted;
-
-        private Rgb24TransactionPhase _phase = Rgb24TransactionPhase.Idle;
+        private Rgb24FrameLease _lease;
+        private object _frameIdentity;
+        private bool _eofCompleted;
+        private bool _beginningDelivery;
+        private bool _aborting;
+        private DeliveryNotification _write;
         private long _generation = -1;
         private long _frameIndex = -1;
-        private Rgb24FrameLease _lease;
-        private bool _deliveryAccepted;
-        private bool _aborting;
-
-        // 后台 continuation 只写这两项；主线程只读。
-        private bool _completionTaskFinished;
-        private string _bridgeFailure;
-        private Rgb24DeliveryEnvelope _pendingEnvelope;
-
-        private int _stallTicks;
-
-        // 一次性消费的**历史身份**：消费成功后 _lease 会被清空，因此"重复消费"必须靠这份
-        // 身份记录来判定，否则 duplicate 分支会被 _lease == null 遮蔽而变成死代码。
         private bool _hasConsumedCompletion;
-        private long _lastConsumedGeneration = -1;
-        private long _lastConsumedFrameIndex = -1;
-        private long _lastConsumedTokenId = -1;
+        private long _lastConsumedGeneration;
+        private long _lastConsumedFrameIndex;
+        private long _lastConsumedTokenId;
 
-        internal Rgb24FrameTransaction(
-            Rgb24FrameBufferPool pool,
-            IRgb24FrameTransport transport,
-            Rgb24MainThreadBridge bridge,
-            Action<Rgb24DeliveryEnvelope> onEnvelopePosted)
+        internal Rgb24FrameTransaction(Rgb24FrameBufferPool pool, IRgb24FrameTransport transport,
+            Rgb24MainThreadBridge bridge)
         {
-            if (pool == null) throw new ArgumentNullException("pool");
-            if (transport == null) throw new ArgumentNullException("transport");
-            if (bridge == null) throw new ArgumentNullException("bridge");
-            if (onEnvelopePosted == null) throw new ArgumentNullException("onEnvelopePosted");
-
-            _pool = pool;
-            _transport = transport;
-            _bridge = bridge;
-            _onEnvelopePosted = onEnvelopePosted;
+            _pool = pool ?? throw new ArgumentNullException("pool");
+            _transport = transport ?? throw new ArgumentNullException("transport");
+            _bridge = bridge ?? throw new ArgumentNullException("bridge");
         }
 
-        internal Rgb24TransactionPhase Phase { get { return _phase; } }
-        internal long Generation { get { return _generation; } }
-        internal long FrameIndex { get { return _frameIndex; } }
+        // 只读 ownership 投影。所有调用顺序及下一 export 状态由 scheduler 决定。
+        internal Rgb24TransactionPhase Phase => _lease == null ? Rgb24TransactionPhase.Idle
+            : _eofCompleted ? Rgb24TransactionPhase.AwaitingDelivery : Rgb24TransactionPhase.AwaitingEOF;
+        internal long Generation => _generation;
+        internal long FrameIndex => _frameIndex;
+        internal long LeaseTokenId => _lease == null ? -1 : _lease.Frame.TokenId;
+        internal OwnedRgb24Frame CurrentFrame => _lease?.Frame;
+        internal bool HasUnconvergedDelivery => _write != null || _beginningDelivery;
+        internal bool HasResidualOwnership => _lease != null || _write != null || _beginningDelivery;
 
-        /// <summary>true = 本帧已交付且其结果尚未被主线程消费（缓冲仍被后台读取）。</summary>
-        internal bool HasUnconvergedDelivery { get { return _deliveryAccepted; } }
-
-        /// <summary>true = 仍有本事务拥有的资源未收敛（residual gate 的输入之一）。</summary>
-        internal bool HasResidualOwnership
-        {
-            get
-            {
-                if (_deliveryAccepted) return true;
-                if (_lease != null && !_lease.Released) return true;
-                return false;
-            }
-        }
-
-        internal long LeaseTokenId
-        {
-            get { return _lease == null ? -1 : _lease.Frame.TokenId; }
-        }
-
-        /// <summary>当前 in-flight 帧（Idle 时为 null）。driver 用它填充 CPU 数据。</summary>
-        internal OwnedRgb24Frame CurrentFrame
-        {
-            get { return _lease == null ? null : _lease.Frame; }
-        }
-
-        /// <summary>
-        /// Prepare 边界：Idle → AwaitingEOF。Awaiting* 期间重复调用是 invariant failure，
-        /// 绝不建立第二个 in-flight frame。
-        /// </summary>
         internal Rgb24TransactionOutcome TryBeginFrame(long generation, long frameIndex, out string error)
         {
             error = null;
-
-            if (_aborting)
+            if (!_bridge.IsMainThread)
             {
-                error = "rgb24-transaction-aborting";
+                error = "rgb24-wrong-main-thread";
+                return Rgb24TransactionOutcome.RejectedWrongThread;
+            }
+            if (_aborting || HasResidualOwnership)
+            {
+                error = "rgb24-transaction-frame-in-flight-or-aborting";
                 return Rgb24TransactionOutcome.RejectedWrongPhase;
             }
-
-            if (_phase != Rgb24TransactionPhase.Idle)
-            {
-                error = "rgb24-transaction-frame-in-flight:" + _phase;
-                return Rgb24TransactionOutcome.RejectedWrongPhase;
-            }
-
-            Rgb24FrameLease lease;
-            string acquireError;
-            if (!_pool.TryAcquire(generation, frameIndex, out lease, out acquireError))
-            {
-                error = acquireError;
-                return acquireError == "rgb24-lease-busy"
-                    ? Rgb24TransactionOutcome.RejectedBusy
+            if (!_pool.TryAcquire(generation, frameIndex, out _lease, out error))
+                return error == "rgb24-lease-busy" ? Rgb24TransactionOutcome.RejectedBusy
                     : Rgb24TransactionOutcome.RejectedLeaseAcquireFailed;
-            }
-
-            _lease = lease;
             _generation = generation;
             _frameIndex = frameIndex;
-            _deliveryAccepted = false;
-            _completionTaskFinished = false;
-            _bridgeFailure = null;
-            _pendingEnvelope = null;
-            _stallTicks = 0;
-            _phase = Rgb24TransactionPhase.AwaitingEOF;
+            _frameIdentity = new object();
+            _eofCompleted = false;
             return Rgb24TransactionOutcome.Accepted;
         }
 
-        /// <summary>
-        /// EOF 形成 CPU frame：AwaitingEOF → AwaitingDelivery。
-        /// generation / frame index 任一不匹配都必须拒绝（stale EOF / wrong frame EOF）。
-        /// </summary>
-        internal Rgb24TransactionOutcome TryCompleteEof(
-            long generation, long frameIndex, out OwnedRgb24Frame frame, out string error)
+        internal Rgb24TransactionOutcome TryCompleteEof(long generation, long frameIndex,
+            out OwnedRgb24Frame frame, out string error)
         {
             frame = null;
             error = null;
-
-            if (_phase != Rgb24TransactionPhase.AwaitingEOF)
+            if (!_bridge.IsMainThread)
             {
-                error = "rgb24-transaction-not-awaiting-eof:" + _phase;
+                error = "rgb24-wrong-main-thread";
+                return Rgb24TransactionOutcome.RejectedWrongThread;
+            }
+            if (_aborting || _lease == null || _eofCompleted)
+            {
+                error = "rgb24-transaction-not-awaiting-eof";
                 return Rgb24TransactionOutcome.RejectedWrongPhase;
             }
-
             if (generation != _generation)
             {
                 error = "rgb24-transaction-stale-generation-eof";
                 return Rgb24TransactionOutcome.RejectedStaleGeneration;
             }
-
             if (frameIndex != _frameIndex)
             {
                 error = "rgb24-transaction-wrong-frame-eof";
                 return Rgb24TransactionOutcome.RejectedWrongFrame;
             }
-
-            _phase = Rgb24TransactionPhase.AwaitingDelivery;
+            _eofCompleted = true;
             frame = _lease.Frame;
             return Rgb24TransactionOutcome.Accepted;
         }
 
-        /// <summary>
-        /// 交付本帧。接受之后 lease 被 pin 住：Completion 被消费之前缓冲绝不可复用。
-        /// 立即拒绝（未接受）时 L2 未取得长期读取 ownership，因此不 pin。
-        /// </summary>
         internal Rgb24TransactionOutcome TryBeginDelivery(out string error, out string errorDetail)
         {
             error = null;
             errorDetail = null;
-
-            if (_phase != Rgb24TransactionPhase.AwaitingDelivery)
+            if (!_bridge.IsMainThread)
             {
-                error = "rgb24-transaction-not-awaiting-delivery:" + _phase;
+                error = "rgb24-wrong-main-thread";
+                return Rgb24TransactionOutcome.RejectedWrongThread;
+            }
+            if (_aborting || _lease == null || !_eofCompleted || _lease.DeliveryPinned)
+            {
+                error = "rgb24-transaction-not-deliverable";
                 return Rgb24TransactionOutcome.RejectedWrongPhase;
             }
 
-            if (_deliveryAccepted)
-            {
-                error = "rgb24-transaction-delivery-already-accepted";
-                return Rgb24TransactionOutcome.RejectedDuplicateCompletion;
-            }
-
+            // L2 调用之前就 pin。即使 transport 同步回入 abort，也不能释放它正在读取的数组。
+            _lease.DeliveryPinned = true;
+            _beginningDelivery = true;
             Rgb24TransportAttempt attempt;
             try
             {
@@ -417,292 +363,276 @@ namespace ADOFAI.Renderist.Export
             }
             catch (Exception ex)
             {
-                error = "rgb24-transport-exception";
+                // 无法证明 transport 未接受：保留 pinned ownership，禁止冒充可安全复用。
+                error = "rgb24-transport-acceptance-unknown";
                 errorDetail = ex.Message;
                 return Rgb24TransactionOutcome.RejectedTransportRejected;
             }
-
-            if (attempt == null)
+            finally
             {
-                error = "rgb24-transport-null-attempt";
+                _beginningDelivery = false;
+            }
+
+            if (attempt == null || (attempt.Status == Rgb24TransportStatus.Accepted && attempt.Completion == null))
+            {
+                error = "rgb24-transport-acceptance-unknown";
                 return Rgb24TransactionOutcome.RejectedTransportRejected;
             }
-
-            if (attempt.Status == Rgb24TransportStatus.Busy)
+            if (attempt.Status != Rgb24TransportStatus.Accepted)
             {
-                // 全链路最多一帧在途：busy 是 scheduler invariant failure，不重试、不排队。
-                error = "rgb24-transport-busy";
+                // 明确拒绝才可以解除保守 pin；scheduler 随后统一 abort。
+                _lease.DeliveryPinned = false;
+                error = attempt.Status == Rgb24TransportStatus.Busy ? "rgb24-transport-busy" : attempt.ErrorCode;
                 errorDetail = attempt.ErrorDetail;
-                return Rgb24TransactionOutcome.RejectedBusy;
+                return attempt.Status == Rgb24TransportStatus.Busy ? Rgb24TransactionOutcome.RejectedBusy
+                    : Rgb24TransactionOutcome.RejectedTransportRejected;
             }
 
-            if (attempt.Status != Rgb24TransportStatus.Accepted || attempt.Completion == null)
-            {
-                error = attempt.ErrorCode ?? "rgb24-transport-rejected";
-                errorDetail = attempt.ErrorDetail;
-                return Rgb24TransactionOutcome.RejectedTransportRejected;
-            }
-
-            _deliveryAccepted = true;
-            _lease.DeliveryPinned = true;
-
-            // continuation 的初值必须在交付线程之外冻结：事务字段可能在下一次 Prepare 时被改写。
-            long generation = _generation;
-            long frameIndex = _frameIndex;
-            long tokenId = _lease.Frame.TokenId;
-            Task<Rgb24FrameWriteOutcome> completion = attempt.Completion;
-
-            completion.ContinueWith(
-                task => OnDeliveryTaskCompleted(task, generation, frameIndex, tokenId),
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
-
+            // 接受身份先发布，最后才注册 continuation；已完成 Task 也不能抢跑。
+            _write = new DeliveryNotification(_lease.Frame, _frameIdentity, attempt.Completion, _bridge, OnPostedCompletion);
+            _write.Observe();
             return Rgb24TransactionOutcome.Accepted;
         }
 
-        /// <summary>
-        /// 后台 continuation。**只做三件事**：读取 Task outcome、封装异常、Post 不可变信封。
-        /// 绝不调用 Unity / Harmony / GUI，也绝不接触 scheduler 可变状态。
-        /// </summary>
-        private void OnDeliveryTaskCompleted(
-            Task<Rgb24FrameWriteOutcome> task, long generation, long frameIndex, long tokenId)
+        private void OnPostedCompletion(DeliveryNotification notification)
         {
-            Rgb24FrameWriteOutcome outcome;
-            try
-            {
-                if (task.IsFaulted)
-                {
-                    Exception inner = task.Exception == null ? null : task.Exception.GetBaseException();
-                    outcome = Rgb24FrameWriteOutcome.Failure(
-                        "rgb24-delivery-task-faulted", inner == null ? null : inner.Message);
-                }
-                else if (task.IsCanceled)
-                {
-                    outcome = Rgb24FrameWriteOutcome.Failure("rgb24-delivery-task-canceled", null);
-                }
-                else
-                {
-                    outcome = task.Result ??
-                              Rgb24FrameWriteOutcome.Failure("rgb24-delivery-task-no-result", null);
-                }
-            }
-            catch (Exception ex)
-            {
-                outcome = Rgb24FrameWriteOutcome.Failure("rgb24-delivery-task-exception", ex.Message);
-            }
-
-            lock (_sync)
-            {
-                _completionTaskFinished = true;
-            }
-
-            var envelope = new Rgb24DeliveryEnvelope(generation, frameIndex, tokenId, outcome);
-            string postError;
-            if (!_bridge.TryPost(envelope, StorePostedEnvelope, out postError))
-            {
-                lock (_sync)
-                {
-                    _bridgeFailure = postError ?? "rgb24-bridge-post-failed";
-                }
-            }
+            // Unity 上下文即使在 UMM 停止 OnUpdate 后仍可回投；仅退休所属 lease，不触碰 scheduler。
+            if (_bridge.IsMainThread && _aborting && ReferenceEquals(_write, notification))
+                TryAbort(out _);
         }
 
-        /// <summary>由 main-thread 上下文调用：只入队，不在 Post 回调里做校验或提交。</summary>
-        private void StorePostedEnvelope(Rgb24DeliveryEnvelope envelope)
-        {
-            lock (_sync)
-            {
-                _pendingEnvelope = envelope;
-            }
-        }
-
-        /// <summary>
-        /// 主线程取走已投递的信封（事件驱动，不轮询 IO）。
-        /// 同时把"后台已完成但主线程始终没有收到交接"的内部桥接故障暴露出来。
-        /// </summary>
         internal bool TryTakePendingEnvelope(out Rgb24DeliveryEnvelope envelope, out string bridgeError)
         {
             envelope = null;
             bridgeError = null;
-
-            lock (_sync)
+            if (!_bridge.IsMainThread)
             {
-                if (_pendingEnvelope != null)
-                {
-                    envelope = _pendingEnvelope;
-                    _pendingEnvelope = null;
-                    _stallTicks = 0;
-                    return true;
-                }
-
-                if (_bridgeFailure != null)
-                {
-                    bridgeError = _bridgeFailure;
-                    return false;
-                }
-
-                if (_completionTaskFinished && _deliveryAccepted)
-                {
-                    // Task 已结束，但信封始终没有完成交接：内部桥接不变量失败。
-                    _stallTicks++;
-                    if (_stallTicks > BridgeStallTickLimit)
-                        bridgeError = "rgb24-bridge-notification-stalled";
-                }
+                bridgeError = "rgb24-wrong-main-thread";
+                return false;
             }
-
-            return false;
+            return _write != null && _write.TryTake(out envelope, out bridgeError);
         }
 
-        /// <summary>
-        /// 主线程消费交付结果。必须逐项校验 generation / frame index / token / phase，
-        /// 且**只能消费一次**：重复回调、stale generation、wrong frame、token 不匹配一律拒绝。
-        /// </summary>
-        internal Rgb24TransactionOutcome ConsumeEnvelope(
+        // scheduler phase 是外部 authority；transaction 仅检查本 lease 的 accepted/completion 证据。
+        internal Rgb24TransactionOutcome ConsumeEnvelope(bool schedulerAwaitingDelivery,
             Rgb24DeliveryEnvelope envelope, out string errorCode, out string errorDetail)
         {
             errorCode = null;
             errorDetail = null;
-
+            if (!_bridge.IsMainThread)
+            {
+                errorCode = "rgb24-wrong-main-thread";
+                return Rgb24TransactionOutcome.RejectedWrongThread;
+            }
             if (envelope == null)
             {
                 errorCode = "rgb24-envelope-null";
                 return Rgb24TransactionOutcome.RejectedWrongPhase;
             }
-
-            // 一次性 token：同一 (generation, frameIndex, tokenId) 的第二次消费必须**稳定**映射为
-            // duplicate。这一步必须先于 _lease == null 判断 —— 消费成功会清空 _lease，
-            // 否则该分支永远不可达（曾被独立回归准确指出）。
-            if (_hasConsumedCompletion &&
-                envelope.Generation == _lastConsumedGeneration &&
-                envelope.AbsoluteFrameIndex == _lastConsumedFrameIndex &&
-                envelope.TokenId == _lastConsumedTokenId)
-            {
-                errorCode = "rgb24-envelope-duplicate-completion";
-                return Rgb24TransactionOutcome.RejectedDuplicateCompletion;
-            }
-
-            if (_lease == null)
-            {
-                errorCode = "rgb24-transaction-no-frame-in-flight";
-                return Rgb24TransactionOutcome.RejectedNoFrameInFlight;
-            }
-
-            // 次级防线：lease 自身的消费标记（同一次 acquire 内重复消费）。
-            if (_lease.CompletionConsumed)
-            {
-                errorCode = "rgb24-envelope-duplicate-completion";
-                return Rgb24TransactionOutcome.RejectedDuplicateCompletion;
-            }
-
             if (envelope.Generation != _generation)
             {
                 errorCode = "rgb24-envelope-stale-generation";
                 return Rgb24TransactionOutcome.RejectedStaleGeneration;
             }
-
+            if (_hasConsumedCompletion && envelope.Generation == _lastConsumedGeneration &&
+                envelope.AbsoluteFrameIndex == _lastConsumedFrameIndex && envelope.TokenId == _lastConsumedTokenId)
+            {
+                errorCode = "rgb24-envelope-duplicate-completion";
+                return Rgb24TransactionOutcome.RejectedDuplicateCompletion;
+            }
+            if (_lease == null)
+            {
+                errorCode = "rgb24-transaction-no-frame-in-flight";
+                return Rgb24TransactionOutcome.RejectedNoFrameInFlight;
+            }
             if (envelope.AbsoluteFrameIndex != _frameIndex)
             {
                 errorCode = "rgb24-envelope-wrong-frame";
                 return Rgb24TransactionOutcome.RejectedWrongFrame;
             }
-
             if (envelope.TokenId != _lease.Frame.TokenId)
             {
                 errorCode = "rgb24-envelope-token-mismatch";
                 return Rgb24TransactionOutcome.RejectedTokenMismatch;
             }
-
-            if (_phase != Rgb24TransactionPhase.AwaitingDelivery)
+            if (_aborting || !schedulerAwaitingDelivery || !_eofCompleted)
             {
-                errorCode = "rgb24-envelope-wrong-phase:" + _phase;
+                errorCode = "rgb24-envelope-wrong-phase";
                 return Rgb24TransactionOutcome.RejectedWrongPhase;
             }
-
-            _lease.TryMarkCompletionConsumed();
-
-            // 记录已消费身份（_lease 随后会被清空）：这是 duplicate 判定的唯一依据。
-            _hasConsumedCompletion = true;
-            _lastConsumedGeneration = envelope.Generation;
-            _lastConsumedFrameIndex = envelope.AbsoluteFrameIndex;
-            _lastConsumedTokenId = envelope.TokenId;
-
-            // Completion 已结束（无论成功或失败），后台不再读取这些数组：可以解除 pin。
-            _lease.DeliveryPinned = false;
-            _deliveryAccepted = false;
-
-            Rgb24FrameLease lease = _lease;
-            _lease = null;
-            _phase = Rgb24TransactionPhase.Idle;
-
-            string releaseError;
-            if (!_pool.TryRelease(lease, out releaseError))
+            if (_write == null || !ReferenceEquals(envelope.FrameIdentity, _frameIdentity) ||
+                !ReferenceEquals(envelope.Completion, _write.Completion) || !_write.Completion.IsCompleted ||
+                !_write.IsAuthentic(envelope))
             {
-                errorCode = releaseError ?? "rgb24-lease-release-failed";
+                errorCode = "rgb24-envelope-completion-identity";
+                return Rgb24TransactionOutcome.RejectedCompletionIdentity;
+            }
+            string notificationError = _write.Failure;
+            if (notificationError != null)
+            {
+                errorCode = notificationError;
                 return Rgb24TransactionOutcome.Failed;
             }
-
+            if (!ReleaseCompletedLease(out errorCode)) return Rgb24TransactionOutcome.Failed;
             if (!envelope.Success)
             {
                 errorCode = envelope.ErrorCode ?? "rgb24-delivery-failed";
                 errorDetail = envelope.ErrorDetail;
                 return Rgb24TransactionOutcome.Failed;
             }
-
             return Rgb24TransactionOutcome.Committed;
         }
 
-        /// <summary>
-        /// 取消 / 失败收敛入口。**不**强行释放仍被后台读取的 lease：
-        /// 只有该帧 Completion 被消费之后缓冲才可复用。返回 false 表示仍有 residual ownership。
-        /// </summary>
+        // Cancel 的帧收敛不依赖 Post 成功。唯一释放依据是当前写入 Task 的真实完成。
+        // 该入口只退休 ownership，绝不返回可 Commit 的结果。
         internal bool TryAbort(out string error)
         {
             error = null;
+            if (!_bridge.IsMainThread)
+            {
+                error = "rgb24-wrong-main-thread";
+                return false;
+            }
             _aborting = true;
-
-            if (_deliveryAccepted)
+            if (_beginningDelivery)
             {
                 error = "rgb24-abort-delivery-in-flight";
                 return false;
             }
-
-            if (_lease == null)
+            if (_write != null)
             {
-                _phase = Rgb24TransactionPhase.Idle;
-                return true;
+                if (!_write.Completion.IsCompleted)
+                {
+                    error = "rgb24-abort-delivery-in-flight";
+                    return false;
+                }
+                ReadOutcome(_write.Completion); // 观察 fault/cancel；不把失败写入当作成功帧。
+                return ReleaseCompletedLease(out error);
             }
-
-            Rgb24FrameLease lease = _lease;
-            string releaseError;
-            if (!_pool.TryRelease(lease, out releaseError))
+            if (_lease == null) return true;
+            if (_lease.DeliveryPinned)
             {
-                error = releaseError ?? "rgb24-lease-release-failed";
+                error = "rgb24-transport-acceptance-unknown";
                 return false;
             }
-
+            if (!_pool.TryRelease(_lease, out error)) return false;
             _lease = null;
-            _phase = Rgb24TransactionPhase.Idle;
+            _frameIdentity = null;
+            _eofCompleted = false;
             return true;
         }
 
-        /// <summary>会话结束：清空全部引用（不影响已经释放的缓冲）。</summary>
+        private bool ReleaseCompletedLease(out string error)
+        {
+            _lease.DeliveryPinned = false;
+            if (!_pool.TryRelease(_lease, out error)) return false;
+            _lease.TryMarkCompletionConsumed();
+            _hasConsumedCompletion = true;
+            _lastConsumedGeneration = _generation;
+            _lastConsumedFrameIndex = _frameIndex;
+            _lastConsumedTokenId = _lease.Frame.TokenId;
+            _lease = null;
+            _write = null;
+            _frameIdentity = null;
+            _eofCompleted = false;
+            return true;
+        }
+
         internal void Reset()
         {
-            _lease = null;
-            _phase = Rgb24TransactionPhase.Idle;
+            if (!_bridge.IsMainThread || HasResidualOwnership)
+                throw new InvalidOperationException("rgb24-reset-with-residual-or-wrong-thread");
+            _aborting = false;
             _generation = -1;
             _frameIndex = -1;
-            _deliveryAccepted = false;
-            _aborting = false;
-            _completionTaskFinished = false;
-            _bridgeFailure = null;
-            _pendingEnvelope = null;
-            _stallTicks = 0;
             _hasConsumedCompletion = false;
-            _lastConsumedGeneration = -1;
-            _lastConsumedFrameIndex = -1;
-            _lastConsumedTokenId = -1;
+        }
+
+        private static Rgb24FrameWriteOutcome ReadOutcome(Task<Rgb24FrameWriteOutcome> task)
+        {
+            if (task.IsFaulted)
+                return Rgb24FrameWriteOutcome.Failure("rgb24-delivery-task-faulted", task.Exception.GetBaseException().Message);
+            if (task.IsCanceled)
+                return Rgb24FrameWriteOutcome.Failure("rgb24-delivery-task-canceled", null);
+            return task.Result ?? Rgb24FrameWriteOutcome.Failure("rgb24-delivery-task-no-result", null);
+        }
+
+        // 每次 accepted write 独占一个通知槽。迟到 Post 只接触旧槽，不能覆盖下一帧或新 session。
+        // 后台只写锁保护的通知数据；只有验证线程后的 Post 回调允许退休局部 lease。
+        private sealed class DeliveryNotification
+        {
+            private readonly object _sync = new object();
+            private readonly long _generation, _index, _token;
+            private readonly object _identity;
+            private readonly Rgb24MainThreadBridge _bridge;
+            private readonly Action<DeliveryNotification> _onMainThread;
+            private Rgb24DeliveryEnvelope _completed, _pending;
+            private string _failure;
+            private int _stallTicks;
+            internal Task<Rgb24FrameWriteOutcome> Completion { get; }
+            internal string Failure { get { lock (_sync) return _failure; } }
+
+            internal DeliveryNotification(OwnedRgb24Frame frame, object identity,
+                Task<Rgb24FrameWriteOutcome> completion, Rgb24MainThreadBridge bridge,
+                Action<DeliveryNotification> onMainThread)
+            {
+                _generation = frame.Generation;
+                _index = frame.AbsoluteFrameIndex;
+                _token = frame.TokenId;
+                _identity = identity;
+                Completion = completion;
+                _bridge = bridge;
+                _onMainThread = onMainThread;
+            }
+
+            internal void Observe()
+            {
+                Completion.ContinueWith(task =>
+                {
+                    var envelope = new Rgb24DeliveryEnvelope(_generation, _index, _token,
+                        ReadOutcome(task), _identity, task);
+                    lock (_sync) _completed = envelope;
+                    if (!_bridge.TryPost(envelope, Store, out string error, Fail))
+                        Fail(error ?? "rgb24-bridge-post-failed");
+                }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
+
+            private void Store(Rgb24DeliveryEnvelope envelope)
+            {
+                lock (_sync) _pending = envelope;
+                _onMainThread(this);
+            }
+
+            private void Fail(string error)
+            {
+                lock (_sync) _failure = error;
+            }
+
+            internal bool IsAuthentic(Rgb24DeliveryEnvelope envelope)
+            {
+                lock (_sync) return ReferenceEquals(envelope, _completed);
+            }
+
+            internal bool TryTake(out Rgb24DeliveryEnvelope envelope, out string error)
+            {
+                lock (_sync)
+                {
+                    envelope = null;
+                    error = _failure;
+                    if (error != null) return false;
+                    if (_pending != null)
+                    {
+                        envelope = _pending;
+                        _pending = null;
+                        _stallTicks = 0;
+                        return true;
+                    }
+                    // IO 未结束时不计数。低 FPS/暂停不会增加墙钟 deadline。
+                    if (Completion.IsCompleted && ++_stallTicks > BridgeStallTickLimit)
+                        error = "rgb24-bridge-notification-stalled";
+                    return false;
+                }
+            }
         }
     }
 }
