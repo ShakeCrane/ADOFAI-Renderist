@@ -262,6 +262,37 @@ GUI 用户体验、L3-B 背压实机验收、L3-C 短谱面成片、L3-D cancel 
 - **修复方向与验证边界**：托管安装根改到 `Environment.SpecialFolder.LocalApplicationData` 下的 `ADOFAI.Renderist\ffmpeg`；发现、安装和下载沿用同一入口。旧 `LocalLow` 安装不删除；本机已把旧安装中通过 manifest SHA256 核验的 `ffmpeg.exe`、`ffprobe.exe` 和 ownership marker 复制到新托管根，目标两份哈希逐字节一致且目标 EXE 不再带 `Low Mandatory Level`；从新根启动的同一单帧编码命令可写原 session 目录。其他现有安装需在新目录重装或迁移并重新核验。当前离线 harness 新增安装根接线回归；可选真实 Gyan fixture 在此命令环境下有 7 项 rawvideo `corrupt input packet` 失败，**将 L2 源码临时恢复到本轮基线后同样有这 7 项失败**，不能记成本轮回归或声称真实 fixture 全过。新 DLL 的 MP4 连续帧实机验收尚未进行。
 - 当前离线回归 **215 passed / 0 failed / 12 skipped**。连续 RGB24 写帧、pre-entry→gameplay、row/channel、scale>1、Linear 和 Cancel→Restart 仍待后续分别验收；本阶段无 Finalizing，不产生可用 MP4 成品。
 
+### 2.2.10 L3-A 连续帧实机结果（2026-09-28）与像素语义验收状态
+
+**已由实际产物核验的连续帧结果**（本节结论均由 `D:\Output\ADOFAI Captures\` 下的 `metadata.json` 直接核对，非仅依据口头报告）：
+
+| session | 模式 | 结果 | 关键计数 |
+| --- | --- | --- | --- |
+| `editor_20260928_170602` | MP4 / RGB24 | `state=Failed`、`stopReason=l3a-validation-boundary:no-finalizing`、`completionSignal=scrController.OnLandOnPortal+state=Won`、`tailFramesCommitted=12` | `frameTransactionRequestCount=254`、`logicalFrameCount=254`（**254 个 transaction 全部 Commit**），`completionFrameIndex=241` |
+| `editor_20260928_170627` | MP4 / RGB24 | `Cancelled` / `user-stop`（pre-entry 取消） | request 44 / logical 43 |
+| `editor_20260928_170630` | MP4 / RGB24 | `Cancelled` / `user-stop`（gameplay 取消） | request 104 / logical 103 |
+| `editor_20260928_163217` | MP4 / RGB24 | `Failed` / `write-failed`（迁移前，旧 LocalLow 托管路径） | request 2 / logical 1 |
+
+- 该 session 的 `ffmpegExecutablePath` 已指向新托管根（`AppData\Local\ADOFAI.Renderist\ffmpeg\…`），`ffmpegExecutableSha256 = 3256173f…`（与 manifest 一致），证明**迁移后的 FFmpeg 不会再触发 Permission denied**；`170602` 的 254/254 连续交付即其直接后果。
+- 环境：`Gamma` / `Direct3D11`（Intel Arc B370）/ 3072×1920 / 30 FPS / `supersamplingScale=1` / `downsampleLevelCount=0` / `legacy-window`；`captureWidth/Height == outputWidth/Height`。
+- 因此 **MP4 主链在 Gamma/D3D11、scale=1 下已实机贯通**：L1 Ready 启动唯一 L2、RGB24 事务、pre-entry→gameplay handoff、canonical completion + 12 tail、Cancel→Restart 均已有产物级证据；终态按设计 **fail-closed**（`finalizingNotImplemented=true`，不产出成品）。
+- **仍未验证**：raw row orientation、RGB channel order、band / segment 拼接连续性、`scale>1` 输出几何、Linear。这些**不能**由上述日志或 metadata 推出——PNG 正常显示不构成 raw 行序证据。
+
+**本轮（像素语义验收）的临时诊断**：新增 `Export/Rgb24ValidationDump.cs`（一次性资产，提交 `f23e0de`），在正式 RGB24 frame 已完整形成、且仍由本 session 独占持有（L2 尚未取得读取 ownership）时，按**正式 delivery layout** 原样 dump 一帧 raw RGB24 + 小 metadata 到 `<sessionDir>\rgb24-validation\`。它复用正式 `FrameCaptureDriver` readback 结果，不建立第二 capture path / EOF coroutine / scheduler，不重新截图，不改变正式 buffer ownership，也不把 buffer 交给后台线程；输出为未经高层编码的 raw 字节，因此**不会**掩盖 row orientation。诊断构建身份：`ProductVersion=0.3.10.0+f23e0de716c8bacef05e18db549ea713d9f4d9dd`，DLL SHA256 `032FDB5B239A5F674039FB4CDCAEC0A581E91B346AEB83CAF319F77215F1EA85`。**验收结束后该文件与其两个调用点必须整体删除**，正式仓库不得长期保留一次性 validation dump。
+
+### 2.3.0 FFmpeg 托管根迁移的 release compatibility 待办（**未实现**）
+
+`864553b` 把托管安装根从 `Application.persistentDataPath`（实际 `AppData\LocalLow`，其 EXE 带继承的 `Low Mandatory Level`，无法向普通输出目录写入）改到 `Environment.SpecialFolder.LocalApplicationData` 下的 `ADOFAI.Renderist\ffmpeg`。**旧版本的托管安装仍留在 LocalLow**，升级用户的实际症状是 `component-not-ready:state=NotFound`，直到手动重新安装。
+
+后续 release 应处理（本轮**只记录，不实现**，除非另有明确要求）：
+
+- 新托管根不存在/无有效安装时，**检测**旧 LocalLow 托管安装；
+- 对旧安装做**固定版本 + SHA256 核验**（沿用 manifest 与 `FfmpegManagedInstall` 的既有校验，不新增信任路径）；
+- 核验通过后**复制/迁移**到新 Local 根，并在新位置**再次核验**；
+- **不得**直接继续执行低完整性旧路径中的 `ffmpeg.exe`（低完整性正是 Permission denied 的根因）；
+- 迁移不可用或核验失败时，退回**正常重新安装**流程，并给出可读原因；
+- 迁移过程同样要满足既有 ownership 规则（不覆盖已有新安装、不删旧安装、不猜测路径）。
+
 ### 2.3 FFmpeg 构建、安装与独立进程取证（2026-09-23；未接入产品）
 
 **证据层级**：在当前 Windows x64（中完整性级别）、ADOFAI `Assembly-CSharp.dll` FileVersion `0.4.3.0` / Unity `6000.3.10f1` / Renderist `net48` 环境下，使用仓库外临时目录、Windows .NET Framework 4.8 编译的独立 C# `Process` harness 及 FFmpeg 命令行测试。只读核对当前游戏自带 Mono `System.dll` / `mscorlib.dll` / `System.IO.Compression*.dll`，确认 `Process.Start/Kill/WaitForExit/BeginErrorReadLine/BeginOutputReadLine/Exited`、`Stream.WriteAsync`、`SynchronizationContext.Post` 与 `ZipFile.OpenRead` 的 API **存在**，并非运行语义验证。以下是**资产校验、目标程序集静态 API 与独立进程结果**，不是 Unity Mono 中的正式 IO 或 MP4 实机验收。本轮未改产品代码、游戏、系统 PATH 或发布 ZIP。
@@ -1125,8 +1156,9 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 > 此处只列**当前未收敛事项**；已完成的 End Tail、pre-entry、Log-only、Custom Resolution 和 Supersampling 不再重复充当待办。历史验收数据见 §9，实施不变量见 §3–§8，当前 ADOFAI 内部事实见 §10。
 
-1. **`0.3.10.0` 视频导出（L1 完成并实机验收；L2 独立管线阶段结束；L3 第一闭环 ownership 已实现并实机验收；**L3-A 已接入 MP4 启动；首轮实机到 RGB24 frame 1，两次 write-failed，连续交付待复测**；L3-B/C/D 未开始）**：当前版本 `0.3.10.0` / Phase `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`。L3-A 的实现、当前回归结果（**215/0/12**）、目标 Unity Mono 读回 API 结论、行序策略与 buffer lifetime 契约见 §2.2.7；**`0.3.10.0` 仍不能从编辑器导出 MP4**。L1 完成通知与归档 ownership 缺陷已修复；主路径实机证据见 §2.6 / §2.7，仍未验收活动下载期间禁用/卸载、异常网络及真实回调竞态。L2 历史独立 net48 真实 Gyan fixture 回归 **141/0/0**（本轮离线回归 **129/0/12**，与既有基线一致）；目标 Unity Mono 的正常 8 帧编码/核验/发布及写入中取消/回收两项定向探针均 PASS（§2.8.3），证据绑定临时 DLL `0D90CA6A…`。**L3 第一闭环**：`PlanetVisualTimeOwnership` 已正式实现（§2.2.4）并完成正式 runtime 验收（§2.2.6）——30 / 60 FPS strict acquisition 唯一命中、`creationLeadSteps=4` 成立、terminal 一次性定位且 `position == fullPosition == duration`、terminal-hold 连续跨 pre-entry → gameplay、normal completion cleanup 成功、Cancel→Restart generation `3→4` 无 residual / stale 污染；**仅 pre-terminal cancel 的 `restore-original-playing` 分支仍只有静态覆盖**。**L3-A RGB24 delivery 已接入；Finalizing 关口仍未实现**，`0.3.10.0` 仍不能从编辑器导出 MP4。整体视觉确定性未成立：Trail / Particle / Animator / Camera / Shader 等其它漂移来源仍未纳入 ownership；不能用 ownership 或 L3-A 回归代替 L3 MP4 帧事务实机验收。
-9. **L3-A 实机验收（诊断复测已定位 FFmpeg 写入权限；连续写帧仍待复测）**：§2.2.9 的目标游戏日志证明模式 authority 和主线程 Completion 已生效，frame 0 完整交付；frame 1 的 broken pipe 是托管 FFmpeg 无法打开 `D:\Output` 临时产物之后的结果。本机同 SHA 二进制的低/普通完整性对照已定位安装位置问题；托管根已改为 `LocalApplicationData`，L2 temp reservation 维持原状。下一次仅用同谱面 `3072×1920 / 30 FPS / CRF 18 / medium / MP4` 验证至少跨过 frame 1 并连续推进若干帧；如自然到达 gameplay，再观察 pre-entry→gameplay。行序、channel、scale>1、Linear、Cancel 矩阵暂缓。**在实机验收完成并经审查前，不得把 `0.3.10.0` 视为稳定节点，也不得进入 L3-B/C/D。**
+1. **`0.3.10.0` 视频导出（L1 完成并实机验收；L2 独立管线阶段结束；L3 第一闭环 ownership 已实现并实机验收；**L3-A 主链在 Gamma/D3D11、scale=1 下已实机贯通（254/254 连续交付 + handoff + canonical completion + Cancel→Restart），像素语义与 scale>1 仍在验收**；L3-B/C/D 未开始）**：当前版本 `0.3.10.0` / Phase `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`。L3-A 的实现见 §2.2.7 / §2.2.8，连续帧实机结果与像素语义验收状态见 §2.2.10，当前回归 **216/0/12**；**`0.3.10.0` 仍不能从编辑器导出 MP4**（无 Finalizing，终态按设计 fail-closed）。L1 完成通知与归档 ownership 缺陷已修复；主路径实机证据见 §2.6 / §2.7，仍未验收活动下载期间禁用/卸载、异常网络及真实回调竞态。L2 历史独立 net48 真实 Gyan fixture 回归 **141/0/0**；目标 Unity Mono 的正常 8 帧编码/核验/发布及写入中取消/回收两项定向探针均 PASS（§2.8.3），证据绑定临时 DLL `0D90CA6A…`。**L3 第一闭环**：`PlanetVisualTimeOwnership` 已正式实现（§2.2.4）并完成正式 runtime 验收（§2.2.6）——30 / 60 FPS strict acquisition 唯一命中、`creationLeadSteps=4` 成立、terminal 一次性定位且 `position == fullPosition == duration`、terminal-hold 连续跨 pre-entry → gameplay、normal completion cleanup 成功、Cancel→Restart generation `3→4` 无 residual / stale 污染；**仅 pre-terminal cancel 的 `restore-original-playing` 分支仍只有静态覆盖**。**Finalizing 关口仍未实现**。整体视觉确定性未成立：Trail / Particle / Animator / Camera / Shader 等其它漂移来源仍未纳入 ownership。
+9. **L3-A 像素语义验收（进行中）**：Gamma/D3D11、scale=1 的**主链已实机贯通**并有产物级证据（§2.2.10：`170602` 254/254 连续交付、handoff、canonical completion + 12 tail、Cancel→Restart；终态按设计 fail-closed）。**仍缺** raw row orientation、RGB channel order、band / segment 拼接连续性、`scale>1` 输出几何与 Linear。本轮已加入一次性 raw dump（§2.2.10），等待目标环境产出一帧诊断数据后据此判定并**立即删除该临时资产**。**在这些项判定完成前，不得把 `0.3.10.0` 视为稳定节点，也不得进入 L3-B/C/D。**
+10. **FFmpeg 托管根迁移的 release compatibility（未实现）**：见 §2.3.0。旧 LocalLow 托管安装不会被自动识别/迁移，升级用户会看到 `component-not-ready:state=NotFound` 直到重装；这是发布前的用户可见回归，需在正式 release 前按 §2.3.0 的核验顺序处理。
 2. **Linear 与极端 GPU 资源失败**：Supersampling 已在 Gamma / Direct3D11 的所述范围实机通过，**Linear 色彩空间从未实机覆盖**；接近硬件极限的 RT 分配与 GPU 状态恢复故障仍只有 stub / 静态证据。详见 §9.7.3。
 3. **真实 Unity 故障注入**：host Destroy、RT Release/Destroy、partial Camera assignment 的失败与重试，已有生产源码 + Unity stub 的确定性测试，**未在真实 Unity Player 注入这些异常**；正常路径与跨调用 residual 的既有实机结果不能替代异常证据（§3.5、§9.3）。
 4. **其余边界测试**：显式 safety frame-limit runtime trigger 与 `TryPrepareHitState` 故障注入主要依赖静态 / 纯计算证据；需要扩大 BPM change、Twirl、Midspin、event-heavy、特殊 startup、长谱面覆盖。无须为此设置人为帧数或时长上限。
