@@ -1213,12 +1213,15 @@ namespace ADOFAI.Renderist
         //
         // 关键边界：FFmpeg 组件状态**不参与** preflight，也绝不阻断 PNG / Log-only 导出。
 
-        /// <summary>托管安装根目录。由 GUI 层根据用户可写目录决定，Ffmpeg 层不猜测路径。</summary>
+        /// <summary>托管安装根目录。FFmpeg 不能从 LocalLow 启动后写入普通完整性级别的导出目录。</summary>
         private static string GetFfmpegInstallRoot()
         {
             try
             {
-                return Path.Combine(Application.persistentDataPath, "ADOFAI.Renderist", "ffmpeg");
+                string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                if (string.IsNullOrWhiteSpace(localAppData) || !Path.IsPathRooted(localAppData))
+                    return null;
+                return Path.Combine(localAppData, "ADOFAI.Renderist", "ffmpeg");
             }
             catch (Exception ex)
             {

@@ -323,6 +323,22 @@ namespace ADOFAI.Renderist.FfmpegTests
 
         private static void ProductionSourceContracts()
         {
+            TestKit.Run("mp4 wiring: managed FFmpeg installs outside LocalLow for ordinary output paths", () =>
+            {
+                string mod = Source("ModEntry.cs");
+                string root = Method(mod, "private static string GetFfmpegInstallRoot()");
+                TestKit.Check(root.Contains("Environment.SpecialFolder.LocalApplicationData") &&
+                    !root.Contains("Application.persistentDataPath"),
+                    "managed executable must inherit the ordinary LocalAppData integrity level");
+                TestKit.Check(Method(mod, "private static void RequestFfmpegInspection()")
+                    .Contains("string installRoot = GetFfmpegInstallRoot();") &&
+                    Method(mod, "private static void StartFfmpegInstall(string archivePath)")
+                    .Contains("FfmpegInstallLayout.TryCreate(GetFfmpegInstallRoot()") &&
+                    Method(mod, "private static FfmpegDownloadController EnsureFfmpegDownloadController()")
+                    .Contains("FfmpegInstallLayout.TryCreate(GetFfmpegInstallRoot()"),
+                    "inspection, local install and download must share the same install root");
+            });
+
             TestKit.Run("mp4 wiring: the controller gates the MP4 chain on the frozen mode before Play", () =>
             {
                 string start = Method(Source("Export/EditorExportController.cs"),
