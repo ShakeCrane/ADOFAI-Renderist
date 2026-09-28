@@ -414,6 +414,10 @@ namespace ADOFAI.Renderist.Export
                     }
 
                     TryWriteMetadataBestEffort(session);
+
+                    // 【临时 L3-A 像素语义验收】每 session dump 一帧 raw RGB24（见 Rgb24ValidationDump）。
+                    // 验收结束后连同该文件一起删除本调用。
+                    Rgb24ValidationDump.Arm(session.OutputDirectory);
                 }
 
                 // 这里是 terminal re-arm 后的正常路径；只允许一次 official Play。
