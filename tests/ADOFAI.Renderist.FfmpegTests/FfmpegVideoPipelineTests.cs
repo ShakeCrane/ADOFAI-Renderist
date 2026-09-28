@@ -866,6 +866,13 @@ namespace ADOFAI.Renderist.FfmpegTests
                 FfmpegVideoOutcome outcome = Await(pipeline.CleanupTask, "cleanup");
                 TestKit.CheckEqual(FfmpegVideoPipelineState.Failed, outcome.State, "state");
                 TestKit.CheckEqual("write-failed", outcome.ErrorCode, "outcome error code");
+                string diagnostic = pipeline.DescribeFailureDiagnostics();
+                TestKit.Check(diagnostic.Contains("deliveredFrameCount=0") &&
+                    diagnostic.Contains("pipePoisoned=True") &&
+                    diagnostic.Contains("errorCode=write-failed") &&
+                    diagnostic.Contains("processExitedAtWriteFailure=") &&
+                    diagnostic.Contains("exitCode=") && diagnostic.Contains("stderr="),
+                    "one terminal diagnostic exposes the write and process facts: " + diagnostic);
                 TestKit.Check(!File.Exists(Path.Combine(directory, "video.mp4")), "nothing may be published");
                 TestKit.CheckEqual(0, PartialFiles(directory).Length, "temp file must be removed");
 

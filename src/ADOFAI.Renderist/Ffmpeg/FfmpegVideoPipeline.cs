@@ -519,6 +519,8 @@ namespace ADOFAI.Renderist.Ffmpeg
         private string _cancelReason;
         private string _failureCode;
         private string _failureDetail;
+        private string _encodeArguments;
+        private bool? _processExitedAtWriteFailure;
 
         /// <summary>资源释放阶段的可观察失败细节（不进入终态判定，但绝不隐藏）。</summary>
         private string _releaseDetail;
@@ -601,6 +603,33 @@ namespace ADOFAI.Renderist.Ffmpeg
             get { lock (_gate) return _convergence; }
         }
 
+        // 只供 L3-A 失败诊断读取；不改变 L2 写入/终态 API 或进程 ownership。
+        internal string EncodeArguments { get { lock (_gate) return _encodeArguments; } }
+
+        internal string DescribeFailureDiagnostics()
+        {
+            lock (_gate)
+            {
+                Task<FfmpegVideoOutcome> cleanup = _convergence;
+                bool settled = cleanup != null && cleanup.IsCompleted && !cleanup.IsFaulted && !cleanup.IsCanceled;
+                bool stderrSettled = _stderrPump == null || _stderrPump.IsCompleted;
+                FfmpegVideoOutcome outcome = settled ? cleanup.Result : null;
+                return "state=" + _state + " deliveredFrameCount=" +
+                    _deliveredFrames.ToString(CultureInfo.InvariantCulture) +
+                    " pipePoisoned=" + _poisoned +
+                    " errorCode=" + (_failureCode ?? "null") +
+                    " errorDetail=" + (_failureDetail ?? "null") +
+                    " processExitedAtWriteFailure=" +
+                    (_processExitedAtWriteFailure.HasValue ? _processExitedAtWriteFailure.Value.ToString() : "unknown") +
+                    " cleanupState=" + (cleanup == null ? "null" : cleanup.Status.ToString()) +
+                    " exitCode=" + (outcome != null && outcome.EncoderExitCode.HasValue
+                        ? outcome.EncoderExitCode.Value.ToString(CultureInfo.InvariantCulture) : "unknown") +
+                    " residual=" + (outcome == null ? "unknown" : outcome.ResidualOwnership.ToString()) +
+                    " tempPath=" + (_tempPath ?? "null") +
+                    " stderr=" + (stderrSettled ? Flatten(_stderrText.Tail, 1200) : "pending");
+            }
+        }
+
         // ==================================================================== start
 
         public FfmpegVideoStartResult Start()
@@ -680,6 +709,7 @@ namespace ADOFAI.Renderist.Ffmpeg
                 return FailStart(result, commandError, commandDetail);
 
             result.Arguments = arguments;
+            lock (_gate) _encodeArguments = arguments;
 
             // 4) 启动编码进程。
             Process process = null;
@@ -1114,10 +1144,13 @@ namespace ADOFAI.Renderist.Ffmpeg
             bool cancelled = _state == FfmpegVideoPipelineState.Cancelled;
             if (!cancelled && _state == FfmpegVideoPipelineState.Running)
             {
+                try { _processExitedAtWriteFailure = _process != null && _process.HasExited; }
+                catch (Exception) { _processExitedAtWriteFailure = null; }
                 _state = FfmpegVideoPipelineState.Failed;
                 _failureCode = "write-failed";
                 _failureDetail = "written=" + written.ToString(CultureInfo.InvariantCulture) + "/" +
-                                 frame.Length.ToString(CultureInfo.InvariantCulture) + " ex=" + ex.Message;
+                                 frame.Length.ToString(CultureInfo.InvariantCulture) + " ex=" +
+                                 ex.GetType().FullName + ": " + ex.Message;
                 startConvergence = true;
             }
 
@@ -1125,7 +1158,7 @@ namespace ADOFAI.Renderist.Ffmpeg
             {
                 Success = false,
                 ErrorCode = cancelled ? "cancelled" : "write-failed",
-                ErrorDetail = ex.Message,
+                ErrorDetail = ex.GetType().FullName + ": " + ex.Message,
                 DeliveredFrameCount = _deliveredFrames,
             };
         }

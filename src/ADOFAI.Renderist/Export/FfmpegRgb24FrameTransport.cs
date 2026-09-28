@@ -28,6 +28,7 @@ namespace ADOFAI.Renderist.Export
         }
 
         internal FfmpegVideoPipeline Pipeline { get { return _pipeline; } }
+        internal string FailureDiagnostics => _pipeline.DescribeFailureDiagnostics();
         public Task<FfmpegVideoOutcome> CleanupTask => _pipeline.CleanupTask;
         public void RequestStop(string reason) { _pipeline.Cancel(reason); }
 

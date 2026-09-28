@@ -74,6 +74,26 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.Check(!OutputModePolicy.IsImageOutput(CaptureOutputMode.LogOnly), "Log-only is not image output");
                 Check("mp4-rgb24", OutputModePolicy.Label(CaptureOutputMode.Mp4Rgb24));
             });
+
+            TestKit.Run("mp4 runtime mode: context cannot define or override the frozen mode", () =>
+            {
+                string error;
+                TestKit.Check(OutputModePolicy.TryValidateRuntimeBinding(CaptureOutputMode.Mp4Rgb24,
+                    true, true, out error), "MP4 with an armed context: " + error);
+                TestKit.Check(!OutputModePolicy.TryValidateRuntimeBinding(CaptureOutputMode.Mp4Rgb24,
+                    false, false, out error) && error == "mp4-delivery-context-missing",
+                    "MP4 without context must fail before Play");
+                TestKit.Check(!OutputModePolicy.TryValidateRuntimeBinding(CaptureOutputMode.PngSequence,
+                    true, true, out error) && error == "non-mp4-delivery-context-present",
+                    "a stale context cannot turn PNG into RGB24");
+                TestKit.Check(!OutputModePolicy.TryValidateRuntimeBinding(CaptureOutputMode.LogOnly,
+                    true, true, out error) && error == "non-mp4-delivery-context-present",
+                    "a stale context cannot turn Log-only into RGB24");
+                TestKit.Check(OutputModePolicy.TryValidateRuntimeBinding(CaptureOutputMode.PngSequence,
+                    false, false, out error), "PNG without context");
+                TestKit.Check(OutputModePolicy.TryValidateRuntimeBinding(CaptureOutputMode.LogOnly,
+                    false, false, out error), "Log-only without context");
+            });
         }
 
         // ---------------------------------------------------------------- freeze
@@ -226,12 +246,23 @@ namespace ADOFAI.Renderist.FfmpegTests
                     Check("mp4-pipeline-start-failed:component-not-ready", binding.ErrorCode);
                     TestKit.CheckEqual(1, factory.StartCalls, "start was attempted exactly once");
 
-                    // 该假管线的终态收敛不可观察（CleanupTask 未完成），因此 context **必须**被保留：
-                    // 绝不静默丢弃 ownership，由调用方作为 residual 继续收敛并阻止重开。
-                    TestKit.Check(binding.PendingConvergence != null,
-                        "an unconverged context must be retained for the residual gate");
-                    TestKit.Check(binding.PendingConvergence.HasResidualOwnership,
-                        "the retained context still reports residual ownership");
+                    // 假管线未启动进程，Cancel 可在 Bind 返回前后任一时刻完成。
+                    // 只有仍持有资源时才必须保留 context；已完成则允许立即退休。
+                    if (binding.PendingConvergence != null)
+                    {
+                        // Cleanup 可以恰好在 Bind 返回与断言之间完成；此时保留的引用
+                        // 由主线程下一次收敛入口清除，不能把时序变化误报为 ownership 丢失。
+                        TestKit.Check(binding.PendingConvergence.HasResidualOwnership ||
+                            (factory.LastCreated.CleanupTask != null &&
+                             factory.LastCreated.CleanupTask.IsCompleted &&
+                             !factory.LastCreated.CleanupTask.Result.ResidualOwnership),
+                            "pending context is either still owned or already safely converged");
+                    }
+                    else
+                        TestKit.Check(factory.LastCreated.CleanupTask != null &&
+                            factory.LastCreated.CleanupTask.IsCompleted &&
+                            !factory.LastCreated.CleanupTask.Result.ResidualOwnership,
+                            "the fake pipeline has no started process and may converge immediately");
                 }
                 finally
                 {
@@ -303,8 +334,18 @@ namespace ADOFAI.Renderist.FfmpegTests
                 int play = start.IndexOf("DeterministicFrameScheduler.TryStart(", StringComparison.Ordinal);
                 TestKit.Check(gate > 0 && play > gate,
                     "pipeline/context must be ready before the single editor.Play() path");
-                TestKit.Check(start.Contains("imageOutputEnabled = OutputModePolicy.IsImageOutput(outputMode)"),
-                    "image-output is derived from the frozen mode, not a second authority");
+                TestKit.Check(start.Contains("geometryInput, outputMode, false)"),
+                    "the explicit frozen mode is passed to scheduler");
+                string scheduler = Source("Export/DeterministicFrameScheduler.cs");
+                TestKit.Check(scheduler.Contains("TryValidateRuntimeBinding(outputMode, _rgb24DeliveryArmed,") &&
+                    scheduler.Contains("_rgb24DeliveryEnabled = OutputModePolicy.IsMp4(outputMode)"),
+                    "scheduler validates the resource and derives RGB24 from mode");
+                TestKit.Check(scheduler.Contains("OnCaptureResult, _frozenOutputMode,"),
+                    "driver receives the explicit frozen mode");
+                string session = Source("Export/EditorExportSession.cs");
+                TestKit.Check(session.Contains("Mode => OutputModeKind == CaptureOutputMode.PngSequence") &&
+                    session.Contains("public string OutputMode => OutputModePolicy.Label(OutputModeKind)"),
+                    "metadata mode and outputMode share the frozen enum");
                 TestKit.Check(start.Contains("TryResolveOutputMode(out outputMode, out modeMigrated"),
                     "the mode is resolved once per session");
                 TestKit.Check(start.Contains("FinalizingNotImplemented = OutputModePolicy.IsMp4(outputMode)"),

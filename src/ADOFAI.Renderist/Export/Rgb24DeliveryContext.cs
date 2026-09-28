@@ -65,6 +65,9 @@ namespace ADOFAI.Renderist.Export
         }
         internal bool HasResidualOwnership => HasFrameOwnership || HasPipelineOwnership;
         internal bool Stopping => _stopping;
+        internal bool PipelineCleanupSettled => _lifetime.CleanupTask != null && _lifetime.CleanupTask.IsCompleted;
+        internal string PipelineFailureDiagnostics =>
+            (_lifetime as FfmpegRgb24FrameTransport)?.FailureDiagnostics ?? "unavailable";
 
         // 幂等、非阻塞；终态 Update、取消入口及重开 gate 都可以调用。
         internal bool TryStopAndDrain(string reason, out string error)

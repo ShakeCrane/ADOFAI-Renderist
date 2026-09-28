@@ -307,8 +307,7 @@ namespace ADOFAI.Renderist.Export
             string prefix,
             int zeroPadWidth,
             CaptureResultCallback onResult,
-            bool imageOutputEnabled,
-            bool rgb24DeliveryEnabled,
+            CaptureOutputMode outputMode,
             out long generation,
             out string error)
         {
@@ -327,10 +326,9 @@ namespace ADOFAI.Renderist.Export
                 return false;
             }
 
-            if (imageOutputEnabled && rgb24DeliveryEnabled)
+            if (!OutputModePolicy.IsDefined((int)outputMode))
             {
-                // 输出模式必须互斥：PNG 与 RGB24 交付不能同时冻结在同一 session。
-                error = "output-mode-conflict";
+                error = "output-mode-invalid";
                 return false;
             }
 
@@ -344,8 +342,8 @@ namespace ADOFAI.Renderist.Export
                 // 必须先由 Stop() 收敛（Start 不接管未释放的 ownership）。
                 _aspectAssignedCount = 0;
                 // 输出模式在 session 开始时冻结一次：降采样链是否创建只取决于本值。
-                _imageOutputEnabled = imageOutputEnabled;
-                _rgb24DeliveryEnabled = rgb24DeliveryEnabled;
+                _imageOutputEnabled = OutputModePolicy.IsImageOutput(outputMode);
+                _rgb24DeliveryEnabled = OutputModePolicy.IsMp4(outputMode);
                 _downsampleTargets = EmptyDownsampleTargets;
                 _supersamplingScale = OutputGeometryPolicy.DefaultSupersamplingScale;
 
@@ -355,8 +353,7 @@ namespace ADOFAI.Renderist.Export
 
                 behaviour = host.AddComponent<CaptureHostBehaviour>();
                 behaviour.Configure(outputDirectory, string.IsNullOrEmpty(prefix) ? "frame_" : prefix,
-                    zeroPadWidth < 1 ? 1 : zeroPadWidth, onResult, generation, imageOutputEnabled,
-                    rgb24DeliveryEnabled);
+                    zeroPadWidth < 1 ? 1 : zeroPadWidth, onResult, generation, outputMode);
 
                 // 静态 ownership 只在全部启动步骤成功后交接；此前 host/behaviour
                 // 属于局部 ownership，中途异常由 catch 就地清理。
@@ -1475,16 +1472,15 @@ namespace ADOFAI.Renderist.Export
             private int _rgb24BandRows;
 
             public void Configure(string outputDirectory, string prefix, int zeroPadWidth,
-                CaptureResultCallback onResult, long generation, bool imageOutputEnabled,
-                bool rgb24DeliveryEnabled)
+                CaptureResultCallback onResult, long generation, CaptureOutputMode outputMode)
             {
                 _outputDirectory = outputDirectory;
                 _prefix = prefix;
                 _zeroPadWidth = zeroPadWidth;
                 _onResult = onResult;
                 _generation = generation;
-                _imageOutputEnabled = imageOutputEnabled;
-                _rgb24DeliveryEnabled = rgb24DeliveryEnabled;
+                _imageOutputEnabled = OutputModePolicy.IsImageOutput(outputMode);
+                _rgb24DeliveryEnabled = OutputModePolicy.IsMp4(outputMode);
                 _pending = false;
                 _pendingIndex = -1;
                 _pendingRgb24Frame = null;

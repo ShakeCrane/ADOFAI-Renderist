@@ -88,6 +88,19 @@ namespace ADOFAI.Renderist.Export
             return mode == CaptureOutputMode.Mp4Rgb24;
         }
 
+        // context 是 MP4 的资源，不参与决定模式。缺失或误 Arm 均在 Play 前拒绝。
+        internal static bool TryValidateRuntimeBinding(CaptureOutputMode mode, bool armed,
+            bool hasContext, out string error)
+        {
+            error = null;
+            if (!IsDefined((int)mode)) { error = "output-mode-invalid"; return false; }
+            if (IsMp4(mode) && (!armed || !hasContext))
+            { error = "mp4-delivery-context-missing"; return false; }
+            if (!IsMp4(mode) && (armed || hasContext))
+            { error = "non-mp4-delivery-context-present"; return false; }
+            return true;
+        }
+
         internal static string Label(CaptureOutputMode mode)
         {
             switch (mode)

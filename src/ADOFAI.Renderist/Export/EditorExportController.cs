@@ -256,6 +256,9 @@ namespace ADOFAI.Renderist.Export
                 return false;
             }
 
+            Log.Info("EditorExportController: MP4 FFmpeg executable=" + frozen.Identity.ExecutablePath +
+                     " arguments=" + binding.Pipeline.EncodeArguments);
+
             string armError;
             if (!DeterministicFrameScheduler.ArmRgb24Delivery(binding.Context, out armError))
             {
@@ -331,7 +334,6 @@ namespace ADOFAI.Renderist.Export
                 }
 
                 _frozenOutputMode = outputMode;
-                bool imageOutputEnabled = OutputModePolicy.IsImageOutput(outputMode);
 
                 // 输出几何同样在 session 开始时一次性冻结。authority 是 scheduler 自己用
                 // 同一个纯函数解析的结果；这里先按同一配置解析一次，用于启动前写 metadata。
@@ -348,8 +350,7 @@ namespace ADOFAI.Renderist.Export
                     State = EditorExportState.Preparing,
                     StateDetail = "正在启动确定性帧调度器。",
                     OutputFps = outputFps,
-                    ImageOutputEnabled = imageOutputEnabled,
-                    OutputMode = OutputModePolicy.Label(outputMode),
+                    OutputModeKind = outputMode,
                     // L3-A 终态边界：本轮没有 Finalizing，因此本 session 到达终态时不会产出成品。
                     FinalizingNotImplemented = OutputModePolicy.IsMp4(outputMode),
                     OutputGeometryMode = OutputGeometryPolicy.KindLabel(geometry.Mode),
@@ -418,7 +419,7 @@ namespace ADOFAI.Renderist.Export
                 // 这里是 terminal re-arm 后的正常路径；只允许一次 official Play。
                 string reject = DeterministicFrameScheduler.TryStart(
                     session.OutputDirectory, outputFps, configuredSafetyFrameLimit, endTailInput,
-                    geometryInput, imageOutputEnabled, false);
+                    geometryInput, outputMode, false);
                 if (reject != null)
                 {
                     LastStartRejectReason = reject;
@@ -744,7 +745,7 @@ namespace ADOFAI.Renderist.Export
         private static void CopyFrozenPolicyFromScheduler(EditorExportSession session)
         {
             // 以 scheduler 实际冻结的模式为准（它才是本 session 执行时使用的值）。
-            session.ImageOutputEnabled = DeterministicFrameScheduler.ImageOutputEnabled;
+            session.OutputModeKind = DeterministicFrameScheduler.FrozenOutputMode;
             // 输出几何：以 scheduler 冻结的解析结果为准（legacy 模式的窗口尺寸也在那里冻结）。
             session.OutputGeometryMode = DeterministicFrameScheduler.GeometryModeLabel;
             session.GeometryCustomResolutionEnabled = DeterministicFrameScheduler.GeometryCustomResolutionEnabled;

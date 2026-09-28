@@ -11,7 +11,7 @@ namespace ADOFAI.Renderist.Export
     ///
     /// 保存本阶段真实存在的信息：会话 ID、开始/结束时间、输出目录、当前状态、
     /// TickCount（Unity OnUpdate 推进次数，不是导出帧号）、OutputFps、tail / safety policy、
-    /// 输出模式（image output enabled / log-only）、输出几何（legacy-window /
+    /// 输出模式（PNG / MP4 / Log-only）、输出几何（legacy-window /
     /// custom-resolution 及其冻结宽高与统一 aspect）、只读运行时渲染环境 inventory
     /// （色彩空间 / GPU / capture RenderTexture 形态）、逻辑帧事务计数与 PNG 写盘计数、
     /// canonical completion 观测结果、终止分类、场景名。
@@ -60,10 +60,9 @@ namespace ADOFAI.Renderist.Export
         public double? CompletionBpm;
         public double? Pitch;
         /// <summary>
-        /// 本 session 冻结的输出模式：true = 写 PNG 序列，false = log-only
-        /// （image output disabled；帧事务照常，但不写图像，仍写 metadata）。
+        /// 旧 metadata 布尔视图：仅 PNG 为 true，由三态模式派生。
         /// </summary>
-        public bool ImageOutputEnabled;
+        public bool ImageOutputEnabled => OutputModePolicy.IsImageOutput(OutputModeKind);
 
         // ---- Phase 3.9.0 / L3-A: 输出模式与 MP4 冻结参数 ----
 
@@ -72,7 +71,8 @@ namespace ADOFAI.Renderist.Export
         /// 这是 output mode 的唯一 authority；<see cref="ImageOutputEnabled"/> 由它派生，
         /// 不是第二个模式 authority。
         /// </summary>
-        public string OutputMode;
+        public CaptureOutputMode OutputModeKind = CaptureOutputMode.PngSequence;
+        public string OutputMode => OutputModePolicy.Label(OutputModeKind);
         /// <summary>本 session 唯一的最终视频目标路径（MP4 模式；仅记录目标，不代表已产出成品）。</summary>
         public string FinalVideoPath;
         /// <summary>L1 冻结的 FFmpeg 可执行文件绝对路径（MP4 模式）。</summary>
@@ -179,12 +179,14 @@ namespace ADOFAI.Renderist.Export
         private const string PngModeLabel = "editor-export-png-sequence";
         /// <summary>log-only（image output disabled）模式的 mode 值。</summary>
         private const string LogOnlyModeLabel = "editor-export-log-only";
+        private const string Mp4ModeLabel = "editor-export-mp4-rgb24";
         private const string MetadataFileName = "metadata.json";
 
         /// <summary>
-        /// metadata 的 mode 字段：由冻结的 imageOutputEnabled 派生，不额外维护第二套状态。
+        /// metadata 的 mode 字段：由冻结的三态模式派生。
         /// </summary>
-        public string Mode => ImageOutputEnabled ? PngModeLabel : LogOnlyModeLabel;
+        public string Mode => OutputModeKind == CaptureOutputMode.PngSequence ? PngModeLabel :
+            OutputModeKind == CaptureOutputMode.Mp4Rgb24 ? Mp4ModeLabel : LogOnlyModeLabel;
 
         public EditorExportSession(string sessionId, string outputDirectory, string sceneName)
         {
@@ -207,9 +209,8 @@ namespace ADOFAI.Renderist.Export
             ResolvedTailBeats = null;
             CompletionBpm = null;
             Pitch = null;
-            // 与 Settings.EditorImageOutputEnabled 的默认值一致：未被显式设置前不得
-            // 静默声称 log-only。
-            ImageOutputEnabled = true;
+            // 尚未冻结前保持既有 PNG 默认值。
+            OutputModeKind = CaptureOutputMode.PngSequence;
             TailFramesCommitted = 0;
             TailFramesCaptured = 0;
             FrameTransactionRequestCount = 0;

@@ -94,10 +94,10 @@ namespace ADOFAI.Renderist.Export
         private static long _tailFramesCaptured;
 
         /// <summary>
-        /// 本 session 冻结的输出模式：true = PNG 序列，false = log-only（image output disabled）。
-        /// 只在 TryStart 赋值，session 期间不读 Settings，因此运行中修改 GUI 不影响当前 session。
+        /// 本 session 冻结三态模式；布尔量只是执行路径所用的派生视图。
         /// </summary>
         private static bool _imageOutputEnabled = true;
+        private static CaptureOutputMode _frozenOutputMode = CaptureOutputMode.PngSequence;
 
         private static double _outputTime;
         private static double _forcedSongPosition;
@@ -150,6 +150,8 @@ namespace ADOFAI.Renderist.Export
         private static int _activationUnityFrame = -1;
         private static int _lastPrepareUnityFrame = -1;
         private static long _lastAutoplayFrameIndex = -1;
+        private static bool _firstRgb24CompletionLogged;
+        private static bool _rgb24DeliveryFailureObserved;
         private static bool _clockActive;
         private static bool _pendingCapture;
         private static long _pendingCaptureIndex = -1;
@@ -310,8 +312,9 @@ namespace ADOFAI.Renderist.Export
         public static double ResolvedTailSeconds => _resolvedTailSeconds;
         public static double? ResolvedTailBeats => _resolvedTailBeats;
         public static double? CompletionBpm => _completionBpm;
-        /// <summary>本 session 冻结的输出模式（true = PNG 序列，false = log-only）。</summary>
+        /// <summary>旧布尔视图：仅 PNG 为 true，由冻结的三态模式派生。</summary>
         public static bool ImageOutputEnabled => _imageOutputEnabled;
+        public static CaptureOutputMode FrozenOutputMode => _frozenOutputMode;
         /// <summary>本 session 请求过的逻辑帧事务数（PNG 与 log-only 都计入）。</summary>
         public static long FrameTransactionRequestCount => _frameTransactionRequestCount;
         /// <summary>
@@ -385,15 +388,14 @@ namespace ADOFAI.Renderist.Export
         /// safety policy 在这里结合 outputFps 一次性解析，scheduler 内部只消费
         /// 解析后的 long frame 上限与逻辑时长。
         ///
-        /// imageOutputEnabled 是 session 开始时冻结的输出模式（PNG / log-only）。
-        /// 它在这里一次性冻结，session 期间不再读取 Settings。
+        /// outputMode 是 session 开始时冻结的唯一输出模式，期间不再读取 Settings。
         ///
         /// geometryInput 是 session 开始时冻结的输出几何配置（自定义分辨率或沿用窗口）。
         /// 解析结果同时决定 capture RenderTexture 尺寸与三台原生 Camera 的统一 aspect；
         /// session 期间不再读取 Settings，也不再读取 Screen（legacy 模式在解析时读一次）。
         /// </summary>
         public static string TryStart(string outputDirectory, int outputFps, int configuredSafetyFrameLimit,
-            EndTailInput endTailInput, GeometryInput geometryInput, bool imageOutputEnabled,
+            EndTailInput endTailInput, GeometryInput geometryInput, CaptureOutputMode outputMode,
             bool allowExpectedTerminalControllerFail = false)
         {
             if (_running || !Terminal && _status != SchedulerStatus.Idle)
@@ -410,6 +412,9 @@ namespace ADOFAI.Renderist.Export
 
             try
             {
+                if (!OutputModePolicy.TryValidateRuntimeBinding(outputMode, _rgb24DeliveryArmed,
+                        _rgb24Delivery != null, out string modeError))
+                    return modeError;
                 EditorGameReflection.EnsureTypes();
 
                 string reject = ValidateStartConditions(allowExpectedTerminalControllerFail);
@@ -451,15 +456,10 @@ namespace ADOFAI.Renderist.Export
                 ResetRunStateForStart();
 
                 _outputFps = outputFps;
-                _imageOutputEnabled = imageOutputEnabled;
-                // L3-A：RGB24 交付模式在 session 开始时一次性冻结（armed 标记只对本次 TryStart 生效）。
-                _rgb24DeliveryEnabled = _rgb24DeliveryArmed && _rgb24Delivery != null;
+                _frozenOutputMode = outputMode;
+                _imageOutputEnabled = OutputModePolicy.IsImageOutput(outputMode);
+                _rgb24DeliveryEnabled = OutputModePolicy.IsMp4(outputMode);
                 _rgb24DeliveryArmed = false;
-                if (_rgb24DeliveryEnabled && imageOutputEnabled)
-                {
-                    // PNG 与 RGB24 交付互斥：绝不允许两个图像输出模式同时冻结。
-                    return FailStart("output-mode-conflict:png-and-rgb24");
-                }
                 // 新 context 已由 Arm gate 核验；绝不 Reset 仍被旧写入持有的池。
                 SafetyLimitResolution safety = SafetyFrameLimitPolicy.Resolve(configuredSafetyFrameLimit);
                 _safetyFrameLimit = safety.FrameLimit;
@@ -566,7 +566,7 @@ namespace ADOFAI.Renderist.Export
                 }
 
                 if (!FrameCaptureDriver.Start(outputDirectory, FramePrefix, ZeroPadWidth,
-                        OnCaptureResult, _imageOutputEnabled, _rgb24DeliveryEnabled,
+                        OnCaptureResult, _frozenOutputMode,
                         out long captureGeneration, out string captureError))
                 {
                     return FailStart("capture-driver-start-failed:" + captureError);
@@ -639,7 +639,7 @@ namespace ADOFAI.Renderist.Export
                     outputDirectory));
                 Log.Info("DeterministicFrameScheduler frozen output mode: imageOutputEnabled=" +
                          (_imageOutputEnabled ? "true" : "false") +
-                         " mode=" + (_imageOutputEnabled ? "png-sequence" : "log-only"));
+                         " mode=" + OutputModePolicy.Label(_frozenOutputMode));
                 Log.Info("DeterministicFrameScheduler frozen output geometry: " +
                          OutputGeometryPolicy.DescribeGeometryWithMode(geometry) +
                          " customResolutionEnabled=" + (_geometryCustomResolutionEnabled ? "true" : "false") +
@@ -660,7 +660,7 @@ namespace ADOFAI.Renderist.Export
                              " downsampleLevels=" +
                              _downsamplePlannedLevelCount.ToString(CultureInfo.InvariantCulture) +
                              " downsampleAlgorithm=" + OutputGeometryPolicy.DownsampleAlgorithmLabel +
-                             " renderTargetMode=" + (_imageOutputEnabled ? "png-sequence" : "log-only"));
+                             " renderTargetMode=" + OutputModePolicy.Label(_frozenOutputMode));
                 }
                 Log.Info("DeterministicFrameScheduler render environment inventory: " +
                          (_environmentInventory == null
@@ -824,6 +824,8 @@ namespace ADOFAI.Renderist.Export
             _activationUnityFrame = -1;
             _lastPrepareUnityFrame = -1;
             _lastAutoplayFrameIndex = -1;
+            _firstRgb24CompletionLogged = false;
+            _rgb24DeliveryFailureObserved = false;
             _clockActive = false;
             _pendingCapture = false;
             _pendingCaptureIndex = -1;
@@ -2134,7 +2136,14 @@ namespace ADOFAI.Renderist.Export
         public static void TickResidualOwnership()
         {
             if (_running || _rgb24DeliveryArmed || _rgb24Delivery == null) return;
-            if (_rgb24Delivery.TryStopAndDrain(_terminalStopReason ?? "session-stopped", out _))
+            bool clean = _rgb24Delivery.TryStopAndDrain(_terminalStopReason ?? "session-stopped", out _);
+            if (_rgb24DeliveryFailureObserved && _rgb24Delivery.PipelineCleanupSettled)
+            {
+                Log.Warn("DeterministicFrameScheduler: RGB24 pipeline final diagnostic: " +
+                         _rgb24Delivery.PipelineFailureDiagnostics);
+                _rgb24DeliveryFailureObserved = false;
+            }
+            if (clean)
             {
                 _rgb24Delivery = null;
                 _rgb24DeliveryEnabled = false;
@@ -2215,6 +2224,15 @@ namespace ADOFAI.Renderist.Export
             string errorCode;
             string errorDetail;
             if (!_rgb24Delivery.Bridge.IsMainThread) return;
+            if (!_firstRgb24CompletionLogged)
+            {
+                _firstRgb24CompletionLogged = true;
+                Log.Info("DeterministicFrameScheduler: first RGB24 completion thread=" +
+                         System.Threading.Thread.CurrentThread.ManagedThreadId.ToString(CultureInfo.InvariantCulture) +
+                         " capturedMainThread=" +
+                         _rgb24Delivery.Bridge.MainThreadId.ToString(CultureInfo.InvariantCulture) +
+                         " identityMatch=true");
+            }
             if (envelope.Generation != _captureGeneration)
             {
                 // 旧通知只属于旧 context；不得进入当前 lease 的消费路径。
@@ -2237,6 +2255,13 @@ namespace ADOFAI.Renderist.Export
                     return;
 
                 case Rgb24TransactionOutcome.Failed:
+                    _rgb24DeliveryFailureObserved = true;
+                    Log.Warn("DeterministicFrameScheduler: RGB24 completion failed frameIndex=" +
+                             envelope.AbsoluteFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                             " errorCode=" + (errorCode ?? "null") +
+                             " errorDetail=" + (errorDetail ?? "null") +
+                             " deliveredFrameCount=" +
+                             envelope.DeliveredFrameCount.ToString(CultureInfo.InvariantCulture));
                     RequestStop("rgb24-delivery-failed", errorCode ?? "rgb24-delivery-failed");
                     return;
 
