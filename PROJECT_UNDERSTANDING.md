@@ -38,7 +38,7 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 | L1 实机状态 | **`0.3.8.0`（DLL `AE2326D3…` / `+4d35801862d0828ea248d9934e8ebe74af11f2bb`）已通过用户最小实机验收**：UMM 显示 `0.3.8.0`、FFmpeg `Ready`、`libx264` / `mp4` / `rawvideo`、禁用并重新启用、无新可见异常。**L1 主路径已具备阶段性基线证据**；未覆盖边界（活动下载生命周期、异常网络、真实回调竞态）见 §2.7。 |
 | L2 实现状态 | **源码阶段已收敛，Unity Mono 定向探针正常/写入中取消两场景 PASS；未接入编辑器导出**：三个 Unity-free 模块 + 独立测试；历史真实 Gyan 9.0.2 fixture 回归 **141 / 0 / 0**（本轮离线回归 **129 / 0 / 12**，与既有基线一致；本轮真实 fixture 复跑受当前会话沙箱限制，见 §12.4）。Mono 证据绑定临时诊断 DLL `0D90CA6A…`；历史 L2 发布 DLL `3FBB993F…` 与 Probe 清理复建 DLL `45502098…` 均未以原样单独重启验收（§2.8.3 / §12.3）。L2 的三个模块本轮**未修改**。 |
 | L3 视觉时间 ownership 状态 | **`0.3.9.0` 已正式实现 `PlanetVisualTimeOwnership` 并完成正式 runtime 验收（`0.3.9.1` 仅第四位收敛、实现未变；§2.2.4 / §2.2.6）**：30 FPS 与 60 FPS 均 strict acquisition 唯一命中（`before=5 / after=6 / new=1 / accepted=1`）、`creationLeadSteps=4` 成立、terminal 于 30 FPS `N=11` / 60 FPS `N=26` 一次性定位、terminal-hold 连续跨 pre-entry → gameplay、normal completion cleanup 成功、Cancel→Restart generation `3→4` 无 residual / stale 污染。**MP4 / RGB24 delivery 未接入**；Trail / Particle / Animator / Camera / Shader 等其它视觉系统**未纳入** ownership。pre-terminal cancel 的 `restore-original-playing` 分支仍只有静态覆盖（§2.2.6）。 |
-| L3-A 状态（`0.3.10.0`） | **单帧 RGB24 ownership / 分段缓冲 / 行序策略 / main-thread 交付桥已实现并通过独立 net48 回归（194/0/12），尚未接入 MP4 session 启动，未做实机验收**（§2.2.7）：`Rgb24FrameLayout` / `Rgb24FrameBufferPool`（`OwnedRgb24Frame` + lease pin）/ `Rgb24FrameTransaction`（`AwaitingEOF` → `AwaitingDelivery`）/ `Rgb24MainThreadBridge` / `FfmpegRgb24FrameTransport` / `Rgb24DeliveryContext`；driver 分块读回且**不**调用 `TryWriteFrame`。**目标 Unity Mono 的分块读回 API 与 row orientation 仍待实机确认**。 |
+| L3-A 状态（`0.3.10.0`） | **单帧 RGB24 ownership / 分段缓冲 / 行序策略 / main-thread 交付桥 + 最小 MP4 session 启动接线均已实现并通过独立 net48 回归（`214/0/12`），已部署，但未做实机验收，且无 Finalizing**（§2.2.7 / §2.2.8）：`Rgb24FrameLayout` / `Rgb24FrameBufferPool` / `Rgb24FrameTransaction` / `Rgb24MainThreadBridge` / `FfmpegRgb24FrameTransport` / `Rgb24DeliveryContext` / `OutputModePolicy` / `Mp4SessionStartup`；driver 分块读回且**不**调用 `TryWriteFrame`。输出模式由 `Settings.EditorOutputModeValue` 唯一决定（PNG / MP4 / Log-only，旧布尔仅作一次性迁移输入）。**MP4 到达终态时按验证边界 fail-closed，不产出成品。目标 Unity Mono 的分块读回语义与 row orientation 仍待实机确认。** |
 | 当前开发方向 | **`0.3.10.0 — FFmpeg Video Export Pipeline`：L3-A 单帧 RGB24 ownership / 交付事务已实现（§2.2.7）**，L3 第一闭环 Planet 视觉时间 ownership 已实现并通过实机验收（§2.2.4 / §2.2.6）。§2.2.1 确认同逻辑帧视觉漂移，§2.2.2 的 Probe A/B/C 验证了目标 Planet Tween 的局部 ownership 模型，本轮 `PlanetVisualTimeOwnership` 是该模型的正式生产化并已实机通过。第二闭环仍**未覆盖** Unity **Linear** 色彩空间与极端资源失败路径（§9.7.3）。 |
 | 下一阶段 | **L3 Frame Transaction 正式集成设计**（MP4 帧事务 / Finalizing 关口 / RGB24 delivery）。当前正式 DLL **不具备编辑器 MP4 导出能力**；不得因为 ownership 已验收就宣称视觉确定性或 MP4 可用。 |
 
@@ -233,7 +233,21 @@ GUI 用户体验、L3-B 背压实机验收、L3-C 短谱面成片、L3-D cancel 
 - **Cancel / 双收敛 / re-arm gate**：逻辑 Cancelled/Failed/Completed 与资源完全释放分开，无新增 Stopping enum。`TryStopAndDrain` 转发既有 L2 Cancel；未 accepted lease 立即 abort，accepted lease 仅在本帧真实 Completion 完成后由主线程退休，绝不 Commit。正常 Post 在取消后可自行退休所属 lease，即使 UMM 不再 Tick；Post 失败/丢失时终态 Tick 或重开 gate 直接观察同一个 Completion。pipeline ownership 独立检查 CleanupTask：null、未完成、fault/cancel、结果含 residual 均拒绝重开。controller 的 terminal Tick、ModEntry 的 Enabled gate 之前以及 scheduler cleanup/start gate 都有非阻塞收敛入口；IsBusy 包含 RGB24 residual。Arm 在主线程通过旧 context 与既有 Unity ownership gate 后才可替换，active/armed/residual 一律拒绝，启动校验失败会退休已 Arm 的 context。迟到通知只接触旧 write，旧池不会被新 generation 复用。
 - **独立回归**：`tests/run-ffmpeg-tests.ps1` 实测 **194 passed / 0 failed / 12 skipped**（原 156/0/12 上新增 38 项；12 项仍为未提供真实 FFmpeg fixture 的既有用例）。覆盖 pre-entry/gameplay 状态判定、生产接线源码契约、EOF 前后取消、接受前 pin、即时 Completion、两个 Task 不同顺序、Post 失败/错误线程/丢失、无后续 UMM Tick 的主线程退休、stale notification、replacement gate、伪 Completion identity、duplicate、无 IO watchdog、band overlap 与跨行分段。scheduler 状态 helper 是生产 partial，源码契约检查连接到真实调用点；这些证据不等于执行了 Unity scheduler / ReadPixels 或游戏 handoff。
 - **验证边界**：L2 三核心模块未改，继续沿用已有独立回归证据。新取消路径严格区分 frame Completion 与 process cleanup；cleanup 结果若仍报告 residual，会继续 fail-closed，不伪称资源已清空。没有可运行主线程/上下文时不会在后台强行释放主线程 ownership，后续主线程收敛入口恢复后再退休。
-- **未接入 / 未验收（不得误读）**：RGB24 交付路径目前**只能由启动路径主动 `ArmRgb24Delivery(context, out error)` 装配**；**MP4 session 启动尚未接线**（L1 身份冻结 → L2 `FfmpegVideoPipeline` 启动 → 输出路径 → 最小 Settings/GUI 入口），因此 **`0.3.10.0` 仍然不能从编辑器导出 MP4**，也**尚无任何 L3-A 实机证据**。整体视觉确定性未成立（其它漂移来源未纳入 ownership）。下一次实机验收必须覆盖：目标 Unity Mono 编译/API 实际兼容、`ReadPixels` / CPU raw data 正常、分段复制正确、RGB24 channel order、**row orientation 定向对照**、scale>1 输出几何、GPU 状态恢复、`SynchronizationContext.Post` 确实回 Unity 主线程、单帧 ownership、Cancel 后无 buffer residual 污染、PNG / Log-only smoke。
+- **未接入 / 未验收（不得误读）**：RGB24 交付路径的**启动接线已由 §2.2.8 完成**；但**尚无任何 L3-A 实机证据**。整体视觉确定性未成立（其它漂移来源未纳入 ownership）。实机验收必须覆盖：目标 Unity Mono 编译/API 实际兼容、`ReadPixels` / CPU raw data 正常、分段复制正确、RGB24 channel order、**row orientation 定向对照**、scale>1 输出几何、GPU 状态恢复、`SynchronizationContext.Post` 确实回 Unity 主线程、单帧 ownership、pre-entry → gameplay handoff、Cancel 后无 buffer residual 污染、PNG / Log-only smoke。
+
+### 2.2.8 L3-A 最小 MP4 session 启动接线（`0.3.10.0`；已实现 + 独立回归，**未做实机验收**）
+
+**范围**：把 §2.2.7 的 RGB24 帧事务接到真实启动路径，使其可在目标环境做 L3-A runtime acceptance。**不是** L3-B/C/D；**不**实现 Finalizing / 成品发布。版本仍 `0.3.10.0`，Phase 未变。提交见 §12.6。
+
+- **Output mode 唯一 authority**：新增 `Export/OutputModePolicy.cs`（Unity-free）定义 `CaptureOutputMode` = PNG / MP4 / Log-only，互斥。`Settings.EditorOutputModeValue`（int，`-1` = 尚未迁移）是唯一持久化 authority；旧 `EditorImageOutputEnabled` 只作**一次性迁移输入**（true → PNG，false → Log-only），**MP4 只能由用户显式选择**，绝不从旧布尔推断。非法 persisted 值 fail-closed、不自动修复。session metadata 的 `imageOutputEnabled` 由**冻结后的模式**派生，不再是第二个 authority。GUI 改为三选一（session 进行中禁止编辑）。
+- **MP4 参数冻结**：`Export/Mp4SessionStartup.cs`（Unity-free）冻结 output width/height、FPS、CRF、preset、RGB24 输入格式、最终输出路径与 L1 Ready identity。**输出 pixel format 交给 L2** 按真实几何选择（本层不预设、不改写几何）。只做结构性检查；CRF / preset / 像素格式的产品级合法性仍由 L2 判定，**不复制第二套验证**。未新增分辨率 / 帧数 / 时长 / 体积 / 性能型上限。
+- **启动顺序（严格在 `editor.Play()` 之前）**：既有 readiness gate → 既有 residual gate → 冻结 mode/geometry/FPS/编码参数 → L1 Ready 身份（`FfmpegVideoIdentity.TryFreeze`）→ 主线程 `SynchronizationContext` 捕获 → session 目录与 metadata → 构造**唯一** L2 `FfmpegVideoPipeline` → 建立 `Rgb24DeliveryContext` → `Start` pipeline → `ArmRgb24Delivery` → 才进入 `TryStart` / `editor.Play`。**context 刻意在 Start 之前建立**：这样 Start 之后任何失败都能经该 context 既有的 Cancel / CleanupTask 收敛，**绝不留下"已启动但无 owner"的编码进程**。
+- **失败收敛**：任一失败都不进入新的 Play / capture；已建立的 context 经既有 `TryStopAndDrain` 收敛，未收敛时保留为 `EditorExportController._startupContext`（`IsBusy` 计入 + `Tick` 非阻塞收敛 + residual gate 阻止重开）。**没有第二套终态系统**、没有第二 process owner。
+- **输出路径**：沿用既有 session 目录体系，本 session 只有一个 `video.mp4` 目标；已存在的最终目标在**启动进程之前**即拒绝（`final-video-exists`），绝不静默覆盖；临时文件仍由 L2 ownership 管理。
+- **终态验证边界（无 L3-C Finalizing）**：`Mp4TerminalBoundaryPolicy` 明确 MP4 session **永远**不能映射为 `Completed`。到达既有导出终态时 **fail-closed**：session 记 `Failed`、`stopReason = l3a-validation-boundary:no-finalizing`，StateDetail 明确说明未执行 FFmpeg Finish / 核验 / 发布、没有可用成品，并写警告日志。**绝不**把 L2 的临时产物呈现为成功 MP4；metadata 记 `finalizingNotImplemented=true`。
+- **metadata 新增**：`outputMode`、`finalVideoPath`、`ffmpegExecutablePath`、`ffmpegExecutableSha256`、`ffmpegVersionLine`、`mp4Crf`、`mp4Preset`、`mp4InputPixelFormat`（恒 `rgb24`）、`mp4OutputPixelFormatPolicy`、`finalizingNotImplemented`。
+- **独立回归（本轮实测）**：`tests/run-ffmpeg-tests.ps1` → **214 passed / 0 failed / 12 skipped**（基线 `194/0/12`；新增 20 项 `mp4` 用例全部通过；12 个 skip 仍是既有真实 FFmpeg fixture 用例）。覆盖旧设置迁移、非法模式 fail-closed、显式模式优先、仅 MP4 走帧事务、几何/FPS/CRF/preset 结构性失败、非 Ready 报告在 identity gate fail-closed、最终路径冻结与不覆盖、缺目录拒绝、pipeline create / context / start 失败均不启动进程且**不丢 ownership**、成功 Bind 的几何与精确 long 长度、终态边界不映射 Completed，以及生产接线源码契约（冻结模式 gate 在 Play 之前、freeze → bind → Arm 顺序、`IsBusy` 与 `Tick` 收敛、无第二 process owner、单模式 authority）。
+- **未验收（不得误读）**：以上全部是**独立 net48 回归 + 源码契约**证据，**没有任何 L3-A 实机证据**。目标 Unity Mono 的分块读回语义、RGB24 channel order、**row orientation 定向对照**、band 读回、`SynchronizationContext.Post` 真实回投、pre-entry → gameplay handoff、single in-flight、Cancel → Restart residual、scale>1 几何、以及 PNG / Log-only smoke **全部仍待实机确认**。`0.3.10.0` 仍**不能**完成一次成功的 MP4 导出（本轮没有 Finalizing）。
 
 ### 2.3 FFmpeg 构建、安装与独立进程取证（2026-09-23；未接入产品）
 
@@ -1099,7 +1113,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 > 此处只列**当前未收敛事项**；已完成的 End Tail、pre-entry、Log-only、Custom Resolution 和 Supersampling 不再重复充当待办。历史验收数据见 §9，实施不变量见 §3–§8，当前 ADOFAI 内部事实见 §10。
 
 1. **`0.3.10.0` 视频导出（L1 完成并实机验收；L2 独立管线阶段结束；L3 第一闭环 ownership 已实现并实机验收；**L3-A 单帧 RGB24 ownership / 交付事务已实现并通过独立回归，但未接入 MP4 session 启动、无实机证据**；L3-B/C/D 未开始）**：当前版本 `0.3.10.0` / Phase `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`。L3-A 的实现、回归结果（**194/0/12**）、目标 Unity Mono 读回 API 结论、行序策略与 buffer lifetime 契约见 §2.2.7；**`0.3.10.0` 仍不能从编辑器导出 MP4**。L1 完成通知与归档 ownership 缺陷已修复；主路径实机证据见 §2.6 / §2.7，仍未验收活动下载期间禁用/卸载、异常网络及真实回调竞态。L2 历史独立 net48 真实 Gyan fixture 回归 **141/0/0**（本轮离线回归 **129/0/12**，与既有基线一致）；目标 Unity Mono 的正常 8 帧编码/核验/发布及写入中取消/回收两项定向探针均 PASS（§2.8.3），证据绑定临时 DLL `0D90CA6A…`。**L3 第一闭环**：`PlanetVisualTimeOwnership` 已正式实现（§2.2.4）并完成正式 runtime 验收（§2.2.6）——30 / 60 FPS strict acquisition 唯一命中、`creationLeadSteps=4` 成立、terminal 一次性定位且 `position == fullPosition == duration`、terminal-hold 连续跨 pre-entry → gameplay、normal completion cleanup 成功、Cancel→Restart generation `3→4` 无 residual / stale 污染；**仅 pre-terminal cancel 的 `restore-original-playing` 分支仍只有静态覆盖**。**L3 的编辑器 MP4 帧事务 / Finalizing 关口 / RGB24 delivery 仍未接入**，`0.3.10.0` 仍不能从编辑器导出 MP4。整体视觉确定性未成立：Trail / Particle / Animator / Camera / Shader 等其它漂移来源仍未纳入 ownership；不能用 ownership 或 L3-A 回归代替 L3 MP4 帧事务实机验收。
-9. **L3-A → 实机验收的前置接线（下一增量）**：RGB24 交付路径已实现但**尚无生产启动路径**。需要接通：L1 `Ready` 身份冻结 → 构造并 `Start()` L2 `FfmpegVideoPipeline`（宽高 / FPS / 像素格式 / 临时与最终路径冻结）→ `Rgb24DeliveryContext.TryCreate` → `DeterministicFrameScheduler.ArmRgb24Delivery` → 最小 Settings / GUI 入口（不要求完整 MP4 用户体验）。接线完成前不得宣称 L3-A 实机可用；完成后的最小验收项见 §2.2.7 末条。
+9. **L3-A 实机验收（接线已完成，等待实机）**：MP4 启动接线已由 §2.2.8 完成并通过独立回归（**214/0/12**），但**尚无任何 L3-A 实机证据**。下一步是在目标环境做一次最小 runtime acceptance（§2.2.7 末条 + §2.2.8 末条列出的项目），并据此修正 row orientation / 读回语义或记录结论。**在实机验收完成并经审查前，不得把 `0.3.10.0` 视为稳定节点，也不得进入 L3-B/C/D。**
 2. **Linear 与极端 GPU 资源失败**：Supersampling 已在 Gamma / Direct3D11 的所述范围实机通过，**Linear 色彩空间从未实机覆盖**；接近硬件极限的 RT 分配与 GPU 状态恢复故障仍只有 stub / 静态证据。详见 §9.7.3。
 3. **真实 Unity 故障注入**：host Destroy、RT Release/Destroy、partial Camera assignment 的失败与重试，已有生产源码 + Unity stub 的确定性测试，**未在真实 Unity Player 注入这些异常**；正常路径与跨调用 residual 的既有实机结果不能替代异常证据（§3.5、§9.3）。
 4. **其余边界测试**：显式 safety frame-limit runtime trigger 与 `TryPrepareHitState` 故障注入主要依赖静态 / 纯计算证据；需要扩大 BPM change、Twirl、Midspin、event-heavy、特殊 startup、长谱面覆盖。无须为此设置人为帧数或时长上限。
@@ -1225,3 +1239,27 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 | 身份 | 构建 / ZIP 的 SHA256 与 `ProductVersion` 见当轮工作报告；**刻意不写入本文档**（写入会在 release commit 之后制造 tracked diff，理由同 §12.4）。本节点**未** push，也**未**部署到游戏 `Mods`（`Mods` 仍是 §12.4 的 `0.3.9.0` 构建）。 |
 | 边界 | 本节点**不新增** Frame Transaction 正式实现、RGB24 capture、`TryWriteFrame` 接线、`AwaitingEOF` / `AwaitingDelivery` 生产逻辑或 MP4 GUI 模式；**MP4 导出仍不可用**；下一阶段仍是 L3 Frame Transaction 正式集成设计。 |
 
+### 12.6 `0.3.10.0` L3-A 启动接线构建身份（**未**做实机验收）
+
+`0.3.10.0` 的开发提交链（**未 push**）：
+
+| 提交 | 内容 |
+| --- | --- |
+| `26c57d1` | `build(release): enter 0.3.10.0 L3-A baseline`（版本基线） |
+| `95c2f01` | `feat(export): add RGB24 frame ownership transaction`（§2.2.7） |
+| `c56c2fc` | `fix(export): 修复 RGB24 帧事务生命周期`（phase 投影 / 双收敛 / re-arm gate / PNG Linear sRGBWrite 回归） |
+| `18c3a56` | `feat(export): wire MP4 frame transaction startup`（§2.2.8，本轮） |
+
+| 项 | 值 |
+| --- | --- |
+| 产品版本 / FileVersion | `0.3.10.0` |
+| Phase | `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`（未变） |
+| **ProductVersion** | **`0.3.10.0+18c3a56d6fe4779d48974745a87a91be5b5dc4fd`** |
+| DLL SHA256 | **`117C681B940429D3E52C80F158143F3275B669E445328C09FE9F504BF8B711D3`** |
+| 发布包 ZIP SHA256 | **`3538037A0C6D6C3E4EC7965A37155A138E5279B6BBF6561AA31A404DE72B485F`** |
+| 独立回归 | **214 passed / 0 failed / 12 skipped** |
+| 构建 / 验证 | 强制 Release Rebuild **0 error / 0 warning**；package + 独立 verify 均 **PASS 11 checks / 0 failures**；`git diff --check` clean |
+| 部署 | `scripts/copy-to-mods.ps1` 部署到本机 `Mods\ADOFAI.Renderist\`，build 与 deployed DLL 逐字节一致（同一 SHA256）；部署 `Info.json` Version = `0.3.10.0` |
+| **实机验收** | **未执行**。本轮只完成接线、独立回归与部署；L3-A runtime acceptance 的全部项目（row orientation / RGB24 channel order / band 读回 / main-thread Post / pre-entry handoff / single in-flight / Cancel→Restart / scale>1 / PNG / Log-only smoke）仍待目标环境实测。 |
+
+**能力边界（不得误读）**：`0.3.10.0` 的 MP4 模式**只用于 L3-A 验证**：它没有 Finalizing，到达导出终态时按 §2.2.8 的验证边界 **fail-closed**（记为 `Failed`），**不会产出可用的 MP4 成品**。MP4 模式的 `video.mp4` 目标路径只是"本 session 唯一目标"，不代表文件存在。
