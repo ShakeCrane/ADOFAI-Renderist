@@ -2351,11 +2351,6 @@ namespace ADOFAI.Renderist.Export
 
                 _status = SchedulerStatus.AwaitingDelivery;
 
-                // 【临时 L3-A 像素语义验收】此处 frame 已完整形成且仍由本 session 独占持有，
-                // L2 尚未取得任何读取 ownership，因此在主线程复制一次 raw RGB24 是安全的。
-                // 验收结束后连同 Rgb24ValidationDump.cs 一起删除本调用。
-                Rgb24ValidationDump.TryDumpOnce(ownedFrame, generation);
-
                 Rgb24TransactionOutcome deliveryOutcome =
                     transaction.TryBeginDelivery(out string deliveryError, out string deliveryDetail);
                 if (deliveryOutcome == Rgb24TransactionOutcome.RejectedBusy)
