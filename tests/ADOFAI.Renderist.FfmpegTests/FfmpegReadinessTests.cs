@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using ADOFAI.Renderist.Export;
 using ADOFAI.Renderist.Ffmpeg;
@@ -224,6 +225,119 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.Check(!tracker.NeedsScan,
                     "a failed inspection must wait for an explicit re-check instead of spinning");
             });
+
+            TestKit.Run("readiness behavior: the process-first scan is adopted when no extra invalidation happens", () =>
+            {
+                var tracker = new FfmpegReadinessTracker();
+
+                // Load → 首次主动检查（generation 0）。
+                int initialGeneration;
+                TestKit.Check(tracker.TryBeginScan(out initialGeneration), "the initial scan starts");
+                TestKit.CheckEqual(0, initialGeneration, "the process-first scan is generation 0");
+
+                // 本次收敛的关键：普通首次 OnToggle(true) 不再 Invalidate，
+                // 因此下面这一次发布必须被采纳（旧行为会把它当过期结果丢弃）。
+                TestKit.Check(tracker.TryPublishScan(initialGeneration, ReadyReport()),
+                    "without an extra invalidation the initial result must be adopted");
+
+                FfmpegReadinessSnapshot snapshot = tracker.Snapshot();
+                TestKit.CheckEqual(FfmpegReadinessState.Ready, snapshot.State, "state");
+                TestKit.CheckEqual(0, snapshot.Generation,
+                    "no invalidation may happen between the initial scan and the first enable");
+                TestKit.Check(snapshot.Report != null && snapshot.Report.State == FfmpegComponentState.Ready,
+                    "the adopted Ready report belongs to the initial generation");
+                TestKit.Check(!tracker.NeedsScan, "an adopted conclusion needs no second scan");
+            });
+
+            TestKit.Run("readiness behavior: an extra enable-time invalidation would discard the initial scan", () =>
+            {
+                // 该用例固定“为什么必须移除 mod-enabled invalidation”：
+                // 若在 initial scan 在途时再来一次 Invalidate，结果会被 generation guard 丢弃。
+                var tracker = new FfmpegReadinessTracker();
+                int initialGeneration;
+                tracker.TryBeginScan(out initialGeneration);
+
+                tracker.Invalidate("mod-enabled");
+
+                TestKit.Check(!tracker.TryPublishScan(initialGeneration, ReadyReport()),
+                    "an enable-time invalidation discards the in-flight initial result");
+                TestKit.CheckEqual(FfmpegReadinessState.Preparing, tracker.Snapshot().State,
+                    "readiness falls back to Preparing and must scan again");
+                TestKit.Check(tracker.NeedsScan, "a redundant rescan is queued");
+            });
+
+            TestKit.Run("readiness behavior: disable retires the report and re-enable queues exactly one new scan", () =>
+            {
+                var tracker = new FfmpegReadinessTracker();
+                PublishReady(tracker);
+                int readyGeneration = tracker.Generation;
+                TestKit.CheckEqual(FfmpegReadinessState.Ready, tracker.Snapshot().State, "seeded Ready");
+
+                // OnToggle(false) → ShutdownFfmpegComponent：失效 + 标记 lifecycle shutdown。
+                bool lifecycleShutdown = false;
+                tracker.Invalidate("ffmpeg-shutdown");
+                lifecycleShutdown = true;
+
+                TestKit.CheckEqual(FfmpegReadinessState.Preparing, tracker.Snapshot().State,
+                    "disable must retire the Ready report");
+                TestKit.CheckEqual(null, tracker.Snapshot().Report, "no report survives disable");
+                TestKit.Check(tracker.NeedsScan, "a new scan is queued by the shutdown path");
+
+                // 禁用期间 pump 的统一排队入口被 lifecycle 守卫挡住，不会启动检查。
+                bool pumpWouldStartScan = !lifecycleShutdown && tracker.NeedsScan;
+                TestKit.Check(!pumpWouldStartScan,
+                    "the pump must not start a scan while the lifecycle is shut down");
+                TestKit.Check(!tracker.ScanInFlight, "no scan runs while disabled");
+
+                // OnToggle(true)：只恢复 lifecycle，不再额外 Invalidate。
+                lifecycleShutdown = false;
+                TestKit.Check(tracker.NeedsScan,
+                    "the queued scan from the shutdown path survives the re-enable unchanged");
+
+                int reEnableGeneration;
+                TestKit.Check(tracker.TryBeginScan(out reEnableGeneration),
+                    "the pump starts the queued scan after re-enable");
+                TestKit.CheckEqual(readyGeneration + 1, reEnableGeneration,
+                    "exactly one new generation is scanned on re-enable");
+
+                TestKit.Check(!tracker.TryPublishScan(readyGeneration, ReadyReport()),
+                    "the pre-disable generation can never be published again");
+                TestKit.Check(tracker.TryPublishScan(reEnableGeneration, ReadyReport()),
+                    "the re-enable scan publishes");
+
+                FfmpegReadinessSnapshot recovered = tracker.Snapshot();
+                TestKit.CheckEqual(FfmpegReadinessState.Ready, recovered.State, "recovered to Ready");
+                TestKit.CheckEqual(reEnableGeneration, recovered.Generation, "generation");
+            });
+
+            TestKit.Run("readiness behavior: an output-mode round trip must not disturb readiness", () =>
+            {
+                var tracker = new FfmpegReadinessTracker();
+                PublishReady(tracker);
+                int generation = tracker.Generation;
+                FfmpegComponentReport report = tracker.Snapshot().Report;
+
+                // 模式往返本身只写 Settings（PNG → MP4 → Log-only → MP4 → PNG），
+                // 不得调用 readiness Invalidate：generation / 结论 / 排队状态必须原样保持。
+                for (int i = 0; i < 5; i++)
+                {
+                    FfmpegReadinessSnapshot snapshot = tracker.Snapshot();
+                    TestKit.CheckEqual(FfmpegReadinessState.Ready, snapshot.State,
+                        "mode switch #" + i + " must keep Ready");
+                    TestKit.CheckEqual(generation, snapshot.Generation,
+                        "mode switch #" + i + " must not change the generation");
+                    TestKit.Check(ReferenceEquals(report, snapshot.Report),
+                        "mode switch #" + i + " must keep the same adopted report");
+                    TestKit.Check(!snapshot.ScanInFlight, "mode switch #" + i + " starts no scan");
+                    TestKit.Check(!tracker.NeedsScan, "mode switch #" + i + " queues no rescan");
+                }
+
+                string error;
+                string detail;
+                TestKit.Check(Mp4SessionStartup.TryCheckReadiness(CaptureOutputMode.Mp4Rgb24,
+                        tracker.Snapshot(), out error, out detail),
+                    "a Ready component stays startable across mode switches: " + error);
+            });
         }
 
         // ============================================================ gate
@@ -413,6 +527,94 @@ namespace ADOFAI.Renderist.FfmpegTests
                     "(otherwise it would retry every frame)");
             });
 
+            TestKit.Run("readiness wiring: the invalidation trigger set is exactly the intended policy", () =>
+            {
+                string mod = Source("ModEntry.cs");
+                string[] actual = ReadinessInvalidationReasons(mod);
+
+                // 输出模式与普通 enable 都**不是** readiness 输入变化：
+                // 前者不参与组件发现 / 文件身份 / managed 校验 / 能力探测，
+                // 后者只是为了恢复 lifecycle（真正的 disable 已经由 shutdown 路径失效并排队）。
+                string[] expected =
+                {
+                    "explicit-path-changed",
+                    "ffmpeg-download-settled",
+                    "ffmpeg-lifecycle-shutdown",
+                    "ffmpeg-shutdown",
+                    "local-install-completed",
+                    "mp4-start-recheck",
+                    "user-recheck",
+                    "user-refresh",
+                };
+
+                TestKit.CheckEqual(string.Join(",", expected), string.Join(",", actual),
+                    "the readiness invalidation triggers must match the intended policy exactly");
+
+                for (int i = 0; i < actual.Length; i++)
+                {
+                    TestKit.Check(actual[i] != "output-mode-changed" && actual[i] != "mod-enabled",
+                        "a retired trigger reappeared: " + actual[i]);
+                }
+
+                // 三个必须保留的显式用户入口与两个磁盘状态变化入口。
+                TestKit.Check(Contains(actual, "user-refresh") && Contains(actual, "user-recheck") &&
+                              Contains(actual, "mp4-start-recheck"),
+                    "the explicit user re-check entries must stay");
+                TestKit.Check(Contains(actual, "local-install-completed") &&
+                              Contains(actual, "ffmpeg-download-settled"),
+                    "install / download completion must still retire the old report");
+                TestKit.Check(Contains(actual, "explicit-path-changed"),
+                    "an explicit path change is a real inspection input change");
+            });
+
+            TestKit.Run("readiness wiring: the first enable does not invalidate, the real disable path does", () =>
+            {
+                string mod = Source("ModEntry.cs");
+
+                // 普通首次 OnToggle(true)：不触碰 readiness，也不重复失效 initial scan。
+                string toggle = Method(mod, "private static bool OnToggle(UnityModManager.ModEntry modEntry, bool value)");
+                TestKit.Check(!toggle.Contains("_ffmpegReadiness"),
+                    "OnToggle must not invalidate readiness in either direction");
+                TestKit.Check(!toggle.Contains("mod-enabled"),
+                    "the retired mod-enabled trigger must be gone");
+                TestKit.Check(toggle.Contains("_ffmpegLifecycleShutdown = false;"),
+                    "re-enable still restores the FFmpeg lifecycle");
+
+                // 真正的 disable 路径：失效 + 标记 shutdown，因此 re-enable 后仍有 pending scan。
+                TestKit.Check(toggle.Contains("ShutdownFfmpegComponent(\"mod-disabled\")"),
+                    "the disable branch must converge through ShutdownFfmpegComponent");
+                string shutdown = Method(mod, "private static void ShutdownFfmpegComponent(string reason)");
+                TestKit.Check(shutdown.Contains("_ffmpegLifecycleShutdown = true;"),
+                    "shutdown must hold the lifecycle closed");
+                TestKit.Check(shutdown.Contains("_ffmpegReadiness.Invalidate(\"ffmpeg-shutdown\")"),
+                    "shutdown must retire the report and queue the rescan");
+
+                // re-enable 之后，统一排队入口必须真的会启动那次 pending scan。
+                string pump = Method(mod, "private static void PumpFfmpegTasks()");
+                TestKit.Check(pump.Contains("if (!_ffmpegLifecycleShutdown && _ffmpegReadiness.NeedsScan)") &&
+                              pump.Contains("RequestFfmpegInspection();"),
+                    "the pump starts the scan queued by the shutdown path once the lifecycle reopens");
+            });
+
+            TestKit.Run("readiness wiring: switching the output mode never touches readiness", () =>
+            {
+                string mod = Source("ModEntry.cs");
+                string setMode = Method(mod, "private static void SetOutputMode(CaptureOutputMode mode)");
+
+                TestKit.Check(!setMode.Contains("_ffmpegReadiness"),
+                    "SetOutputMode must not invalidate or otherwise touch FFmpeg readiness");
+                TestKit.Check(!setMode.Contains("output-mode-changed"),
+                    "the retired output-mode-changed trigger must be gone");
+                TestKit.Check(setMode.Contains("Settings.EditorOutputModeValue = (int)mode;"),
+                    "the mode write itself is preserved");
+                TestKit.Check(setMode.Contains("_lastReadinessCacheRealtime = float.NegativeInfinity;"),
+                    "the unrelated export-preflight display cache refresh is preserved");
+
+                // 模式 authority 与 session 冻结语义不变。
+                TestKit.Check(setMode.Contains("Settings.EditorImageOutputEnabled = OutputModePolicy.IsImageOutput(mode);"),
+                    "the legacy mirror stays derived, never an authority");
+            });
+
             TestKit.Run("readiness wiring: the controller gates readiness before any session side effect", () =>
             {
                 string controller = Source("Export/EditorExportController.cs");
@@ -551,6 +753,36 @@ namespace ADOFAI.Renderist.FfmpegTests
             if (dir == null) throw new Exception("repository source not found");
             return File.ReadAllText(Path.Combine(dir.FullName, "src", "ADOFAI.Renderist", relative))
                 .Replace("\r\n", "\n");
+        }
+
+        /// <summary>提取源码中全部 `_ffmpegReadiness.Invalidate("&lt;reason&gt;")` 的原因码（ordinal 排序）。</summary>
+        private static string[] ReadinessInvalidationReasons(string source)
+        {
+            const string marker = "_ffmpegReadiness.Invalidate(\"";
+            var reasons = new List<string>();
+
+            int index = source.IndexOf(marker, StringComparison.Ordinal);
+            while (index >= 0)
+            {
+                int start = index + marker.Length;
+                int end = source.IndexOf('"', start);
+                TestKit.Check(end > start, "an invalidation trigger must use a literal reason");
+                reasons.Add(source.Substring(start, end - start));
+                index = source.IndexOf(marker, end, StringComparison.Ordinal);
+            }
+
+            reasons.Sort(StringComparer.Ordinal);
+            return reasons.ToArray();
+        }
+
+        private static bool Contains(string[] values, string value)
+        {
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (string.Equals(values[i], value, StringComparison.Ordinal))
+                    return true;
+            }
+            return false;
         }
 
         private static string Method(string source, string signature)
