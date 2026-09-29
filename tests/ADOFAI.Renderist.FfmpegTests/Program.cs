@@ -57,6 +57,7 @@ namespace ADOFAI.Renderist.FfmpegTests
             Rgb24BackpressureTests.Run();
             PipelineBackpressureTests.Run(_workRoot);
             Mp4StartupTests.Run();
+            FfmpegReadinessTests.Run();
             }
             catch (Exception ex)
             {
