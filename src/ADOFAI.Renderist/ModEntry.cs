@@ -144,10 +144,16 @@ namespace ADOFAI.Renderist
                 if (value)
                 {
                     Log.Info(UiText.LogEnabled);
+                    // 恢复 lifecycle 即可，这里刻意**不**触碰 FFmpeg readiness：
+                    //   * 本进程的首次检查已由 Load 启动（见 TryStartInitialFfmpegInspection）。
+                    //     UMM 紧随 Load 的首次 OnToggle(true) 若再失效一次，会作废刚刚完成 /
+                    //     正在完成的 initial scan（旧行为：generation=0 的结果被 generation=1
+                    //     无条件丢弃，同一进程白扫一遍）。
+                    //   * 真正的 disable → enable 不需要这里兜底：OnToggle(false) →
+                    //     ShutdownFfmpegComponent 已经 Invalidate（"ffmpeg-shutdown"）并把新
+                    //     检查排入队列；本方法只恢复 lifecycle，下一次 OnUpdate 的 pump
+                    //     （PumpFfmpegTasks 的统一排队入口）就会启动那次已排队的检查。
                     _ffmpegLifecycleShutdown = false;
-                    // 重新启用后磁盘 / 配置状态可能已改变：旧报告不再是当前结论，
-                    // 并请求一次新的检查（由 OnUpdate 的 pump 启动，不依赖 GUI）。
-                    _ffmpegReadiness.Invalidate("mod-enabled");
                 }
                 else
                 {
@@ -748,8 +754,12 @@ namespace ADOFAI.Renderist
         {
             Settings.EditorOutputModeValue = (int)mode;
             Settings.EditorImageOutputEnabled = OutputModePolicy.IsImageOutput(mode);
-            // MP4 需要 FFmpeg Ready：让组件检查与 readiness 重新评估。
-            _ffmpegReadiness.Invalidate("output-mode-changed");
+            // 输出模式**不是** FFmpeg 检查的输入：FfmpegComponentInspector 的实际输入是
+            // explicit path / 托管安装根与文件 / manifest / PATH 发现 / capability probe，
+            // 模式既不参与组件发现与文件身份，也不参与托管安装校验或能力探测。
+            // 因此这里刻意不 invalidate readiness —— 模式往返不得改变 generation，
+            // 也不得让当前有效的 Ready 报告失效。
+            // 只有 preflight 的显示缓存需要重新评估（与 FFmpeg readiness 无关）。
             _lastReadinessCacheRealtime = float.NegativeInfinity;
         }
 
@@ -1570,8 +1580,8 @@ namespace ADOFAI.Renderist
         /// 只读取由后台线程产出的纯数据对象，不涉及任何 Unity API。
         ///
         /// 该入口不依赖 GUI 被绘制：首次检查在 Load 启动，其余触发点
-        /// （重新启用 / 输入变化 / 显式刷新 / 安装与下载结果）只负责把 readiness
-        /// 标记为失效，排队与启动都在这里统一完成。
+        /// （disable 时的 shutdown 失效、输入变化、显式刷新、安装与下载结果）只负责把
+        /// readiness 标记为失效，排队与启动都在这里统一完成。
         /// </summary>
         private static void PumpFfmpegTasks()
         {
