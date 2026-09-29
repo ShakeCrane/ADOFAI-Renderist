@@ -1220,7 +1220,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
   - **第一闭环（仅 Custom Resolution）**：`05a3b4a` 构建，DLL SHA256 `14D335FD2E2C051DBCE43BF1DB414F8ED177BEB221846EFB4FB50D761DBFBBBA`，`ProductVersion = 0.3.7.0+05a3b4a…`，zip SHA256 `B251B6A4631401E44F96130E152FB834B70B47CE6E75CA45304DC43380A4155F`（**已实机验收的那一份**）。
   - **第二闭环（含 Supersampling，首轮实机受测）**：`7efcacd` 构建，DLL SHA256 `E16954C57718F1424BC067985DB6BAEF490987C72064A0B46D591313A3815404`，`ProductVersion = 0.3.7.0+7efcacd5a0af2f3e736987057f0218e55f21a32c`，zip SHA256 `F667A0C740636D4A6920EF2AEBD1C2C753A1B80A98C17C783A310C30C3C9F466`（已完成首轮 6 session 实机；**metadata `downsampleLevelCount` 为计划级数**的旧语义）。
   - **第二闭环 + metadata 语义修正**：`ce34ad4` 构建，DLL SHA256 `E6747B520FD0C2844238901361251CD127B675041222A0BB1F6A0E8782D6E6E1`，`ProductVersion = 0.3.7.0+ce34ad49ae8d80d791a06887ece55fce31b3efbf`（**scale=4 完整导出实机验收的那一份**，见 §9.7.3）。
-  - **`0.3.7.1` 稳定性收敛（当前稳定版本）**：构建身份见本文件末尾「最终发布身份」段（DLL / zip / `ProductVersion +hash` 以该处为准）。
+  - **`0.3.7.1` 稳定性收敛（当时的稳定版本；当前稳定基线见 §2 与 §12.7）**：构建身份见本文件末尾「最终发布身份」段（DLL / zip / `ProductVersion +hash` 以该处为准）。
   - 因此**不能**再用「0.3.7.0 的包哈希」唯一指代某个构建；引用时必须同时给出**版本号 + DLL SHA256 或 `ProductVersion` 的 `+hash`**。`verify-release-package.ps1` 比较版本时会剥离 `+hash` 后缀。
   - **受测构建的自我判别**：`ce34ad4` 起，log-only + scale>1 的 session metadata `downsampleLevelCount` 为 **0**；`7efcacd`（及更早）为**计划级数**（如 scale=4 时为 2）。但 **PNG + scale>1 等场景下该字段在新旧构建下取值相同**（例如 PNG+scale=4 两版都是 2），因此该判别法**只适用于 log-only + scale>1**；其余情况须依赖部署时间序或 DLL 哈希。
 - 各轮 Release Rebuild / package / verify：**0 error / PASS 11 checks / 0 failures**（细节见 §9.7）。
@@ -1349,3 +1349,29 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 | **实机验收** | **未执行**。本轮只完成接线、独立回归与部署；L3-A runtime acceptance 的全部项目（row orientation / RGB24 channel order / band 读回 / main-thread Post / pre-entry handoff / single in-flight / Cancel→Restart / scale>1 / PNG / Log-only smoke）仍待目标环境实测。 |
 
 **能力边界（不得误读）**：`0.3.10.0` 的 MP4 模式**只用于 L3-A 验证**：它没有 Finalizing，到达导出终态时按 §2.2.8 的验证边界 **fail-closed**（记为 `Failed`），**不会产出可用的 MP4 成品**。MP4 模式的 `video.mp4` 目标路径只是"本 session 唯一目标"，不代表文件存在。
+
+### 12.7 `0.3.10.1` L3-B stable baseline 构建身份（版本收敛）
+
+L3-B Controlled IO Backpressure Acceptance 取得完整 runtime PASS 后形成的稳定开发闭环（第四位 revision，前三位保持 `0.3.10`）。结论见 §2.2.11。
+
+`0.3.10.1` 的提交链（**未 push**）：
+
+| 提交 | 内容 |
+| --- | --- |
+| `d686800` | `test(export): 固化 L3-B 受控 IO 背压契约`（`Rgb24BackpressureTests` / `PipelineBackpressureTests` / 测试内可控 stdin 流 / stdin 补入既有 seam） |
+| `12ca39e` | `fix(ui): 修正 residual 收敛期间的导出状态显示`（只读 `IsConvergingTerminalResources` + GUI 只读文案） |
+| `4996088` | `chore(release): 收敛 0.3.10.1 L3-B stable baseline`（版本 + PROJECT_UNDERSTANDING 同步） |
+
+| 项 | 值 |
+| --- | --- |
+| 产品版本 / FileVersion | `0.3.10.1` |
+| Phase | `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`（未变） |
+| **ProductVersion** | **`0.3.10.1+4996088a97e6f5975b99b84c44613a1b450eb3f5`** |
+| DLL SHA256 | **`A55DEAD669DAA739854E587453B557F2112B4DFCC1F803C5899835D305897227`** |
+| 发布包 ZIP SHA256 | **`6FEEE474C133D514A4F60439AD35401BEECA9A88FD7D11526FC9A570F15D65E1`** |
+| 独立回归 | **233 passed / 0 failed / 12 skipped** |
+| 构建 / 验证 | Release Rebuild **0 error / 0 warning**；package + 独立 verify 均 **PASS 11 checks / 0 failures**；`git diff --check` clean |
+| 发布包内容 | 仅 `Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`（3 个顶层文件，无目录、无 TEMP artifact） |
+| 回归边界 | 12 个 skip 仍为未提供真实 FFmpeg fixture 的既有用例 |
+
+**TEMP probe 清理边界（不得误读）**：L3-B 的临时 runtime probe（`L3bBackpressureGate`、`L3bControlledStdinStream`、stdin 临时接线、scheduler / controller trace、heartbeat）全部为**未跟踪文件或工作区改动**，**从未进入 git 历史**；清理后正式源码中不再存在 TEMP 标记、控制文件轮询、第二 queue / scheduler、IO timeout 或 watchdog。`FfmpegVideoPipelineOptions.StreamWrapper` 对 stdin 的覆盖是**正式保留**的 seam 补全（生产 wrapper 恒为 null，语义不变），用于长期跨层回归。
