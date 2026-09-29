@@ -327,7 +327,8 @@ GUI 用户体验、L3-B 背压实机验收、L3-C 短谱面成片、L3-D cancel 
 
 - **唯一 authority**：新增 `src/ADOFAI.Renderist/Ffmpeg/FfmpegReadiness.cs`（Unity-free）：`FfmpegReadinessTracker` + `FfmpegReadinessSnapshot` + `FfmpegReadinessState { Preparing, Ready, Failed }`。它只投影“输入是否变化 / 检查是否在途 / 最近一次结论”，不做发现、不下载、不安装、不接触 Unity。
 - **每进程首次主动检查**：`ModEntry.Load` 在 Settings 加载与回调注册之后调用 `TryStartInitialFfmpegInspection()`，经既有 `RequestFfmpegInspection()` 的 `Task.Run` 在后台执行。不依赖组件 GUI 是否被绘制、不依赖编辑器场景、不阻塞 Load；启动失败只记录，不影响 Mod 加载。组件 GUI 的每帧绘制**不再**启动检查（改为只读投影），因此不存在每帧重复启动。
-- **generation 绑定**：`Invalidate(reason)` 使 generation +1、**立即**丢弃旧 report 并清除 fault，同时请求一次新检查。触发点：进程首次、重新启用 Mod、显式路径变化、组件 GUI 的“刷新组件状态”/“重新检查 FFmpeg 组件”、本地安装完成、下载进入成功 / 失败终态、FFmpeg 生命周期关闭。
+- **generation 绑定**：`Invalidate(reason)` 使 generation +1、**立即**丢弃旧 report 并清除 fault，同时请求一次新检查。**触发点（收窄后的完整清单，`0.3.10.2` 静态事实）**：进程首次检查、显式路径变化、组件 GUI 的“刷新组件状态”/“重新检查 FFmpeg 组件”、MP4 Start 区的“重新检查”、本地安装完成、下载进入成功 / 失败终态、FFmpeg 生命周期关闭（`ffmpeg-lifecycle-shutdown` / `ffmpeg-shutdown`）。
+  **刻意不失效**：① **输出模式切换**（PNG / MP4 / Log-only）—— 模式不是 `FfmpegComponentInspector` 的输入，不参与组件发现、托管安装校验、文件身份或 capability probe，因此 `SetOutputMode` 不触碰 readiness，模式往返不改变 generation、不让当前有效的 Ready 报告失效；② **普通首次 `OnToggle(true)`** —— 它只恢复 lifecycle。本进程的首次检查已由 `Load` 启动，若首次 enable 再无条件失效一次，会把 generation=0 的 initial scan 结果丢弃（同一进程白扫一遍）；真正的 disable → enable 由 `OnToggle(false)` → `ShutdownFfmpegComponent` 的 `ffmpeg-shutdown` 失效并把新检查排入队列，re-enable 后由 `PumpFfmpegTasks` 的统一排队入口启动那次检查。上述“首次 enable 不重扫 / 模式切换不重扫”目前只有**自动与静态验证**，尚待实机日志确认。
 - **发布规则**：`TryBeginScan` 绑定当前 generation；`TryPublishScan(generation, report)` 仅在该 generation 仍为当前代时发布，否则**丢弃**，因此过期任务结果不会覆盖新状态；检查返回空结果按失败处理，绝不把 readiness 停在 Preparing。
 - **fault 处理**：`TryFailScan` 形成 `Failed`（`inspection-faulted`）且**不**自动请求重试；只有用户显式“重新检查”（或其它输入失效）才重新排队，因此不存在每帧 fault → retry 循环。readiness 不持久化到磁盘。
 - **MP4 启动条件（唯一判定 `Mp4SessionStartup.TryCheckReadiness`）**：非 MP4 模式恒允许；MP4 要求同时满足 —— 无待处理失效、无有效检查在途、报告对应当前 generation、报告状态为 `Ready`。GUI 的 MP4 Start 区域直接调用同一个函数，因此不存在两套 Ready 规则。
@@ -335,7 +336,7 @@ GUI 用户体验、L3-B 背压实机验收、L3-C 短谱面成片、L3-D cancel 
 - **controller 最终门禁**：`EditorExportController.StartSession` 先解析输出模式，随后在任何 session 副作用**之前**执行同一 readiness 判定；不通过则 `StartSession` 立即失败 —— 不创建 session / output 目录、不写初始 metadata、不构造 pipeline 或 delivery context，并给出稳定的机读原因（`mp4-ffmpeg-pending` / `mp4-ffmpeg-checking` / `mp4-ffmpeg-inspection-faulted` / `mp4-ffmpeg-component-<State>`）。terminal controller re-arm 之后再次进入 `StartSession` 会**重新**读取 readiness，没有跨 Start 冻结的 Ready 结论。该门禁**不**进入通用 `EditorExportPreflight`，因此 PNG 与 Log-only 完全不受 FFmpeg 状态影响（两者对所有 readiness 状态恒为允许）。
 - **保留的既有安全层**：`FfmpegComponentInspector.Inspect` 仍是发现 / 托管安装校验 / 能力探测的唯一 authority；L2 在启动 FFmpeg 进程前的内容哈希复验未改动；FFmpeg manifest、下载资产与托管安装格式未改动；`Mp4SessionStartup.Freeze` 的 L1 Ready 身份 gate 仍作为第二道防线。
 
-**验证（自动 / 静态，未实机）**：net48 回归 **250 passed / 0 failed / 12 skipped**。新增 `tests/ADOFAI.Renderist.FfmpegTests/FfmpegReadinessTests.cs`：readiness 三态、generation 绑定、dirty 立即失效、in-flight 非 Ready 且不重复排队、过期结果与过期 fault 丢弃、fault fail-closed 且不自动重试、显式重试可恢复 Ready、空结果 fail-closed、PNG / Log-only 对所有状态恒允许、MP4 门禁拒绝码与“自称 Ready 但无当前 Ready 报告”的纵深防御 —— 这些为**行为断言**（直接驱动生产类型）；GUI / controller 的调用点与**顺序**（首次检查在 Load、门禁先于目录创建与 metadata）为**结构断言**。Release Rebuild **0 error**；`package-release.ps1` + 独立 `verify-release-package.ps1` 均 **PASS 11 checks / 0 failures**；发布包严格三文件。**真实 Unity 启动时序（首次检查是否在 GUI 之前完成、真实 fault 路径、真实 MP4 Start 通过 readiness gate）尚未实机验证。**
+**验证（自动 / 静态，未实机）**：net48 回归 **257 passed / 0 failed / 12 skipped**。`tests/ADOFAI.Renderist.FfmpegTests/FfmpegReadinessTests.cs` 覆盖：readiness 三态、generation 绑定、dirty 立即失效、in-flight 非 Ready 且不重复排队、过期结果与过期 fault 丢弃、fault fail-closed 且不自动重试、显式重试可恢复 Ready、空结果 fail-closed、PNG / Log-only 对所有状态恒允许、MP4 门禁拒绝码与“自称 Ready 但无当前 Ready 报告”的纵深防御、**无额外失效时进程首次 scan 结果被采纳**、**多一次 enable 时失效会丢弃在途 initial scan**、**disable 失效并排队 / re-enable 只恢复 lifecycle 即启动该排队检查**、**输出模式往返不改变 generation 与已采纳报告** —— 这些为**行为断言**（直接驱动生产类型）；GUI / controller 的调用点与**顺序**（首次检查在 Load、门禁先于目录创建与 metadata）、以及**readiness 失效触发点集合必须精确等于保留清单**（并断言 `mod-enabled` / `output-mode-changed` 不得重新出现、`OnToggle` 与 `SetOutputMode` 不得触碰 readiness）为**结构断言**。Release Rebuild **0 error**；`package-release.ps1` + 独立 `verify-release-package.ps1` 均 **PASS 11 checks / 0 failures**；发布包严格三文件。**真实 Unity 启动时序（首次检查是否在 GUI 之前完成、首次 enable 是否不再重扫、模式切换是否不再重扫、真实 fault 路径、真实 MP4 Start 通过 readiness gate）尚未实机验证。**
 
 ### 2.3.0 FFmpeg 托管根迁移的 release compatibility 待办（**未实现**）
 
@@ -1404,7 +1405,7 @@ L3-B Controlled IO Backpressure Acceptance 取得完整 runtime PASS 后形成�
 | 产品版本 / FileVersion | `0.3.10.2` |
 | Phase | `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`（未变） |
 | 版本载体 | `mod/Info.json`、csproj `<Version>`、`ModEntry.ModVersion`、`ModEntry` 启动日志（由 `scripts/set-version.ps1` 原子同步；Phase 载体本轮无变化） |
-| 独立回归 | **250 passed / 0 failed / 12 skipped**（较 `0.3.10.1` 的 233 增加 17 条 readiness 回归） |
+| 独立回归 | **257 passed / 0 failed / 12 skipped**（较 `0.3.10.1` 的 233 增加 24 条 readiness 回归；`0.3.10.2` 的首次收敛为 250，随后同一版本线内收窄 readiness 失效触发点并追加 7 条契约） |
 | 构建 / 验证 | Release Rebuild **0 error**（仅离线 NuGet `NU1900` 环境噪声）；`package-release.ps1` + 独立 `verify-release-package.ps1` 均 **PASS 11 checks / 0 failures**；`git diff --check` clean |
 | 发布包内容 | 仅 `Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`（3 个顶层文件，无目录） |
 | 回归边界 | 12 个 skip 仍为未提供真实 FFmpeg fixture 的既有用例 |
