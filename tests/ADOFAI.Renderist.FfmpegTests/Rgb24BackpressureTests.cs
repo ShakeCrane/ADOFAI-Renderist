@@ -487,6 +487,39 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.Check(awaitingDeliveryBlock.IndexOf("CheckArmedCaptureWatchdogs", StringComparison.Ordinal) < 0,
                     "the AwaitingDelivery branch deliberately skips the capture watchdog");
             });
+
+            TestKit.Run("rgb24 backpressure: residual convergence is shown read-only and never as an actionable stop", () =>
+            {
+                string controller = Source("Export/EditorExportController.cs");
+                string busy = ExpressionBody(controller, "public static bool IsBusy =>");
+
+                // 只读投影必须建立在既有 IsBusy 之上：安全语义不被削弱。
+                TestKit.Check(busy.Contains("DeterministicFrameScheduler.HasPendingRgb24Cleanup"),
+                    "IsBusy still counts pending RGB24 cleanup");
+                string converging = ExpressionBody(controller, "public static bool IsConvergingTerminalResources =>");
+                TestKit.Check(converging.Contains("IsBusy"), "the converging projection derives from IsBusy");
+                TestKit.Check(converging.Contains("_terminalRearmPending"),
+                    "an in-progress terminal re-arm is not a converging state (Stop is still meaningful)");
+                TestKit.Check(converging.Contains("EditorExportState.Preparing") &&
+                              converging.Contains("EditorExportState.Running"),
+                    "only a terminated session counts as converging");
+                // 该投影必须是纯只读的：不得引入新的 gate / timeout。
+                foreach (string forbidden in new[] { "TryStopAndDrain", "RequestStop", "Cancel(", "Timeout" })
+                    TestKit.Check(converging.IndexOf(forbidden, StringComparison.Ordinal) < 0,
+                        "the converging projection must stay a pure read-only projection (no " + forbidden + ")");
+
+                // GUI 必须在渲染 Stop 按钮之前就以只读状态返回。
+                string draw = Method(Source("ModEntry.cs"), "private static void DrawMasterTimelineHandoffGui()");
+                int convergingCheck = draw.IndexOf("EditorExportController.IsConvergingTerminalResources", StringComparison.Ordinal);
+                int stopButton = draw.IndexOf("UiText.GuiMasterTimelineHandoffBtnStop", StringComparison.Ordinal);
+                TestKit.Check(convergingCheck >= 0, "the GUI consults the converging state");
+                TestKit.Check(stopButton > convergingCheck, "the read-only branch precedes the stop button");
+                string convergingBranch = draw.Substring(convergingCheck, stopButton - convergingCheck);
+                TestKit.Check(convergingBranch.Contains("return;"),
+                    "the converging state returns before offering an actionable button");
+                TestKit.Check(convergingBranch.Contains("GuiMasterTimelineHandoffStateConverging"),
+                    "the converging state is surfaced with explicit read-only text");
+            });
         }
 
         // ==================================================== helpers

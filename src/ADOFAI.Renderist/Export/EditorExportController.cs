@@ -65,6 +65,20 @@ namespace ADOFAI.Renderist.Export
              _session.State == EditorExportState.Cancelled ||
              _session.State == EditorExportState.Failed);
 
+        /// <summary>
+        /// true = 活动会话已经结束，仅剩终态资源（frame Completion / pipeline CleanupTask）在收敛。
+        ///
+        /// 这是**只读投影**，不改变任何安全语义：<see cref="IsBusy"/> 仍为 true，Start 仍被拒绝。
+        /// 它只用于让 GUI 不再把"residual 收敛中"错误表达成"仍可 Stop"：此时 Stop 没有实际效果。
+        /// terminal controller re-arm 是**进行中**的过渡状态，Stop 在那里仍然有意义，因此不算收敛态。
+        /// </summary>
+        public static bool IsConvergingTerminalResources =>
+            IsBusy &&
+            !_terminalRearmPending &&
+            (_session == null ||
+             (_session.State != EditorExportState.Preparing &&
+              _session.State != EditorExportState.Running));
+
         /// <summary>最近一次 Start 被拒绝的原因（机器可读短句），null 表示无拒绝或已成功。</summary>
         internal static string LastStartRejectReason { get; private set; }
 

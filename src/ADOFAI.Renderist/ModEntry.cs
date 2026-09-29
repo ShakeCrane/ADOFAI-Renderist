@@ -27,7 +27,7 @@ namespace ADOFAI.Renderist
         /// 当前 mod 版本。与 Info.json / csproj / 启动日志保持同步，
         /// 由 scripts/set-version.ps1 自动同步。
         /// </summary>
-        internal const string ModVersion = "0.3.10.0";
+        internal const string ModVersion = "0.3.10.1";
 
         internal static UnityModManager.ModEntry Mod;
         internal static UnityModManager.ModEntry.ModLogger Logger;
@@ -111,7 +111,7 @@ namespace ADOFAI.Renderist
 
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.3.10.0 (Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions).");
+                Log.Info("Loaded ADOFAI Renderist 0.3.10.1 (Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions).");
                 return true;
             }
             catch (Exception ex)
@@ -439,8 +439,11 @@ namespace ADOFAI.Renderist
             DrawGeometryGui();
 
             EditorExportSession session = EditorExportController.CurrentSession;
+            bool converging = EditorExportController.IsConvergingTerminalResources;
             GUILayout.Label(UiText.GuiMasterTimelineHandoffStatusPrefix +
-                EditorExportController.CurrentState.ToString(), GUI.skin.label);
+                (converging
+                    ? UiText.GuiMasterTimelineHandoffStateConverging
+                    : EditorExportController.CurrentState.ToString()), GUI.skin.label);
             if (session != null)
             {
                 // 已提交帧 = 逻辑 commit 数（log-only 模式下 PNG 写盘数为 0，不能用它表示进度）。
@@ -456,6 +459,14 @@ namespace ADOFAI.Renderist
                 GUILayout.Label(UiText.GuiMasterTimelineHandoffTailPrefix +
                     session.TailFramesCommitted.ToString(CultureInfo.InvariantCulture) + "/" +
                     (session.ResolvedTailFrames?.ToString(CultureInfo.InvariantCulture) ?? "?"), GUI.skin.label);
+            }
+
+            if (converging)
+            {
+                // 活动会话已结束，只是终态资源仍在收敛：此时 Stop 没有实际效果，
+                // 因此只显示只读状态，不提供可操作的按钮。收敛完成后 IsBusy 转 false，Start 自动恢复。
+                GUILayout.Label(UiText.GuiMasterTimelineHandoffConvergingHint, GUI.skin.label);
+                return;
             }
 
             bool buttonEnabled = GUI.enabled;

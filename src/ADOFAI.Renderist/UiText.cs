@@ -102,6 +102,12 @@ namespace ADOFAI.Renderist
         public const string GuiMasterTimelineHandoffBtnStart = "启动 MasterTimeline Deterministic Gameplay Handoff";
         public const string GuiMasterTimelineHandoffBtnStop = "停止 MasterTimeline Deterministic Gameplay Handoff";
 
+        // 终态资源（frame Completion / pipeline CleanupTask）仍在收敛、但已没有可操作的活动会话。
+        // 此时 Stop 不再有实际效果，GUI 只显示只读收敛状态；Start 在收敛完成前仍保持禁止。
+        public const string GuiMasterTimelineHandoffStateConverging = "正在清理…";
+        public const string GuiMasterTimelineHandoffConvergingHint =
+            "上一会话已终止，终态资源仍在收敛；完成后可再次启动。";
+
         // ---- Phase 3.8.0: FFmpeg 组件管理 ----
 
         public const string GuiFfmpegSectionTitle = "FFmpeg 组件";
