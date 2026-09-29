@@ -27,7 +27,7 @@ namespace ADOFAI.Renderist
         /// 当前 mod 版本。与 Info.json / csproj / 启动日志保持同步，
         /// 由 scripts/set-version.ps1 自动同步。
         /// </summary>
-        internal const string ModVersion = "0.3.10.1";
+        internal const string ModVersion = "0.3.10.2";
 
         internal static UnityModManager.ModEntry Mod;
         internal static UnityModManager.ModEntry.ModLogger Logger;
@@ -118,7 +118,7 @@ namespace ADOFAI.Renderist
 
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.3.10.1 (Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions).");
+                Log.Info("Loaded ADOFAI Renderist 0.3.10.2 (Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions).");
 
                 // 0.3.10.2：本进程的首次 FFmpeg 组件检查在这里主动启动，不再依赖
                 // 组件 GUI 是否被绘制、也不依赖编辑器场景。它只做既有 inspector 的
