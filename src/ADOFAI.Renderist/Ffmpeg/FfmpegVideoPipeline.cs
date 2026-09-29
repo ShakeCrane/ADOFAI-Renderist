@@ -771,6 +771,17 @@ namespace ADOFAI.Renderist.Ffmpeg
                 lock (_gate)
                     _stderrPump = stderrPump;
 
+                // stdin 也必须经过同一个 seam：该缝的文档合同本来就是 stdin / stdout / stderr，
+                // 而回归测试需要用它确定性复现"写入已接受但 Completion 仍 pending"的 IO 背压形态。
+                // 生产恒为 null wrapper，此时 WrapStream 返回同一个实例，不做任何重新赋值。
+                // 刻意放在 stdout / stderr 之后：既有用例按 stdout→stderr 的顺序注入故障，顺序不变。
+                Stream wrappedStdin = WrapStream(process.StandardInput.BaseStream, "stdin");
+                if (!ReferenceEquals(wrappedStdin, stdin))
+                {
+                    lock (_gate)
+                        _stdin = wrappedStdin;
+                }
+
                 lock (_gate)
                 {
                     if (_state == FfmpegVideoPipelineState.NotStarted)

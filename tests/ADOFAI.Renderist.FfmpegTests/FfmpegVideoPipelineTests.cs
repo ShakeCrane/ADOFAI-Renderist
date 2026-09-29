@@ -67,7 +67,7 @@ namespace ADOFAI.Renderist.FfmpegTests
         }
 
         /// <summary>用一个真实存在的文件冻结身份（fake 测试用测试可执行文件本身）。</summary>
-        private static FfmpegVideoIdentity MakeIdentity(string path)
+        internal static FfmpegVideoIdentity MakeIdentity(string path)
         {
             string sha256;
             string hashError;
