@@ -147,6 +147,22 @@ namespace ADOFAI.Renderist
         public const string GuiFfmpegButtonCancelInstall = "取消安装";
         public const string GuiFfmpegBusyInspecting = "正在检查组件…";
         public const string GuiFfmpegBusyInstalling = "正在安装…";
+
+        // ---- 0.3.10.2: FFmpeg readiness（Preparing / Ready / Failed）----
+        //
+        // GUI 的 MP4 Start 区域与 EditorExportController 的启动门禁共用同一份 readiness
+        // 投影（FfmpegReadinessTracker + Mp4SessionStartup.TryCheckReadiness）。
+
+        public const string GuiFfmpegReadinessPrefix = "就绪状态：";
+        public const string GuiFfmpegReadinessPending = "待检查（尚未开始检查组件）";
+        public const string GuiFfmpegReadinessFaultPrefix = "上次检查失败：";
+        public const string GuiFfmpegReadinessFaultRetryHint = "（请点击下方“重新检查 FFmpeg 组件”重试）";
+        public const string GuiFfmpegButtonRecheck = "重新检查 FFmpeg 组件";
+        public const string GuiMp4ReadinessBlockedPrefix = "MP4 Start 已禁用：";
+        public const string GuiMp4ReadinessPreparingSuffix =
+            "正在检查 FFmpeg 组件，检查完成后 MP4 会自动恢复为可启动。";
+        public const string GuiMp4ReadinessFailedSuffix =
+            "请先修复 FFmpeg 组件状态，然后点击“重新检查 FFmpeg 组件”。";
         public const string GuiFfmpegInstallResultPrefix = "上次安装：";
         public const string GuiFfmpegInstallOutcomeInstalled = "已安装";
         public const string GuiFfmpegInstallOutcomeAlready = "已存在，未覆盖";

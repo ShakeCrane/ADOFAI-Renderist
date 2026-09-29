@@ -292,6 +292,63 @@ namespace ADOFAI.Renderist.Export
         }
 
         /// <summary>
+        /// MP4 启动前的 readiness gate。**GUI 与 EditorExportController 共用这一个判定**，
+        /// 因此不会出现两套 Ready 规则。
+        ///
+        /// 语义：
+        ///   * 非 MP4 模式（PNG / Log-only）恒为允许 —— 它们绝不依赖 FFmpeg 状态；
+        ///   * MP4 只有在“当前输入 generation 对应的报告明确 Ready”时才允许
+        ///     （Preparing / Failed / fault / 过期报告一律拒绝）。
+        ///
+        /// 返回 false 时给出稳定的机读 <paramref name="errorCode"/>。
+        /// </summary>
+        internal static bool TryCheckReadiness(
+            CaptureOutputMode mode, FfmpegReadinessSnapshot readiness,
+            out string errorCode, out string errorDetail)
+        {
+            errorCode = null;
+            errorDetail = null;
+
+            if (!OutputModePolicy.IsMp4(mode))
+                return true;
+
+            if (readiness == null)
+            {
+                errorCode = "mp4-ffmpeg-readiness-unknown";
+                return false;
+            }
+
+            // MP4 的四个启动条件（缺一不可）：
+            //   1. 没有待处理的输入失效（dirty）；
+            //   2. 没有有效的检查在途；
+            //   3. 报告明确对应当前输入 generation；
+            //   4. 报告状态为 Ready。
+            // 下面按顺序显式检查 2 / 4，1+3 由 tracker 的投影（State + Report）保证。
+            if (readiness.ScanInFlight)
+            {
+                errorCode = "mp4-ffmpeg-" + FfmpegReadinessReason.Checking;
+                return false;
+            }
+
+            if (readiness.State != FfmpegReadinessState.Ready)
+            {
+                errorCode = "mp4-ffmpeg-" + (readiness.ReasonCode ?? "not-ready");
+                errorDetail = readiness.ReasonDetail;
+                return false;
+            }
+
+            // 纵深防御：Ready 必须由“当前 generation 的 Ready 报告”支撑，
+            // 不接受一个自称 Ready 却没有报告的投影。
+            if (readiness.Report == null || readiness.Report.State != FfmpegComponentState.Ready)
+            {
+                errorCode = "mp4-ffmpeg-report-not-ready";
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
         /// 绑定运行时资源：构造唯一 L2 pipeline → 建立 delivery context → Start pipeline。
         ///
         /// 严格顺序的意义：**context 在 Start 之前建立**，因此 Start 之后任何失败都能经该

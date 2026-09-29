@@ -288,39 +288,16 @@ namespace ADOFAI.Renderist.Export
         /// <summary>
         /// 只有完成 terminal controller re-arm 且重新通过普通 gate 后，才创建
         /// session 目录并进入唯一一次 editor.Play()。
+        ///
+        /// 0.3.10.2：输出模式先解析，随后在任何 session 副作用之前执行 MP4 readiness
+        /// 门禁。terminal re-arm 之后再次进入本方法时会**重新**读取 readiness，
+        /// 绝不沿用第一次 Start 时的结论。
         /// </summary>
         private static bool StartSession(Settings settings, EditorExportReadinessReport report)
         {
             EditorExportSession session = null;
             try
             {
-                // 确定性唯一会话目录：绝不静默复用已存在的目录。
-                string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
-                string baseSessionName = "editor_" + stamp;
-                string dir = OutputPath.ResolveUniqueSessionDirectory(
-                    settings.OutputDirectory, baseSessionName, out string sessionId);
-                if (string.IsNullOrEmpty(dir))
-                {
-                    LastStartRejectReason = "输出目录不可用";
-                    Log.Warn(UiText.Format(UiText.LogEditorExportStartRejectedFormat, LastStartRejectReason));
-                    return false;
-                }
-
-                // 与 preflight 共用同一范围规则（OutputFpsPolicy）；非法值在这里
-                // 不会被静默替换为可用值，而是交由 scheduler 的启动 gate fail-closed。
-                // 该 fallback 只保留原有语义：非法/缺失时沿用上一次会话的 outputFps
-                // 作为 metadata 记录值；真正决定能否启动的是 scheduler gate。
-                int outputFps = OutputFpsPolicy.IsValid(settings.EditorTargetFrameRate)
-                    ? settings.EditorTargetFrameRate
-                    : DeterministicFrameScheduler.OutputFps;
-                // safety 默认未配置（unbounded）：0 表示不存在总帧数 / 总时长上限。
-                // authority 是 scheduler 自己用同一个纯函数解析的结果；这里先按同一
-                // 配置值解析一次，用于启动前写 metadata。
-                int configuredSafetyFrameLimit = settings.EditorExportSafetyFrameLimit;
-                SafetyLimitResolution safety = SafetyFrameLimitPolicy.Resolve(configuredSafetyFrameLimit);
-                var endTailInput = new EndTailInput(
-                    settings.EditorEndTailValue, settings.EditorEndTailUnit);
-
                 // 输出模式在 session 开始时一次性冻结，并且是**唯一** authority：
                 // 旧的 EditorImageOutputEnabled 只作为一次性迁移输入（true → PNG，
                 // false → Log-only）；MP4 只能由用户显式选择。此后 image-output 相关字段
@@ -347,7 +324,51 @@ namespace ADOFAI.Renderist.Export
                              OutputModePolicy.Label(outputMode));
                 }
 
+                // ---- MP4 readiness 最终门禁（唯一判定：Mp4SessionStartup.TryCheckReadiness）----
+                // 它严格发生在以下三者**之前**：创建 session 目录、写初始 metadata、
+                // 初始化 MP4 session 资源（pipeline / delivery context）。
+                // 非 MP4 模式（PNG / Log-only）恒为通过，因此不影响既有导出路径。
+                string readinessError;
+                string readinessDetail;
+                if (!Mp4SessionStartup.TryCheckReadiness(
+                        outputMode, ModEntry.GetFfmpegReadiness(), out readinessError, out readinessDetail))
+                {
+                    LastStartRejectReason = "FFmpeg 未就绪，MP4 启动被拒绝：" + readinessError +
+                                            (string.IsNullOrEmpty(readinessDetail)
+                                                ? string.Empty
+                                                : ("（" + readinessDetail + "）"));
+                    Log.Warn(UiText.Format(UiText.LogEditorExportStartRejectedFormat, LastStartRejectReason));
+                    return false;
+                }
+
                 _frozenOutputMode = outputMode;
+
+                // 确定性唯一会话目录：绝不静默复用已存在的目录。
+                string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+                string baseSessionName = "editor_" + stamp;
+                string dir = OutputPath.ResolveUniqueSessionDirectory(
+                    settings.OutputDirectory, baseSessionName, out string sessionId);
+                if (string.IsNullOrEmpty(dir))
+                {
+                    LastStartRejectReason = "输出目录不可用";
+                    Log.Warn(UiText.Format(UiText.LogEditorExportStartRejectedFormat, LastStartRejectReason));
+                    return false;
+                }
+
+                // 与 preflight 共用同一范围规则（OutputFpsPolicy）；非法值在这里
+                // 不会被静默替换为可用值，而是交由 scheduler 的启动 gate fail-closed。
+                // 该 fallback 只保留原有语义：非法/缺失时沿用上一次会话的 outputFps
+                // 作为 metadata 记录值；真正决定能否启动的是 scheduler gate。
+                int outputFps = OutputFpsPolicy.IsValid(settings.EditorTargetFrameRate)
+                    ? settings.EditorTargetFrameRate
+                    : DeterministicFrameScheduler.OutputFps;
+                // safety 默认未配置（unbounded）：0 表示不存在总帧数 / 总时长上限。
+                // authority 是 scheduler 自己用同一个纯函数解析的结果；这里先按同一
+                // 配置值解析一次，用于启动前写 metadata。
+                int configuredSafetyFrameLimit = settings.EditorExportSafetyFrameLimit;
+                SafetyLimitResolution safety = SafetyFrameLimitPolicy.Resolve(configuredSafetyFrameLimit);
+                var endTailInput = new EndTailInput(
+                    settings.EditorEndTailValue, settings.EditorEndTailUnit);
 
                 // 输出几何同样在 session 开始时一次性冻结。authority 是 scheduler 自己用
                 // 同一个纯函数解析的结果；这里先按同一配置解析一次，用于启动前写 metadata。

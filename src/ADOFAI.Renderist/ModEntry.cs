@@ -69,9 +69,16 @@ namespace ADOFAI.Renderist
         //
         // 组件检查与安装都在后台 Task 上执行，完成状态由既有 OnUpdate 轮询收取，
         // 因此不会新增调度系统，也不会让 GUI / 主线程阻塞在短进程探测或大文件哈希上。
-        private static FfmpegComponentReport _cachedFfmpegReport;
-        private static bool _ffmpegReportDirty = true;
+        //
+        // 0.3.10.2：readiness 是唯一 authority（Preparing / Ready / Failed），由
+        // FfmpegReadinessTracker 以 generation 绑定“报告是否仍代表当前输入”。GUI 与
+        // EditorExportController 共用同一份投影；旧的“cached report != null 即当前有效”
+        // 语义已删除 —— 输入变化后旧报告立即失效，过期任务结果不会被发布。
+        private static readonly FfmpegReadinessTracker _ffmpegReadiness = new FfmpegReadinessTracker();
+
+        /// <summary>在途检查任务；其 generation 决定结果是否仍然新鲜。</summary>
         private static Task<FfmpegComponentReport> _ffmpegInspectTask;
+        private static int _ffmpegInspectGeneration = FfmpegReadinessTracker.NoGeneration;
         private static Task<FfmpegInstallResult> _ffmpegInstallTask;
         private static CancellationTokenSource _ffmpegInstallCancellation;
         private static FfmpegInstallResult _lastFfmpegInstallResult;
@@ -112,6 +119,12 @@ namespace ADOFAI.Renderist
                 Harmony = new Harmony(HarmonyId);
 
                 Log.Info("Loaded ADOFAI Renderist 0.3.10.1 (Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions).");
+
+                // 0.3.10.2：本进程的首次 FFmpeg 组件检查在这里主动启动，不再依赖
+                // 组件 GUI 是否被绘制、也不依赖编辑器场景。它只做既有 inspector 的
+                // 只读发现 / 托管安装校验 / 能力探测：后台执行、不阻塞 Load，
+                // 结果由 OnUpdate 的 pump 收取。任何失败都不影响 Mod 加载。
+                TryStartInitialFfmpegInspection();
                 return true;
             }
             catch (Exception ex)
@@ -132,6 +145,9 @@ namespace ADOFAI.Renderist
                 {
                     Log.Info(UiText.LogEnabled);
                     _ffmpegLifecycleShutdown = false;
+                    // 重新启用后磁盘 / 配置状态可能已改变：旧报告不再是当前结论，
+                    // 并请求一次新的检查（由 OnUpdate 的 pump 启动，不依赖 GUI）。
+                    _ffmpegReadiness.Invalidate("mod-enabled");
                 }
                 else
                 {
@@ -470,12 +486,37 @@ namespace ADOFAI.Renderist
             }
 
             bool buttonEnabled = GUI.enabled;
+
+            // MP4 Start gate：与 EditorExportController 共用同一 readiness 判定。
+            // Preparing（正在检查）/ Failed（不可用）都禁用 MP4 Start 并给出明确入口；
+            // PNG / Log-only 恒不受影响。
+            bool mp4Blocked = IsMp4StartBlockedByFfmpegReadiness(out FfmpegReadinessSnapshot mp4Readiness) &&
+                              !EditorExportController.IsBusy;
+            if (mp4Blocked)
+            {
+                GUILayout.Label(UiText.GuiMp4ReadinessBlockedPrefix + FfmpegReadinessText(mp4Readiness),
+                    GUI.skin.label);
+                GUILayout.Label(
+                    mp4Readiness != null && mp4Readiness.State == FfmpegReadinessState.Preparing
+                        ? UiText.GuiMp4ReadinessPreparingSuffix
+                        : UiText.GuiMp4ReadinessFailedSuffix,
+                    GUI.skin.label);
+            }
+
             if (!EditorExportController.IsBusy)
-                GUI.enabled = buttonEnabled && _endTailInputValid;
+                GUI.enabled = buttonEnabled && _endTailInputValid && !mp4Blocked;
             bool buttonClicked = GUILayout.Button(EditorExportController.IsBusy
                 ? UiText.GuiMasterTimelineHandoffBtnStop
                 : UiText.GuiMasterTimelineHandoffBtnStart);
             GUI.enabled = buttonEnabled;
+
+            if (mp4Blocked &&
+                GUILayout.Button(UiText.GuiFfmpegButtonRecheck, GUI.skin.button, GUILayout.Width(180f)))
+            {
+                // 显式重新检查：输入 generation 失效并排队一次新检查（不会每帧自动重试）。
+                _ffmpegReadiness.Invalidate("mp4-start-recheck");
+            }
+
             if (buttonClicked)
             {
                 if (EditorExportController.IsBusy)
@@ -677,13 +718,11 @@ namespace ADOFAI.Renderist
                 }
                 GUILayout.EndHorizontal();
 
-                if (_cachedFfmpegReport == null ||
-                    _cachedFfmpegReport.State != FfmpegComponentState.Ready)
+                FfmpegReadinessSnapshot mp4Readiness = _ffmpegReadiness.Snapshot();
+                if (mp4Readiness.State != FfmpegReadinessState.Ready)
                 {
-                    GUILayout.Label("FFmpeg 组件必须为 Ready 才能启动 MP4 session（当前：" +
-                                    (_cachedFfmpegReport == null
-                                        ? "尚未检查"
-                                        : FfmpegStateText(_cachedFfmpegReport.State)) + "）。", GUI.skin.label);
+                    GUILayout.Label(UiText.GuiMp4ReadinessBlockedPrefix +
+                                    FfmpegReadinessText(mp4Readiness), GUI.skin.label);
                 }
 
                 GUILayout.Label("L3-A 验证边界：到达导出终态时不会执行 Finish / 核验 / 发布，" +
@@ -709,25 +748,31 @@ namespace ADOFAI.Renderist
         {
             Settings.EditorOutputModeValue = (int)mode;
             Settings.EditorImageOutputEnabled = OutputModePolicy.IsImageOutput(mode);
-            // MP4 需要 FFmpeg Ready：让组件检查与 readiness 缓存重新评估。
-            _ffmpegReportDirty = true;
+            // MP4 需要 FFmpeg Ready：让组件检查与 readiness 重新评估。
+            _ffmpegReadiness.Invalidate("output-mode-changed");
             _lastReadinessCacheRealtime = float.NegativeInfinity;
         }
 
         /// <summary>
-        /// 供启动路径读取最近一次已完成的 L1 组件报告。返回 false = 尚无可用报告
-        /// （此时 MP4 启动必须 fail-closed，绝不猜测 FFmpeg 身份）。
+        /// 供启动路径读取最近一次已完成的 L1 组件报告。返回 false = 当前**没有**
+        /// 对应当前输入的报告（此时 MP4 启动必须 fail-closed，绝不猜测 FFmpeg 身份）。
+        ///
+        /// 注意：报告存在只说明“存在当前输入对应的结论”，它是否可用由
+        /// <see cref="GetFfmpegReadiness"/> / report.State 决定。
         /// </summary>
         internal static bool TryGetFfmpegComponentReport(out FfmpegComponentReport report)
         {
-            report = _cachedFfmpegReport;
-            if (report == null)
-            {
-                // 触发一次检查；本次启动仍按 fail-closed 处理。
-                _ffmpegReportDirty = true;
-                return false;
-            }
-            return true;
+            report = _ffmpegReadiness.Snapshot().Report;
+            return report != null;
+        }
+
+        /// <summary>
+        /// 供启动路径读取**当前** FFmpeg readiness 投影（Preparing / Ready / Failed）。
+        /// 这是 MP4 启动门禁与 GUI 共用的唯一判定输入。
+        /// </summary>
+        internal static FfmpegReadinessSnapshot GetFfmpegReadiness()
+        {
+            return _ffmpegReadiness.Snapshot();
         }
 
         /// <summary>
@@ -1245,20 +1290,21 @@ namespace ADOFAI.Renderist
         {
             GUILayout.Label(UiText.GuiFfmpegSectionTitle, GUI.skin.label);
 
-            if (_ffmpegInspectTask == null && _ffmpegReportDirty)
-                RequestFfmpegInspection();
+            // 只读投影：检查由 pump / Load 主动启动，GUI 每帧绘制不会重复启动检查。
+            FfmpegReadinessSnapshot readiness = _ffmpegReadiness.Snapshot();
+            GUILayout.Label(UiText.GuiFfmpegReadinessPrefix + FfmpegReadinessText(readiness),
+                GUI.skin.label);
 
-            if (_ffmpegInspectTask != null)
+            if (readiness.Report != null)
             {
-                GUILayout.Label(UiText.GuiFfmpegBusyInspecting, GUI.skin.label);
+                // Ready，或“已发现但能力不足 / 未发现”等由报告给出的具体结论。
+                DrawFfmpegReport(readiness.Report);
             }
-            else if (_cachedFfmpegReport == null)
+            else if (readiness.State == FfmpegReadinessState.Failed)
             {
-                GUILayout.Label(UiText.GuiFfmpegBusyInspecting, GUI.skin.label);
-            }
-            else
-            {
-                DrawFfmpegReport(_cachedFfmpegReport);
+                // 检查任务自身失败（没有报告）：给出具体原因与显式重试入口。
+                GUILayout.Label(FfmpegReadinessFailureText(readiness) +
+                                UiText.GuiFfmpegReadinessFaultRetryHint, GUI.skin.label);
             }
 
             DrawFfmpegControls();
@@ -1357,7 +1403,8 @@ namespace ADOFAI.Renderist
             if (!string.Equals(changedExplicit, Settings.FfmpegExplicitPath, StringComparison.Ordinal))
             {
                 Settings.FfmpegExplicitPath = changedExplicit;
-                _ffmpegReportDirty = true;
+                // 输入已变化：旧报告立即失效，并请求一次新的检查。
+                _ffmpegReadiness.Invalidate("explicit-path-changed");
             }
             GUILayout.EndHorizontal();
             GUILayout.Label(UiText.GuiFfmpegExplicitPathHint, GUI.skin.label);
@@ -1372,7 +1419,11 @@ namespace ADOFAI.Renderist
 
             GUILayout.BeginHorizontal();
             if (GUILayout.Button(UiText.GuiFfmpegButtonRefresh, GUI.skin.button, GUILayout.Width(160f)))
-                _ffmpegReportDirty = true;
+                _ffmpegReadiness.Invalidate("user-refresh");
+
+            // fault 后的显式重试入口（也只有这一条路径会重新排队，绝不每帧自动重试）。
+            if (GUILayout.Button(UiText.GuiFfmpegButtonRecheck, GUI.skin.button, GUILayout.Width(180f)))
+                _ffmpegReadiness.Invalidate("user-recheck");
 
             if (installing)
             {
@@ -1404,20 +1455,42 @@ namespace ADOFAI.Renderist
         }
 
         /// <summary>
+        /// 本进程的首次组件检查。在 <see cref="Load"/> 末尾调用：不依赖 GUI 绘制、
+        /// 不依赖编辑器场景、不阻塞 Load。启动失败只记录，不影响 Mod 加载。
+        /// </summary>
+        private static void TryStartInitialFfmpegInspection()
+        {
+            try
+            {
+                RequestFfmpegInspection();
+            }
+            catch (Exception ex)
+            {
+                Logger?.LogException("首次 FFmpeg 组件检查启动失败（不影响加载）", ex);
+            }
+        }
+
+        /// <summary>
         /// 请求一次组件状态检查。检查在后台线程执行（能力探测会启动短进程，
         /// 大文件哈希也可能耗时），结果由 <see cref="PumpFfmpegTasks"/> 在主线程收取。
+        ///
+        /// 每次检查都绑定启动瞬间的 generation；完成时若 generation 已变化，
+        /// 结果会被丢弃（见 <see cref="FfmpegReadinessTracker.TryPublishScan"/>）。
         /// </summary>
         private static void RequestFfmpegInspection()
         {
             if (_ffmpegInspectTask != null)
                 return;
 
-            _ffmpegReportDirty = false;
+            int generation;
+            if (!_ffmpegReadiness.TryBeginScan(out generation))
+                return;
 
             // 在进入后台线程前把 Unity 侧的路径解析完，后台线程不接触任何 Unity API。
             string installRoot = GetFfmpegInstallRoot();
-            string explicitPath = Settings.FfmpegExplicitPath;
+            string explicitPath = Settings != null ? Settings.FfmpegExplicitPath : null;
 
+            _ffmpegInspectGeneration = generation;
             _ffmpegInspectTask = Task.Run(() => FfmpegComponentInspector.Inspect(
                 new FfmpegComponentInspectionRequest
                 {
@@ -1425,6 +1498,10 @@ namespace ADOFAI.Renderist
                     InstallRoot = installRoot,
                     ProbeCapabilities = true,
                 }));
+
+            Log.Debug("FFmpeg 组件检查已启动：generation=" +
+                      generation.ToString(CultureInfo.InvariantCulture) +
+                      " reason=" + (_ffmpegReadiness.Snapshot().PendingReason ?? "unknown"));
         }
 
         /// <summary>清理上次运行遗留的孤儿下载临时文件（只匹配本模块自己的命名前缀）。</summary>
@@ -1489,8 +1566,12 @@ namespace ADOFAI.Renderist
         }
 
         /// <summary>
-        /// 收取后台组件检查 / 安装任务的结果。只读取由后台线程产出的纯数据对象，
-        /// 不涉及任何 Unity API。
+        /// 收取后台组件检查 / 安装任务的结果，并在需要时启动下一次检查。
+        /// 只读取由后台线程产出的纯数据对象，不涉及任何 Unity API。
+        ///
+        /// 该入口不依赖 GUI 被绘制：首次检查在 Load 启动，其余触发点
+        /// （重新启用 / 输入变化 / 显式刷新 / 安装与下载结果）只负责把 readiness
+        /// 标记为失效，排队与启动都在这里统一完成。
         /// </summary>
         private static void PumpFfmpegTasks()
         {
@@ -1498,16 +1579,41 @@ namespace ADOFAI.Renderist
             if (inspect != null && inspect.IsCompleted)
             {
                 _ffmpegInspectTask = null;
+                int generation = _ffmpegInspectGeneration;
+                _ffmpegInspectGeneration = FfmpegReadinessTracker.NoGeneration;
+
                 if (inspect.IsFaulted)
                 {
-                    Log.Warn(UiText.Format(UiText.LogFfmpegInspectionFailedFormat, DescribeTaskFailure(inspect)));
-                    _ffmpegReportDirty = true;
+                    string detail = DescribeTaskFailure(inspect);
+                    // fault 只对“仍然是当前输入”的那一代生效；且接受的 fault 不自动重试，
+                    // 因此不会形成每帧 fault → retry 循环。
+                    if (_ffmpegReadiness.TryFailScan(generation, FfmpegReadinessReason.InspectionFaulted, detail))
+                        Log.Warn(UiText.Format(UiText.LogFfmpegInspectionFailedFormat, detail));
+                    else
+                        Log.Debug("FFmpeg 组件检查 fault 已过期，按丢弃处理：generation=" +
+                                  generation.ToString(CultureInfo.InvariantCulture));
                 }
                 else
                 {
-                    _cachedFfmpegReport = inspect.Result;
+                    FfmpegComponentReport report = inspect.Result;
+                    if (_ffmpegReadiness.TryPublishScan(generation, report))
+                    {
+                        Log.Debug("FFmpeg 组件就绪状态已更新：" + _ffmpegReadiness);
+                    }
+                    else
+                    {
+                        // 输入在检查期间已变化（或结果为空）：该结果不再代表当前输入，绝不发布。
+                        Log.Debug("FFmpeg 组件检查结果未采纳：generation=" +
+                                  generation.ToString(CultureInfo.InvariantCulture) +
+                                  " current=" + _ffmpegReadiness.Generation.ToString(CultureInfo.InvariantCulture) +
+                                  " state=" + _ffmpegReadiness);
+                    }
                 }
             }
+
+            // 统一排队入口：一次只会有一个在途任务，检查完成后才会启动下一代。
+            if (!_ffmpegLifecycleShutdown && _ffmpegReadiness.NeedsScan)
+                RequestFfmpegInspection();
 
             Task<FfmpegInstallResult> install = _ffmpegInstallTask;
             if (install != null && install.IsCompleted)
@@ -1544,8 +1650,8 @@ namespace ADOFAI.Renderist
                     _ffmpegInstallCancellation = null;
                 }
 
-                // 磁盘状态已改变：重新检查组件状态。
-                _ffmpegReportDirty = true;
+                // 磁盘状态已改变：旧报告不再是当前输入的结论，并请求一次新检查。
+                _ffmpegReadiness.Invalidate("local-install-completed");
             }
         }
 
@@ -1596,6 +1702,71 @@ namespace ADOFAI.Renderist
                 ? aggregate.Flatten().InnerExceptions[0]
                 : aggregate;
             return first.Message;
+        }
+
+        /// <summary>
+        /// GUI 侧的 FFmpeg readiness 文案。它只是 <see cref="FfmpegReadinessTracker"/> 投影的
+        /// 展示形式 —— Ready 判定本身与 EditorExportController 的门禁共用同一个纯函数
+        /// （<see cref="Mp4SessionStartup.TryCheckReadiness"/>），这里不复制第二套规则。
+        /// </summary>
+        private static string FfmpegReadinessText(FfmpegReadinessSnapshot readiness)
+        {
+            if (readiness == null)
+                return UiText.GuiFfmpegUnavailable;
+
+            switch (readiness.State)
+            {
+                case FfmpegReadinessState.Ready:
+                    return UiText.GuiFfmpegStateReady;
+                case FfmpegReadinessState.Preparing:
+                    return readiness.ScanInFlight
+                        ? UiText.GuiFfmpegBusyInspecting
+                        : UiText.GuiFfmpegReadinessPending;
+                default:
+                    return FfmpegReadinessFailureText(readiness);
+            }
+        }
+
+        /// <summary>
+        /// Failed / Unavailable 的具体原因：优先使用当前报告提供的组件状态，
+        /// 没有报告时（检查任务 fault）给出 fault 详情。
+        /// </summary>
+        private static string FfmpegReadinessFailureText(FfmpegReadinessSnapshot readiness)
+        {
+            if (readiness.Report != null)
+                return FfmpegStateText(readiness.Report.State);
+
+            string detail = !string.IsNullOrEmpty(readiness.ReasonDetail)
+                ? readiness.ReasonDetail
+                : readiness.ReasonCode;
+            return UiText.GuiFfmpegReadinessFaultPrefix + (detail ?? "unknown");
+        }
+
+        /// <summary>
+        /// GUI 的 MP4 Start 前判定。返回 true = 当前 MP4 readiness 不允许启动。
+        ///
+        /// PNG / Log-only 恒为 false —— 它们完全不受 FFmpeg 状态影响。
+        /// </summary>
+        private static bool IsMp4StartBlockedByFfmpegReadiness(out FfmpegReadinessSnapshot readiness)
+        {
+            readiness = null;
+            if (Settings == null)
+                return false;
+
+            CaptureOutputMode mode;
+            bool migrated;
+            string modeError;
+            if (!Settings.TryResolveOutputMode(out mode, out migrated, out modeError))
+                return false;
+
+            if (!OutputModePolicy.IsMp4(mode))
+                return false;
+
+            readiness = _ffmpegReadiness.Snapshot();
+
+            string errorCode;
+            string errorDetail;
+            return !Mp4SessionStartup.TryCheckReadiness(mode, readiness, out errorCode, out errorDetail);
         }
 
         private static string FfmpegStateText(FfmpegComponentState state)
@@ -1734,7 +1905,7 @@ namespace ADOFAI.Renderist
                 {
                     controller.Shutdown();
                     _ffmpegDownloadDriver?.DisposeRequest();
-                    _ffmpegReportDirty = true;
+                    _ffmpegReadiness.Invalidate("ffmpeg-lifecycle-shutdown");
                 }
                 _ffmpegLifecycleShutdown = true;
                 return;
@@ -1770,7 +1941,7 @@ namespace ADOFAI.Renderist
                 if (controller.State == FfmpegDownloadState.Succeeded ||
                     controller.State == FfmpegDownloadState.Failed)
                 {
-                    _ffmpegReportDirty = true;
+                    _ffmpegReadiness.Invalidate("ffmpeg-download-settled");
                 }
             }
         }
@@ -1790,7 +1961,7 @@ namespace ADOFAI.Renderist
                     controller.Shutdown();
 
                 _ffmpegDownloadDriver?.DisposeRequest();
-                _ffmpegReportDirty = true;
+                _ffmpegReadiness.Invalidate("ffmpeg-shutdown");
             }
             catch (Exception ex)
             {
