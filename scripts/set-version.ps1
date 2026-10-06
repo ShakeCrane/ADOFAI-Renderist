@@ -16,7 +16,11 @@
     Every edit is a unique-match replacement: if a pattern does not match exactly once
     the script fails without writing anything. It never performs a fuzzy global replace
     and never rewrites feature-provenance comments (for example "Phase 3.8.0: FFmpeg
-    组件管理"), which record when a feature was introduced rather than the current phase.
+    组件管理" or "// 0.3.10.2: ..."), which record when a feature was introduced rather
+    than the current phase. For the same reason the residual assertion ignores
+    occurrences that sit inside such version-tagged provenance comments: they are not
+    authoritative version carriers, and treating them as residual would make every
+    later bump fail permanently.
 
     The script does not modify README.md, AGENTS.md, bin/, obj/, or game files.
 
@@ -59,6 +63,11 @@ $targetPaths = @($infoJsonPath, $csprojPath, $modEntryPath, $editorExportSession
 $emDash = [char]0x2014
 $guiLabelPrefix = "ADOFAI Renderist $emDash "
 $guiLabelPrefixPattern = [regex]::Escape($guiLabelPrefix)
+
+# 功能溯源注释：形如 "// 0.3.10.2: ..."。它记录的是**该行为引入时的版本**，
+# 不是权威版本载体，本脚本既不改写它，也不把它当作残留（见 Assert-NoResidual）。
+# 模式刻意只用 ASCII（\uFF1A = 全角冒号），避免在非 UTF-8 默认代码页的宿主里被误读。
+$provenanceCommentPattern = '(?m)^[ \t]*//[ \t]*\d+\.\d+\.\d+\.\d+([:;\uFF1A]|$)'
 
 function Fail($msg) {
     throw $msg
@@ -104,7 +113,10 @@ function Restore-Originals($originals, $writtenPaths) {
 }
 
 function Assert-NoResidual([string]$path, [string[]]$needles) {
-    $content = Read-TextFile $path
+    # 功能溯源注释（例如 "// 0.3.10.2: readiness 是唯一 authority"）记录的是**该行为引入时的版本**，
+    # 本脚本刻意不改写它们（见文件头说明）。因此它们也不能被当成权威残留：
+    # 否则此后任何一次版本递增，只要某个溯源注释提到上一版版本号，都会被永久误判为残留。
+    $content = [regex]::Replace((Read-TextFile $path), $provenanceCommentPattern, '// <provenance>')
     foreach ($needle in $needles) {
         if (-not [string]::IsNullOrEmpty($needle) -and $content.Contains($needle)) {
             Fail "Residual '$needle' found in $path"
