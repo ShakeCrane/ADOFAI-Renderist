@@ -535,10 +535,16 @@ namespace ADOFAI.Renderist.FfmpegTests
                 // 输出模式与普通 enable 都**不是** readiness 输入变化：
                 // 前者不参与组件发现 / 文件身份 / managed 校验 / 能力探测，
                 // 后者只是为了恢复 lifecycle（真正的 disable 已经由 shutdown 路径失效并排队）。
+                //
+                // ffmpeg-inspection-cancelled（0.3.10.3 lifecycle 修复）是**结构性**失效：
+                // 被取消的检查没有得出任何磁盘结论，因此它在被发布前必须让旧结论失效 ——
+                // 该保证不依赖调用方是否已经 invalidate。它不是新的用户输入，
+                // 也不构成每帧重试（只有真正被取消的在途检查才会走到这里一次）。
                 string[] expected =
                 {
                     "explicit-path-changed",
                     "ffmpeg-download-settled",
+                    "ffmpeg-inspection-cancelled",
                     "ffmpeg-lifecycle-shutdown",
                     "ffmpeg-shutdown",
                     "local-install-completed",

@@ -209,6 +209,50 @@ namespace ADOFAI.Renderist.FfmpegTests
             return directory;
         }
 
+        /// <summary>
+        /// 在给定托管布局中伪造一份**有效**的托管安装：ownership 标记 + manifest 声明的全部文件。
+        ///
+        /// 迁移回归需要能同时构造"旧 LocalLow 安装"与"新 Local 安装"，二者都必须能被
+        /// <see cref="FfmpegManagedInstallLocator"/> 判为 valid。
+        /// </summary>
+        public static string CreateManagedInstall(
+            FfmpegInstallLayout layout,
+            FfmpegAsset asset,
+            IReadOnlyList<byte[]> fileContents,
+            string archiveSha256 = null,
+            DateTime? installedUtc = null)
+        {
+            string directory = layout.VersionDirectory(asset.Id, asset.Version);
+            Directory.CreateDirectory(directory);
+
+            string error;
+            if (!FfmpegOwnershipMarker.TryWrite(
+                    layout.OwnershipMarkerPath(directory), asset.Id, archiveSha256 ?? asset.ArchiveSha256,
+                    installedUtc ?? DateTime.UtcNow, out error))
+            {
+                throw new Exception("failed to write managed install marker: " + error);
+            }
+
+            for (int i = 0; i < asset.Files.Count && i < fileContents.Count; i++)
+            {
+                string fullPath;
+                if (!FfmpegInstallLayout.TryResolveRelative(directory, asset.Files[i].RelativePath, out fullPath))
+                    throw new Exception("unsafe relative path: " + asset.Files[i].RelativePath);
+
+                WriteFile(fullPath, fileContents[i]);
+            }
+
+            return directory;
+        }
+
+        /// <summary>覆盖写一个已有的 ownership 标记（用于伪造损坏 / 不匹配的旧安装）。</summary>
+        public static void WriteRawMarker(FfmpegInstallLayout layout, FfmpegAsset asset, string content)
+        {
+            string directory = layout.VersionDirectory(asset.Id, asset.Version);
+            Directory.CreateDirectory(directory);
+            WriteFile(layout.OwnershipMarkerPath(directory), Encoding.UTF8.GetBytes(content));
+        }
+
         /// <summary>在托管目录中伪造一个"自己的孤儿 staging"（带合法 ownership 标记）。</summary>
         public static string CreateOwnOrphanStaging(FfmpegInstallLayout layout)
         {

@@ -19,6 +19,7 @@ namespace ADOFAI.Renderist.FfmpegTests
     ///   RENDERIST_FAKE_ENCODERS_OMIT_LIBX264  1 = 编码器表里不出现 libx264
     ///   RENDERIST_FAKE_ENCODERS_NOISE          1 = 只有普通文本提到 libx264，没有编码器表行
     ///   RENDERIST_FAKE_FORMATS_NOISE           1 = 只有普通文本提到 mp4/rawvideo，没有格式表行
+    ///   RENDERIST_FAKE_FFMPEG_TOUCH            非空 = 每次被调用都向该文件追加一行（探测可观测性）
     /// </summary>
     internal static class FakeFfmpeg
     {
@@ -56,6 +57,8 @@ namespace ADOFAI.Renderist.FfmpegTests
 
         public static int Run(string[] args)
         {
+            RecordInvocation(args);
+
             if (HasFlag(args, "-version"))
             {
                 Console.Out.Write(VersionText());
@@ -78,6 +81,28 @@ namespace ADOFAI.Renderist.FfmpegTests
             }
 
             return 0;
+        }
+
+        /// <summary>
+        /// 每次假 FFmpeg 被调用时向 <c>RENDERIST_FAKE_FFMPEG_TOUCH</c> 指向的文件追加一行。
+        ///
+        /// 用途：让"能力探测确实发生 / 确实**没有**发生"成为可观测事实 ——
+        /// 取消后的检查绝不允许再启动新的短进程探测。
+        /// </summary>
+        private static void RecordInvocation(string[] args)
+        {
+            string path = Environment.GetEnvironmentVariable("RENDERIST_FAKE_FFMPEG_TOUCH");
+            if (string.IsNullOrEmpty(path))
+                return;
+
+            try
+            {
+                System.IO.File.AppendAllText(path, string.Join(" ", args) + Environment.NewLine);
+            }
+            catch
+            {
+                // 记录失败不能影响假 FFmpeg 自身的行为。
+            }
         }
 
         private static bool HasFlag(string[] args, string flag)
