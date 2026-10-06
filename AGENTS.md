@@ -40,6 +40,8 @@ ADOFAI-Renderist 是一个基于 **Unity Mod Manager（UMM）** 的 ADOFAI 模�
 - 阶段设计
 - 计划审查
 - 定期审查 `PROJECT_UNDERSTANDING.md`
+- 当 Remote Desktop Commander 可可靠访问当前开发机上的仓库时，优先直接审查本地实际 `branch` / `HEAD` / staged / unstaged / untracked / diff / build / test / log；公开 GitHub 主要用于核对远端、已提交与已推送状态
+- 不要求 GPT Work / DSH 为了交付 Web ChatGPT 审查而提前 commit / push；未提交 worktree 可以直接作为审查对象，commit / push 应服务于稳定闭环与版本节点
 
 ### GPT Work
 
