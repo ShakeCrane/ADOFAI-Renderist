@@ -170,6 +170,15 @@ namespace ADOFAI.Renderist
         public const string GuiFfmpegInstallOutcomeFailed = "失败";
         public const string GuiFfmpegUnavailable = "（不可用）";
 
+        // ---- 旧托管根（LocalLow）一次性迁移 ----
+        // 只有真正发生迁移 / 被阻断 / 失败时才显示，常态（无需迁移）不占用界面空间。
+        public const string GuiFfmpegMigrationPrefix = "旧托管安装迁移：";
+        public const string GuiFfmpegMigrationMigrated = "已从旧 LocalLow 托管目录迁移到当前托管目录";
+        public const string GuiFfmpegMigrationBlocked =
+            "未迁移：当前托管目录已存在无法覆盖的安装（fail-closed，未回退到旧目录）";
+        public const string GuiFfmpegMigrationCancelled = "已取消（已清理暂存，旧安装原样保留）";
+        public const string GuiFfmpegMigrationFailed = "失败（旧安装原样保留）：";
+
         // ---- Phase 3.8.0: FFmpeg 下载（UnityWebRequest + DownloadHandlerFile）----
 
         // 每个阶段都必须可区分，不能被混成一个"进行中"。
@@ -224,6 +233,20 @@ namespace ADOFAI.Renderist
         public const string LogFfmpegInstallAlreadyPresentFormat = "FFmpeg 已存在，未覆盖：{0}";
         // {0}=error
         public const string LogFfmpegInspectionFailedFormat = "FFmpeg 组件状态检查失败：{0}";
+        // {0}=exception message
+        public const string LogFfmpegLegacyRootUnavailableFormat =
+            "读取 Application.persistentDataPath 以确定旧 FFmpeg 托管目录失败：{0}";
+        // {0}=directory
+        public const string LogFfmpegMigrationSucceededFormat =
+            "FFmpeg 旧托管安装已迁移到当前托管目录：{0}";
+        // {0}=reason code, {1}=detail
+        public const string LogFfmpegMigrationBlockedFormat =
+            "FFmpeg 旧托管安装未迁移（fail-closed，未覆盖、未回退到旧目录）：{0} {1}";
+        // {0}=reason code, {1}=detail
+        public const string LogFfmpegMigrationFailedFormat =
+            "FFmpeg 旧托管安装迁移失败（旧安装原样保留）：{0} {1}";
+        public const string LogFfmpegMigrationCancelled =
+            "FFmpeg 旧托管安装迁移已取消，暂存目录已清理，旧安装原样保留。";
 
         // ---------------- Log: ModEntry ----------------
 

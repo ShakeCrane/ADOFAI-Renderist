@@ -79,6 +79,18 @@ namespace ADOFAI.Renderist
         /// <summary>在途检查任务；其 generation 决定结果是否仍然新鲜。</summary>
         private static Task<FfmpegComponentReport> _ffmpegInspectTask;
         private static int _ffmpegInspectGeneration = FfmpegReadinessTracker.NoGeneration;
+
+        /// <summary>
+        /// 在途检查（含 legacy 托管根迁移）的取消能力，每个 generation 一个实例。
+        ///
+        /// migration 是**写磁盘**行为，不能沿用原只读 inspection 的无取消边界：
+        /// disable / unload / 退出时必须能取消在途的 hash / copy / probe / publish。
+        /// 本字段只在 Unity 主线程读写；CTS 句柄由任务 settle 后的 continuation 释放
+        /// （见 <see cref="RequestFfmpegInspection"/>），<see cref="RequestFfmpegInspectionCancel"/>
+        /// 只请求取消、绝不释放。
+        /// </summary>
+        private static FfmpegInspectionCancellation _ffmpegInspectCancellation;
+
         private static Task<FfmpegInstallResult> _ffmpegInstallTask;
         private static CancellationTokenSource _ffmpegInstallCancellation;
         private static FfmpegInstallResult _lastFfmpegInstallResult;
@@ -89,6 +101,16 @@ namespace ADOFAI.Renderist
         // 下载管线（UnityWebRequest 主线程驱动 + Unity-free 控制器 + 后台校验/安装）。
         private static UnityFfmpegDownloadDriver _ffmpegDownloadDriver;
         private static FfmpegDownloadController _ffmpegDownloadController;
+        /// <summary>
+        /// 本进程是否已经观察到过至少一次 enable。
+        ///
+        /// 必要性：<see cref="Enabled"/> 在进程刚加载、UMM 还没调用首次 OnToggle(true) 时**也是 false**，
+        /// 那表示“尚未启用”，不是“已禁用”。disabled 收敛路径必须能区分这两者，否则会取消
+        /// Load 启动的 initial scan（白扫一遍，甚至取消正在进行的升级迁移）。
+        /// 该标记只在 OnToggle(true) 置位，从不复位。
+        /// </summary>
+        private static bool _ffmpegEverEnabled;
+
         private static bool _ffmpegLifecycleShutdown;
 
         /// <summary>
@@ -153,6 +175,10 @@ namespace ADOFAI.Renderist
                     //     ShutdownFfmpegComponent 已经 Invalidate（"ffmpeg-shutdown"）并把新
                     //     检查排入队列；本方法只恢复 lifecycle，下一次 OnUpdate 的 pump
                     //     （PumpFfmpegTasks 的统一排队入口）就会启动那次已排队的检查。
+                    //
+                    // 同时置位“本进程曾经启用过”：在那之前 Enabled == false 只表示“尚未启用”，
+                    // 不是 disabled（见 _ffmpegEverEnabled 与 PumpFfmpegComponentLifecycle）。
+                    _ffmpegEverEnabled = true;
                     _ffmpegLifecycleShutdown = false;
                 }
                 else
@@ -1296,6 +1322,32 @@ namespace ADOFAI.Renderist
             }
         }
 
+        /// <summary>
+        /// 旧托管安装根（`0.3.10.0` 之前使用的 <see cref="Application.persistentDataPath"/>）。
+        ///
+        /// Windows 上它实际位于 <c>AppData\LocalLow</c>；该位置的可执行文件带继承的
+        /// Low Mandatory Level，无法向普通完整性级别的输出目录写入，因此既不能继续使用，
+        /// 也**绝不允许**直接执行 —— 只能经一次核验过的复制迁移到当前托管根。
+        ///
+        /// **必须在 Unity 主线程解析**：后台线程不得读取 Unity API。
+        /// 返回 null 表示无法确定，迁移按“没有旧安装”处理（不猜测路径）。
+        /// </summary>
+        private static string GetFfmpegLegacyInstallRoot()
+        {
+            try
+            {
+                string persistent = Application.persistentDataPath;
+                if (string.IsNullOrWhiteSpace(persistent) || !Path.IsPathRooted(persistent))
+                    return null;
+                return Path.Combine(persistent, "ADOFAI.Renderist", "ffmpeg");
+            }
+            catch (Exception ex)
+            {
+                Log.Warn(UiText.Format(UiText.LogFfmpegLegacyRootUnavailableFormat, ex.Message));
+                return null;
+            }
+        }
+
         private static void DrawFfmpegComponentGui()
         {
             GUILayout.Label(UiText.GuiFfmpegSectionTitle, GUI.skin.label);
@@ -1360,6 +1412,7 @@ namespace ADOFAI.Renderist
             }
 
             DrawFfmpegManagedInstalls(report);
+            DrawFfmpegMigration(report);
 
             FfmpegAsset asset = report.InstallableAsset;
             if (asset != null)
@@ -1399,6 +1452,40 @@ namespace ADOFAI.Renderist
 
             if (!drewAny)
                 GUILayout.Label(UiText.GuiFfmpegManagedInstallsPrefix + UiText.GuiFfmpegManagedNone, GUI.skin.label);
+        }
+
+        /// <summary>
+        /// 只在旧托管根迁移**真正发生**（成功 / 被阻断 / 失败 / 被取消）时占一行；
+        /// “无需迁移 / 不迁移”是常态，不占用界面空间。
+        /// </summary>
+        private static void DrawFfmpegMigration(FfmpegComponentReport report)
+        {
+            FfmpegLegacyMigrationResult migration = report.Migration;
+            if (migration == null ||
+                migration.Outcome == FfmpegLegacyMigrationOutcome.NotNeeded ||
+                migration.Outcome == FfmpegLegacyMigrationOutcome.Skipped)
+            {
+                return;
+            }
+
+            GUILayout.Label(UiText.GuiFfmpegMigrationPrefix + FfmpegLegacyMigrationText(migration), GUI.skin.label);
+        }
+
+        private static string FfmpegLegacyMigrationText(FfmpegLegacyMigrationResult migration)
+        {
+            switch (migration.Outcome)
+            {
+                case FfmpegLegacyMigrationOutcome.Migrated:
+                    return UiText.GuiFfmpegMigrationMigrated;
+                case FfmpegLegacyMigrationOutcome.Blocked:
+                    return UiText.GuiFfmpegMigrationBlocked;
+                case FfmpegLegacyMigrationOutcome.Cancelled:
+                    return UiText.GuiFfmpegMigrationCancelled;
+                case FfmpegLegacyMigrationOutcome.Failed:
+                    return UiText.GuiFfmpegMigrationFailed + migration.ReasonCode;
+                default:
+                    return migration.ReasonCode;
+            }
         }
 
         private static void DrawFfmpegControls()
@@ -1482,10 +1569,15 @@ namespace ADOFAI.Renderist
 
         /// <summary>
         /// 请求一次组件状态检查。检查在后台线程执行（能力探测会启动短进程，
-        /// 大文件哈希也可能耗时），结果由 <see cref="PumpFfmpegTasks"/> 在主线程收取。
+        /// 大文件哈希、legacy 迁移的复制与发布也可能耗时），结果由
+        /// <see cref="PumpFfmpegTasks"/> 在主线程收取。
         ///
         /// 每次检查都绑定启动瞬间的 generation；完成时若 generation 已变化，
         /// 结果会被丢弃（见 <see cref="FfmpegReadinessTracker.TryPublishScan"/>）。
+        ///
+        /// 取消：本代检查持有一个 <see cref="FfmpegInspectionCancellation"/>，
+        /// 同一个 token 同时覆盖 legacy 迁移与 inspection；shutdown 只请求取消，
+        /// **句柄在本代任务 settle 之后**由 continuation 释放。
         /// </summary>
         private static void RequestFfmpegInspection()
         {
@@ -1498,20 +1590,56 @@ namespace ADOFAI.Renderist
 
             // 在进入后台线程前把 Unity 侧的路径解析完，后台线程不接触任何 Unity API。
             string installRoot = GetFfmpegInstallRoot();
+            string legacyRoot = GetFfmpegLegacyInstallRoot();
             string explicitPath = Settings != null ? Settings.FfmpegExplicitPath : null;
 
+            // 每个 generation 一个独立实例；token 在主线程冻结（struct），
+            // 后台线程不会再去读 CTS（因此 dispose 时机与 Register 竞争无关）。
+            var cancellation = new FfmpegInspectionCancellation();
+            CancellationToken cancellationToken = cancellation.Token;
+            _ffmpegInspectCancellation = cancellation;
+
             _ffmpegInspectGeneration = generation;
-            _ffmpegInspectTask = Task.Run(() => FfmpegComponentInspector.Inspect(
-                new FfmpegComponentInspectionRequest
-                {
-                    ExplicitPath = explicitPath,
-                    InstallRoot = installRoot,
-                    ProbeCapabilities = true,
-                }));
+            Task<FfmpegComponentReport> inspect = Task.Run(
+                () => FfmpegInspectionSequence.Run(
+                    new FfmpegInspectionSequenceRequest
+                    {
+                        InstallRoot = installRoot,
+                        LegacyRoot = legacyRoot,
+                        ExplicitPath = explicitPath,
+                        CancellationToken = cancellationToken,
+                    }));
+            _ffmpegInspectTask = inspect;
+
+            // CTS 的唯一释放时机：本代任务已经 settle。
+            // 此时迁移 / inspection 都已返回，没有任何线程还会 register 这个 token；
+            // 提前 Dispose 会在后台 Register 时抛 ObjectDisposedException，因此绝不这样做。
+            // 该 continuation 也让 OnUnload 之后不再有 pump 的情况不会泄漏句柄。
+            inspect.ContinueWith(t => cancellation.Dispose(), TaskScheduler.Default);
 
             Log.Debug("FFmpeg 组件检查已启动：generation=" +
                       generation.ToString(CultureInfo.InvariantCulture) +
                       " reason=" + (_ffmpegReadiness.Snapshot().PendingReason ?? "unknown"));
+        }
+
+        /// <summary>
+        /// 请求取消在途的组件检查（含 legacy 托管根迁移）。只在 Unity 主线程调用。
+        ///
+        /// 只请求取消，**不**释放 CTS：后台线程可能仍在 hash / copy / probe / register。
+        /// 句柄由本代任务 settle 后的 continuation 释放。
+        /// </summary>
+        private static void RequestFfmpegInspectionCancel()
+        {
+            try
+            {
+                FfmpegInspectionCancellation cancellation = _ffmpegInspectCancellation;
+                if (cancellation != null)
+                    cancellation.Cancel();
+            }
+            catch (Exception ex)
+            {
+                Log.Warn(ex.Message);
+            }
         }
 
         /// <summary>清理上次运行遗留的孤儿下载临时文件（只匹配本模块自己的命名前缀）。</summary>
@@ -1589,6 +1717,8 @@ namespace ADOFAI.Renderist
             if (inspect != null && inspect.IsCompleted)
             {
                 _ffmpegInspectTask = null;
+                // 句柄不由这里释放：任务 settle 后的 continuation 是唯一 owner（幂等且不会过早）。
+                _ffmpegInspectCancellation = null;
                 int generation = _ffmpegInspectGeneration;
                 _ffmpegInspectGeneration = FfmpegReadinessTracker.NoGeneration;
 
@@ -1606,6 +1736,19 @@ namespace ADOFAI.Renderist
                 else
                 {
                     FfmpegComponentReport report = inspect.Result;
+
+                    // 迁移发生在该报告的 inspection 之前，结果必须如实记录（即使报告本身已过期）。
+                    LogFfmpegLegacyMigration(report.Migration);
+
+                    if (FfmpegInspectionSequence.IsCancelled(report))
+                    {
+                        // 被取消的检查绝不允许成为当前结论（它没有得出任何磁盘结论）。
+                        // shutdown 路径已经 invalidate 过；这里再失效一次使该保证不依赖调用方，
+                        // 同时下面的 TryPublishScan 仍然会释放 readiness 的 in-flight 标记，
+                        // 使 disable → enable 之后能由既有 NeedsScan 正常启动新 generation。
+                        _ffmpegReadiness.Invalidate("ffmpeg-inspection-cancelled");
+                    }
+
                     if (_ffmpegReadiness.TryPublishScan(generation, report))
                     {
                         Log.Debug("FFmpeg 组件就绪状态已更新：" + _ffmpegReadiness);
@@ -1663,6 +1806,46 @@ namespace ADOFAI.Renderist
                 // 磁盘状态已改变：旧报告不再是当前输入的结论，并请求一次新检查。
                 _ffmpegReadiness.Invalidate("local-install-completed");
             }
+        }
+
+        /// <summary>
+        /// 如实记录一次性迁移结论（在 Unity 主线程调用）。
+        ///
+        /// 真正需要用户注意的三种情形用 Info / Warn：迁移成功、被 fail-closed 阻断、迁移失败；
+        /// “无需迁移”只写详细日志，不占用默认日志。
+        /// </summary>
+        private static void LogFfmpegLegacyMigration(FfmpegLegacyMigrationResult migration)
+        {
+            if (migration == null)
+                return;
+
+            switch (migration.Outcome)
+            {
+                case FfmpegLegacyMigrationOutcome.Migrated:
+                    Log.Info(UiText.Format(UiText.LogFfmpegMigrationSucceededFormat,
+                        migration.TargetDirectory ?? string.Empty));
+                    break;
+                case FfmpegLegacyMigrationOutcome.Blocked:
+                    Log.Warn(UiText.Format(UiText.LogFfmpegMigrationBlockedFormat,
+                        migration.ReasonCode, migration.ReasonDetail));
+                    break;
+                case FfmpegLegacyMigrationOutcome.Failed:
+                    Log.Warn(UiText.Format(UiText.LogFfmpegMigrationFailedFormat,
+                        migration.ReasonCode, migration.ReasonDetail));
+                    break;
+                case FfmpegLegacyMigrationOutcome.Cancelled:
+                    Log.Info(UiText.LogFfmpegMigrationCancelled);
+                    break;
+                default:
+                    Log.Debug("FFmpeg 旧托管安装迁移：" + migration.ReasonCode);
+                    break;
+            }
+
+            if (migration.CleanupWarnings == null)
+                return;
+
+            for (int i = 0; i < migration.CleanupWarnings.Count; i++)
+                Log.Warn(migration.CleanupWarnings[i]);
         }
 
         private static void LogFfmpegInstallResult(FfmpegInstallResult result)
@@ -1904,11 +2087,28 @@ namespace ADOFAI.Renderist
             // 后台组件检查 / 本地安装结果收取。
             PumpFfmpegTasks();
 
+            // 禁用 / 卸载收敛**必须与 download controller 是否存在完全无关**：
+            // controller 只在用户真正发起过下载之后才存在，普通已有托管 FFmpeg 的用户恒为 null。
+            // 因此取消在途 inspection / migration 的判断必须放在任何 controller 早退**之前** ——
+            // 否则只依赖本兜底的 disabled 路径不会取消在途迁移（它是写磁盘行为）。
+            //
+            // Enabled 的语义陷阱：进程刚加载、UMM 尚未调用首次 OnToggle(true) 时它同样是 false，
+            // 那是“尚未启用”而不是“已禁用”。所以只有“本进程曾经启用过”之后的 !Enabled 才算 disabled。
+            bool shuttingDown = _ffmpegLifecycleShutdown || (!Enabled && _ffmpegEverEnabled);
+            if (shuttingDown)
+                RequestFfmpegInspectionCancel();
+
             FfmpegDownloadController controller = _ffmpegDownloadController;
             if (controller == null)
+            {
+                // 没有下载管线：只维护 lifecycle 标记，绝不触碰不存在的 download 状态。
+                // （Inspection 的取消已经在上面完成，与本早退无关。）
+                if (shuttingDown)
+                    _ffmpegLifecycleShutdown = true;
                 return;
+            }
 
-            if (!Enabled || _ffmpegLifecycleShutdown)
+            if (shuttingDown)
             {
                 // 已禁用：只做收敛，不再推进新的网络/安装活动。
                 if (controller.IsBusy || !_ffmpegLifecycleShutdown)
@@ -1917,6 +2117,7 @@ namespace ADOFAI.Renderist
                     _ffmpegDownloadDriver?.DisposeRequest();
                     _ffmpegReadiness.Invalidate("ffmpeg-lifecycle-shutdown");
                 }
+
                 _ffmpegLifecycleShutdown = true;
                 return;
             }
@@ -1962,6 +2163,10 @@ namespace ADOFAI.Renderist
             try
             {
                 _ffmpegLifecycleShutdown = true;
+
+                // 在途组件检查（含 legacy 托管根迁移）必须立刻收敛：
+                // 迁移是写磁盘行为，不能等它自己跑完。这里只请求取消，句柄在任务 settle 后释放。
+                RequestFfmpegInspectionCancel();
 
                 // 本地 ZIP 安装任务同样必须取消。
                 RequestFfmpegInstallCancel();

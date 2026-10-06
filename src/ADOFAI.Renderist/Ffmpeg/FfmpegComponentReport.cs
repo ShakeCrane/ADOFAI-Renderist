@@ -45,6 +45,14 @@ namespace ADOFAI.Renderist.Ffmpeg
         /// <summary>PATH 内容覆盖（测试可注入）。null = 读取进程环境变量。</summary>
         public string PathEnvironment { get; set; }
 
+        /// <summary>
+        /// 参与托管安装发现的资产。null = <see cref="FfmpegAssetManifest.All"/>。
+        ///
+        /// 与 <see cref="FfmpegDiscoveryRequest.Assets"/> 同样的注入点：生产调用恒为 null，
+        /// 离线回归可以用合成资产验证既有接线，而不需要携带真实 FFmpeg 二进制。
+        /// </summary>
+        public IReadOnlyList<FfmpegAsset> Assets { get; set; }
+
         public int ProbeTimeoutSeconds { get; set; }
 
         public CancellationToken CancellationToken { get; set; }
@@ -76,6 +84,14 @@ namespace ADOFAI.Renderist.Ffmpeg
 
         /// <summary>当前可安装的资产（用于 GUI 展示来源 / 版本 / 许可证）。</summary>
         public FfmpegAsset InstallableAsset { get; set; }
+
+        /// <summary>
+        /// 本次检查**之前**执行的旧托管根一次性迁移结果（未接线 / 未执行时为 null）。
+        ///
+        /// 它只是如实记录同一次 inspection 前置的迁移结论；组件状态本身仍由新托管根 + 能力探测得出，
+        /// 不会因为迁移而放宽或放宽式地改变 Ready 定义。
+        /// </summary>
+        public FfmpegLegacyMigrationResult Migration { get; set; }
 
         public bool Found
         {
@@ -114,10 +130,11 @@ namespace ADOFAI.Renderist.Ffmpeg
 
             FfmpegInstallLayout layout;
             string layoutError;
+            IReadOnlyList<FfmpegAsset> assets = request.Assets ?? FfmpegAssetManifest.All;
             if (FfmpegInstallLayout.TryCreate(request.InstallRoot, out layout, out layoutError))
             {
                 report.InstallRoot = layout.InstallRoot;
-                report.ManagedInstalls = FfmpegManagedInstallLocator.ListAll(layout, FfmpegAssetManifest.All);
+                report.ManagedInstalls = FfmpegManagedInstallLocator.ListAll(layout, assets);
             }
             else
             {
@@ -128,7 +145,7 @@ namespace ADOFAI.Renderist.Ffmpeg
             {
                 ExplicitPath = request.ExplicitPath,
                 Layout = layout,
-                Assets = FfmpegAssetManifest.All,
+                Assets = assets,
                 PathEnvironment = request.PathEnvironment,
             };
 

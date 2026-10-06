@@ -386,7 +386,7 @@ namespace ADOFAI.Renderist.Ffmpeg
         /// 刻意不要求标记里的 assetId 仍在当前 manifest 中：资产从清单移除后，
         /// 它的历史孤儿目录仍应可被清理。
         /// </summary>
-        private static IReadOnlyList<string> CleanupOrphanStaging(
+        internal static IReadOnlyList<string> CleanupOrphanStaging(
             FfmpegInstallLayout layout, List<string> warnings)
         {
             var removed = new List<string>();
