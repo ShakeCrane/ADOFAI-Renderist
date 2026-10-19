@@ -1475,7 +1475,7 @@ namespace ADOFAI.Renderist.FfmpegTests
         //   P2-1 Completed 后释放 Process 资源。
         //   P2-2 冻结配置深复制。
 
-        private static void LifecycleHardeningTests(string workRoot)
+        internal static void LifecycleHardeningTests(string workRoot)
         {
             // ---------------------------------------------------------------- P1-1 write / finish handoff
             TestKit.Run("hardening: Finish cannot observe an uncommitted successful write", () =>
@@ -1773,6 +1773,7 @@ namespace ADOFAI.Renderist.FfmpegTests
             {
                 string directory = TestKit.NewWorkDirectory(workRoot, "initfail");
                 Process encoderWitness = null;
+                Process unrelatedChild = null;
 
                 var launcher = new FakeVideoProcessLauncher
                 {
@@ -1812,6 +1813,10 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.Check(!start.Started, "start must fail");
                 TestKit.CheckEqual("process-init-failed", start.ErrorCode, "error code");
                 TestKit.CheckEqual(1, launcher.EncoderStarts, "the encoder process was really started");
+                unrelatedChild = new FakeVideoProcessLauncher { Encoder = new FakeVideoEncoderScript { Hang = true } }
+                    .Create()(FakeVideoProcess.ExecutablePath, string.Empty, directory);
+                var unrelatedHandle = unrelatedChild.Handle;
+                Console.WriteLine("      unrelated same-name child pid=" + unrelatedChild.Id + " start=" + unrelatedChild.StartTime.ToUniversalTime().Ticks);
 
                 FfmpegVideoOutcome outcome = Await(pipeline.CleanupTask, "cleanup");
                 TestKit.CheckEqual(FfmpegVideoPipelineState.Failed, outcome.State, "state");
@@ -1826,10 +1831,19 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.Check(encoderWitness != null && encoderWitness.HasExited,
                     "the exact init-failure child must have exited before CleanupTask completes");
                 TestKit.Check(encoderWitness.WaitForExit(5000), "the exact child exit must be waitable");
+                TestKit.Check(!unrelatedChild.HasExited, "a live unrelated same-name child does not invalidate the exact-child assertion");
 
                 TestKit.TryDeleteDirectory(directory);
                 }
-                finally { encoderWitness?.Dispose(); }
+                finally
+                {
+                    foreach (var owned in new[] { unrelatedChild, encoderWitness })
+                    {
+                        if (owned == null) continue;
+                        try { if (!owned.HasExited) { owned.Kill(); owned.WaitForExit(5000); } }
+                        finally { owned.Dispose(); }
+                    }
+                }
             });
 
             TestKit.Run("hardening: a failed stderr initialization still owns and waits for the running stdout pump", () =>

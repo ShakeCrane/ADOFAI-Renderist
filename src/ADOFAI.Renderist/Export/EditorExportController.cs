@@ -71,6 +71,7 @@ namespace ADOFAI.Renderist.Export
         /// <summary>是否仍占用：Preparing / Running / Finalizing，或终态 RGB24 资源仍在收敛。</summary>
         public static bool IsBusy =>
             _terminalRearmPending || _startupContext != null || _finalizingContext != null ||
+            FrameLocalDeliveryProbe.HasResidualOwnership ||
             DeterministicFrameScheduler.HasPendingRgb24Cleanup ||
             (_session != null &&
              (_session.State == EditorExportState.Preparing ||
@@ -259,6 +260,8 @@ namespace ADOFAI.Renderist.Export
             }
 
             if (!FrameLocalDeliveryProbe.TryActivate(out error)) return false;
+            FrameLocalDeliveryProbe.Evidence?.Record("ffmpeg-approved", options.Identity.ExecutablePath +
+                ",sha256=" + options.Identity.ExecutableSha256 + ",version=" + options.Identity.VersionLine);
 
             Func<Stream, string, Stream> existing = options.StreamWrapper;
             options.StreamWrapper = (inner, role) =>
@@ -433,22 +436,33 @@ namespace ADOFAI.Renderist.Export
 
             Mp4SessionBinding binding = Mp4SessionStartup.Bind(
                 frozen, geometry.Width, geometry.Height,
-                FfmpegPipelineFactory.Instance, DefaultMp4DeliveryFactory.Instance);            if (!binding.Succeeded)
+                FfmpegPipelineFactory.Instance, DefaultMp4DeliveryFactory.Instance);
+            if (!binding.Succeeded)
             {
                 _startupContext = binding.PendingConvergence;
                 error = binding.ErrorCode +
                         (string.IsNullOrEmpty(binding.ErrorDetail) ? string.Empty : (":" + binding.ErrorDetail));
+                FrameLocalDeliveryProbe.Shutdown();
                 return false;
             }
 
             Log.Info("EditorExportController: MP4 FFmpeg executable=" + frozen.Identity.ExecutablePath +
                      " arguments=" + binding.Pipeline.EncodeArguments);
 
+            if (!FrameLocalDeliveryProbe.PrePlayHealthy(out probeError))
+            {
+                error = probeError;
+                _startupContext = Mp4SessionStartup.RetireOrKeep(binding.Context);
+                FrameLocalDeliveryProbe.Shutdown();
+                return false;
+            }
+
             string armError;
             if (!DeterministicFrameScheduler.ArmRgb24Delivery(binding.Context, out armError))
             {
                 _startupContext = Mp4SessionStartup.RetireOrKeep(binding.Context);
                 error = "mp4-arm-failed:" + (armError ?? "unknown");
+                FrameLocalDeliveryProbe.Shutdown();
                 return false;
             }
 
@@ -634,6 +648,7 @@ namespace ADOFAI.Renderist.Export
                     LastStartRejectReason = reject;
                     Log.Warn(UiText.Format(UiText.LogEditorExportStartRejectedFormat, reject));
                     if (delivery != null) RetireStartupContext(delivery);
+                    FrameLocalDeliveryProbe.Shutdown();
                     TickStartupContextConvergence();
                     MarkSessionFailed(session, "无法启动确定性帧调度器：" + reject, "failed");
                     return false;
@@ -652,6 +667,7 @@ namespace ADOFAI.Renderist.Export
             {
                 LastStartRejectReason = "Start 异常";
                 Log.Exception("EditorExportController.StartSession 异常", ex);
+                FrameLocalDeliveryProbe.Shutdown();
                 // TryStart 成功后的异常不得留下 scheduler ownership：session 终态只是
                 // 结果记录，不代表 scheduler 干净。先收敛 ownership 再标记 session 失败；
                 // cleanup 自身的失败只记录，不掩盖原始启动异常，residual 留待下次 retry。
@@ -870,6 +886,9 @@ namespace ADOFAI.Renderist.Export
         /// <summary>每 OnUpdate 调用。推进 scheduler 并观察终态。</summary>
         public static void Tick()
         {
+            FrameLocalDeliveryProbe.TickSettlement();
+            if (FrameLocalDeliveryProbe.ControlStopRequested && DeterministicFrameScheduler.IsRunning)
+                DeterministicFrameScheduler.RequestStop("cancelled", "f1-control-stop");
             DeterministicFrameScheduler.TickResidualOwnership();
             // L3-A 启动阶段残留 + L3-C finalizing 槽：非阻塞收敛入口（与 scheduler 的同一个 TryStopAndDrain）。
             TickStartupContextConvergence();
@@ -929,6 +948,18 @@ namespace ADOFAI.Renderist.Export
             if (s.State != EditorExportState.Running) return;
 
             DeterministicFrameScheduler.SchedulerStatus status = DeterministicFrameScheduler.Status;
+            if (FrameLocalDeliveryProbe.IsActive &&
+                (status == DeterministicFrameScheduler.SchedulerStatus.Completed ||
+                 status == DeterministicFrameScheduler.SchedulerStatus.Cancelled ||
+                 status == DeterministicFrameScheduler.SchedulerStatus.Failed))
+            {
+                FrameLocalDeliveryProbe.Shutdown();
+                if (status == DeterministicFrameScheduler.SchedulerStatus.Completed)
+                {
+                    Fail(new InvalidOperationException("f1-forbids-finalizing"), "F1 diagnostic completed unexpectedly");
+                    return;
+                }
+            }
 
             // ---- L3-C：MP4 的正常完成路径必须先过 Finalizing 关口 ----
             // scheduler 只在 canonical completion + End Tail 全部提交、且 Unity cleanup 全部
@@ -1304,6 +1335,7 @@ namespace ADOFAI.Renderist.Export
 
         private static void Fail(Exception ex, string context)
         {
+            if (FrameLocalDeliveryProbe.IsActive) FrameLocalDeliveryProbe.Shutdown();
             // 任何 controller 层未处理异常都必须保证 scheduler 回到恢复态。
             if (DeterministicFrameScheduler.IsRunning)
             {

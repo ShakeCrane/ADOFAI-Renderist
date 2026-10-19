@@ -141,8 +141,13 @@ namespace ADOFAI.Renderist.Export
         }
 
         internal bool HasContext { get { return _context != null; } }
+        internal string ContextType => _context?.GetType().FullName;
         internal int MainThreadId { get { return _mainThreadId; } }
         internal bool IsMainThread { get { return Thread.CurrentThread.ManagedThreadId == _mainThreadId; } }
+        internal void PostDiagnosticCanary(Action<bool> callback)
+        {
+            _context.Post(_ => callback(IsMainThread), null);
+        }
 
         /// <summary>必须在 Unity 主线程调用。上下文不可用时返回 false（MP4 启动 fail-closed）。</summary>
         internal static bool TryCapture(out Rgb24MainThreadBridge bridge, out string error)
@@ -409,6 +414,7 @@ namespace ADOFAI.Renderist.Export
             error = null;
             FrameLocalDeliveryProbeSlot slot = FrameLocalDeliveryProbe.Slot;
             if (slot == null) return true;
+            slot.TrackAcceptedGate(_write.Gate);
 
             string routeError;
             if (!_write.Gate.TryEnableDirectRoute(out routeError))
@@ -520,6 +526,7 @@ namespace ADOFAI.Renderist.Export
             // 这一次 TryClaim 与发布 / RequestCancel 共用同一个通知槽短锁，因此是本帧唯一的
             // 线性化点；失败、取消、已关闭或身份不符都不得提交，也不得释放 lease。
             FrameLocalDeliveryClaimResult claim = _write.Gate.TryClaim(envelope);
+            if (_write.Gate.DirectRoute) FrameLocalDeliveryProbe.Slot?.RecordClaim(_write.Gate, claim);
             switch (claim.Status)
             {
                 case FrameLocalDeliveryClaimStatus.ClaimedSuccess:
@@ -579,8 +586,7 @@ namespace ADOFAI.Renderist.Export
             if (_write != null)
             {
                 _write.Gate.TryAcceptCancel("rgb24-transaction-abort", false, out _);
-                _write.Gate.TryGetPublished(out var abortedEnvelope);
-                _write.Gate.TryClaim(abortedEnvelope); // close abort even if no result has been published yet
+                _write.Gate.CloseForAbort(); // same short lock as publication/cancel; no stale null identity
                 // Register before testing completion, so Observe cannot pass the wake point unnoticed.
                 _write.RegisterRetirementWake();
                 if (!_write.Completion.IsCompleted)
@@ -670,6 +676,8 @@ namespace ADOFAI.Renderist.Export
             {
                 Task observer = Completion.ContinueWith(task =>
                 {
+                    try
+                    {
                     Rgb24DeliveryEnvelope envelope;
                     try
                     {
@@ -689,6 +697,7 @@ namespace ADOFAI.Renderist.Export
                         // direct：不投递常规结果 Post/Store；发布在 gate 短锁内完成，锁外才 signal。
                         bool signalReady;
                         Gate.TryPublishDirect(envelope, null, out signalReady);
+                        FrameLocalDeliveryProbe.Slot?.RecordPublication(Gate);
                         if (signalReady) Gate.SignalReady();
                         WakeRetirementIfRequested(envelope);
                         return;
@@ -698,6 +707,14 @@ namespace ADOFAI.Renderist.Export
                     if (!_bridge.TryPost(envelope, Store, out string error, Fail))
                         Fail(error ?? "rgb24-bridge-post-failed");
                     WakeRetirementIfRequested(envelope);
+                    }
+                    catch (Exception ex)
+                    {
+                        Gate.MarkProducerSettled();
+                        Gate.MarkPublicationFault("f1-observer-failed:" + ex.GetType().Name + ":" + ex.Message);
+                        Gate.TryGetPublished(out var published);
+                        WakeRetirementIfRequested(published);
+                    }
                 }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 Gate.AttachObserver(observer);
             }
@@ -738,13 +755,21 @@ namespace ADOFAI.Renderist.Export
             private void WakeRetirementIfRequested(Rgb24DeliveryEnvelope envelope)
             {
                 if (!Gate.TakeRetirementWake()) return;
+                Gate.CallbackQueued();
+                int accounted = 0;
+                Action settled = () => { if (Interlocked.Exchange(ref accounted, 1) == 0) Gate.CallbackSettled(); };
                 try
                 {
-                    if (!_bridge.TryPost(envelope, RetirementOnly, out string error, Fail))
+                    if (!_bridge.TryPost(envelope, e => { try { RetirementOnly(e); } finally { settled(); } }, out string error,
+                            error => { try { Fail(error); } finally { settled(); } }))
+                    {
+                        settled();
                         Fail(error ?? "rgb24-bridge-retirement-post-failed");
+                    }
                 }
                 catch (Exception ex)
                 {
+                    settled();
                     Fail("rgb24-bridge-retirement-exception:" + ex.GetType().Name);
                 }
             }

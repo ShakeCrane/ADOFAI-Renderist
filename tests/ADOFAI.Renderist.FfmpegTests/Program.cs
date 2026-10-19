@@ -22,6 +22,8 @@ namespace ADOFAI.Renderist.FfmpegTests
 
         private static int Main(string[] args)
         {
+            if (args.Length == 3 && args[0] == "--f1-guardian-host")
+                return FrameLocalGuardianHost.Run(args[1], args[2]);
             // 被 L2 视频管线当作"假编码 / 假核验进程"启动时，本进程充当可控子进程。
             if (FakeVideoProcess.IsFakeInvocation(args))
                 return FakeVideoProcess.Run(args);
@@ -40,6 +42,19 @@ namespace ADOFAI.Renderist.FfmpegTests
 
             try
             {
+                if (args.Length == 2 && args[0] == "--f1-safety-regression")
+                {
+                    int repeats = int.Parse(args[1], CultureInfo.InvariantCulture);
+                    if (repeats <= 0 || repeats > 100) throw new ArgumentOutOfRangeException("repeats");
+                    Console.WriteLine("Targeted F0 + L2 hardening repetitions: " + repeats);
+                    for (int repeat = 0; repeat < repeats; repeat++)
+                    {
+                        FrameLocalDeliveryFeasibilityTests.Run(_workRoot);
+                        FfmpegVideoPipelineTests.LifecycleHardeningTests(_workRoot);
+                    }
+                }
+                else
+                {
                 ManifestTests();
                 LayoutTests();
                 HashTests();
@@ -69,6 +84,7 @@ namespace ADOFAI.Renderist.FfmpegTests
             FfmpegReadinessTests.Run();
             FfmpegMigrationTests.Run(_workRoot);
             FfmpegInspectionLifecycleTests.Run(_workRoot);
+                }
             }
             catch (Exception ex)
             {

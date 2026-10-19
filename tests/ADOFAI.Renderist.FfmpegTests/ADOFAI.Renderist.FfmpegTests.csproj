@@ -67,6 +67,7 @@
 
     <!-- F1-A：受限诊断的 claim/notification 与 probe 槽（纯托管，无 Unity 依赖）。 -->
     <Compile Include="..\..\src\ADOFAI.Renderist\Export\FrameLocalDeliveryProbe.cs" LinkBase="Production" />
+    <Compile Include="..\..\src\ADOFAI.Renderist\Export\FrameLocalDeliveryGuardian.cs" LinkBase="Production" />
   </ItemGroup>
 
 </Project>

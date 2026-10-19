@@ -1784,6 +1784,8 @@ namespace ADOFAI.Renderist.Export
 
             // 校验通过后本帧授权一次性关闭：EOF 后的等待 / 交付 / Finalizing 期间
             // 任何迟到的原生 Update 都只能看到 Waiting，并因此只得到 0 增量。
+            if (FrameLocalDeliveryProbe.IsActive)
+                FrameLocalDeliveryProbe.Evidence?.Record("authorization-eof", _visualAuthorizer.Describe(Time.frameCount));
             _visualAuthorizer.CloseCurrentFrame();
         }
 
@@ -2737,6 +2739,12 @@ namespace ADOFAI.Renderist.Export
 
                 _status = SchedulerStatus.AwaitingDelivery;
 
+                if (FrameLocalDeliveryProbe.IsActive)
+                {
+                    try { FrameLocalDeliveryProbe.Slot.PrepareFrameEvidence(ownedFrame, _rgb24Delivery.Bridge); }
+                    catch (Exception ex) { RequestStop("f1-evidence-failed", ex.GetType().Name + ":" + ex.Message); return; }
+                }
+
                 Rgb24TransactionOutcome deliveryOutcome =
                     transaction.TryBeginDelivery(out string deliveryError, out string deliveryDetail);
                 if (deliveryOutcome == Rgb24TransactionOutcome.RejectedBusy)
@@ -2799,9 +2807,11 @@ namespace ADOFAI.Renderist.Export
             if (slot == null) return false;
 
             FrameLocalDeliveryEvidence evidence = FrameLocalDeliveryProbe.Evidence;
-            evidence?.Record("wait-enter",
+            evidence?.Record("eof-entry",
                 "tid=" + System.Threading.Thread.CurrentThread.ManagedThreadId.ToString(CultureInfo.InvariantCulture) +
-                " frameCount=" + Time.frameCount.ToString(CultureInfo.InvariantCulture));
+                " frameCount=" + Time.frameCount.ToString(CultureInfo.InvariantCulture) +
+                " unity=" + Application.unityVersion + " runtime=" + Environment.Version +
+                " graphics=" + SystemInfo.graphicsDeviceType);
 
             slot.RunSingleFrame(transaction, generation, frameIndex,
                 _status == SchedulerStatus.AwaitingDelivery, FrameLocalDeliveryProbe.EmergencyHandle,
@@ -2809,9 +2819,12 @@ namespace ADOFAI.Renderist.Export
                 () =>
                 {
                     _status = ResumeAfterRgb24Delivery(_preEntryCapturing);
+                    long before = _outputFrameIndex;
                     CommitFrame(frameIndex, false, null);
-                    evidence?.Record("actual-commit", "frame=" + frameIndex.ToString(CultureInfo.InvariantCulture));
-                }, RequestStop);
+                    if (_outputFrameIndex != before + 1) throw new InvalidOperationException("f1-commit-did-not-advance");
+                }, RequestStop, () => Time.frameCount,
+                FrameLocalDeliveryProbe.SignalWaitingArmed, FrameLocalDeliveryProbe.SignalWaitExited,
+                FrameLocalDeliveryProbe.GuardianExitHandle);
             evidence?.Record("eof-probe-return", "frameCount=" + Time.frameCount.ToString(CultureInfo.InvariantCulture));
             return true;
         }
@@ -2837,6 +2850,8 @@ namespace ADOFAI.Renderist.Export
             // 因此不可能回绕。PNG 写盘计数只在 imageWritten 时递增（log-only 恒为 0）。
             if (imageWritten) _capturedFrameCount++;
             _outputFrameIndex++;
+            if (FrameLocalDeliveryProbe.IsActive)
+                FrameLocalDeliveryProbe.Slot.RecordActualCommit(_captureGeneration, frameIndex, Time.frameCount);
 
             if (_preEntryCapturing)
             {

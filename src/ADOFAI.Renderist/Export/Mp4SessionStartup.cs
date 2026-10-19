@@ -31,7 +31,9 @@ namespace ADOFAI.Renderist.Export
             errorDetail = null;
             try
             {
-                return new FfmpegVideoPipeline(options);
+                var pipeline = new FfmpegVideoPipeline(options);
+                FrameLocalDeliveryProbe.AttachPipeline(pipeline);
+                return pipeline;
             }
             catch (Exception ex)
             {
@@ -126,7 +128,9 @@ namespace ADOFAI.Renderist.Export
         public bool TryCreate(int width, int height, FfmpegVideoPipeline pipeline,
             out Rgb24DeliveryContext context, out string error)
         {
-            return Rgb24DeliveryContext.TryCreate(width, height, pipeline, out context, out error);
+            bool created = Rgb24DeliveryContext.TryCreate(width, height, pipeline, out context, out error);
+            if (created) FrameLocalDeliveryProbe.AttachContext(context);
+            return created;
         }
     }
 

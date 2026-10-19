@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -168,8 +169,16 @@ namespace ADOFAI.Renderist.Export
         private Task _observer;
         private int _signalers;
         private int _waiters;
+        private int _callbacks;
+        internal int PendingCallbacks { get { lock (_sync) return _callbacks; } }
+        internal void CallbackQueued() { lock (_sync) _callbacks++; }
+        internal void CallbackSettled() { lock (_sync) _callbacks--; }
         internal int WaiterCount { get { lock (_sync) return _waiters; } }
         internal bool ObserverSettled { get { lock (_sync) return _observer == null || _observer.IsCompleted; } }
+        internal string ObserverFault
+        {
+            get { lock (_sync) return _observer != null && _observer.IsFaulted ? _observer.Exception.GetBaseException().Message : null; }
+        }
         internal void AttachObserver(Task observer) { lock (_sync) _observer = observer; }
         internal void MarkProducerSettled() { lock (_sync) _producerSettled = true; }
 
@@ -466,6 +475,21 @@ namespace ADOFAI.Renderist.Export
 
         internal bool CancelIsEmergency { get { lock (_sync) return _cancelIsEmergency; } }
 
+        // Abort does not consume a canonical envelope or issue a permit. Closing it must not
+        // depend on a previously read envelope reference: publication can change null -> value
+        // between that read and TryClaim, otherwise retirement can orphan an open gate.
+        internal bool CloseForAbort()
+        {
+            lock (_sync)
+            {
+                if (_closedAs.HasValue) return true;
+                if (!_cancelledAccepted) return false;
+                _closedAs = FrameLocalDeliveryClaimStatus.Aborted;
+                _closedDetail = _cancelReason ?? "f1-abort";
+                return true;
+            }
+        }
+
         /// <summary>
         /// 登记"abort 退休唤醒"请求。返回 true 表示由 Observe 在终态发布之后补一次退休 Post；
         /// false 表示 Task 已完成，调用方按原路径直接退休。
@@ -532,6 +556,8 @@ namespace ADOFAI.Renderist.Export
                 { error = "f1-ready-handle-observer-unsettled"; return false; }
                 if (_signalers != 0 || _waiters != 0)
                 { error = "f1-ready-handle-in-use"; return false; }
+                if (_directRoute && _callbacks != 0)
+                { error = "f1-retirement-callback-pending"; return false; }
                 if (!_closedAs.HasValue)
                 { error = "f1-ready-handle-claim-open"; return false; }
                 evt = _readyEvent;
@@ -596,12 +622,18 @@ namespace ADOFAI.Renderist.Export
         private bool _disposed;
         private bool _innerDisposed;
         private string _disposeError;
+        private int _innerWrites, _innerFlushes;
         private int _firstWrite = 1;
+        private readonly Action _onEntered;
+        private readonly Func<bool> _peerExited;
 
-        internal FrameLocalDeliveryStreamGate(Stream inner, FrameLocalDeliveryEvidence evidence)
+        internal FrameLocalDeliveryStreamGate(Stream inner, FrameLocalDeliveryEvidence evidence, Action onEntered = null,
+            Func<bool> peerExited = null)
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
             Evidence = evidence;
+            _onEntered = onEntered;
+            _peerExited = peerExited;
         }
 
         internal FrameLocalDeliveryEvidence Evidence { get; private set; }
@@ -611,6 +643,13 @@ namespace ADOFAI.Renderist.Export
         internal bool WaitEntered(TimeSpan timeout) => _entered.Task.Wait(timeout);
         internal bool OwnershipSettled { get { lock (_lifetime) return _disposed && _innerDisposed && _operations == 0 && _disposeError == null; } }
         internal string DisposeError { get { lock (_lifetime) return _disposeError; } }
+        internal string IoSnapshot
+        {
+            get { lock (_lifetime) return "gate=" + (GateEntered ? "entered" : "not-entered") +
+                ",innerWrite=" + (_innerWrites == 0 ? "not-entered" : _innerWrites.ToString(CultureInfo.InvariantCulture)) +
+                ",innerFlush=" + (_innerFlushes == 0 ? "not-entered" : _innerFlushes.ToString(CultureInfo.InvariantCulture)) +
+                ",operations=" + _operations + ",disposed=" + _disposed + ",innerDisposed=" + _innerDisposed + ",disposeError=" + _disposeError; }
+        }
 
         /// <summary>打开前置门（正常 Release / cancel / failsafe 共用）。</summary>
         internal void Open(string reason)
@@ -628,6 +667,7 @@ namespace ADOFAI.Renderist.Export
                 {
                     Evidence?.Record("gate-enter", "count=" + count.ToString(CultureInfo.InvariantCulture));
                     _entered.TrySetResult(true);
+                    _onEntered?.Invoke();
                     // Cancel only opens the managed hold. Once inner IO starts, its true terminal
                     // task (including Flush) owns the buffer; no token races can shorten it.
                     using (cancellationToken.Register(() => Open("write-cancelled")))
@@ -636,11 +676,21 @@ namespace ADOFAI.Renderist.Export
                 cancellationToken.ThrowIfCancellationRequested();
                 lock (_lifetime) if (_disposed) throw new ObjectDisposedException(nameof(FrameLocalDeliveryStreamGate));
                 Evidence?.Record("inner-write-begin", "count=" + count.ToString(CultureInfo.InvariantCulture));
+                Interlocked.Increment(ref _innerWrites);
                 await _inner.WriteAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
                 Evidence?.Record("inner-write-end", "ok");
                 Evidence?.Record("inner-flush-begin", "write");
+                Interlocked.Increment(ref _innerFlushes);
                 await _inner.FlushAsync(cancellationToken).ConfigureAwait(false);
                 Evidence?.Record("inner-flush-end", "ok");
+                if (_peerExited != null && _peerExited())
+                {
+                    // net48 redirected stdin can report successful Write/Flush after peer exit.
+                    // Record the true IO result, then fail the diagnostic using the exact child
+                    // handle. This is not evidence of a native WriteAsync exception.
+                    Evidence?.Record("encoder-exit-observed", "after-inner-io;diagnostic-failure");
+                    throw new IOException("f1-encoder-exited-after-inner-io");
+                }
             }
             catch (Exception ex)
             {
@@ -667,6 +717,7 @@ namespace ADOFAI.Renderist.Export
             try
             {
                 Evidence?.Record("inner-flush-begin", "pipeline");
+                Interlocked.Increment(ref _innerFlushes);
                 await _inner.FlushAsync(cancellationToken).ConfigureAwait(false);
                 Evidence?.Record("inner-flush-end", "pipeline-ok");
             }
@@ -728,10 +779,13 @@ namespace ADOFAI.Renderist.Export
         internal long GameStartUtcTicks { get; private set; }
         internal string EventPrefix { get; private set; }
         internal int ExpirySeconds { get; private set; }
+        internal long CreatedUtcTicks { get; private set; }
 
         internal bool IsExpired(DateTime utcNow)
         {
-            return ExpirySeconds > 0 && utcNow > DateTime.UtcNow;
+            return CreatedUtcTicks <= 0 || ExpirySeconds <= 0 ||
+                   utcNow.Ticks < CreatedUtcTicks ||
+                   utcNow.Ticks - CreatedUtcTicks >= (long)ExpirySeconds * TimeSpan.TicksPerSecond;
         }
 
         /// <summary>解析 `key=value` 行；任何缺项都 fail-closed。</summary>
@@ -748,19 +802,25 @@ namespace ADOFAI.Renderist.Export
                 string line = raw.Trim();
                 if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal)) continue;
                 int eq = line.IndexOf('=');
-                if (eq <= 0) continue;
-                values[line.Substring(0, eq).Trim()] = line.Substring(eq + 1).Trim();
+                if (eq <= 0) { error = "f1-descriptor-line"; return false; }
+                string key = line.Substring(0, eq).Trim();
+                if (values.ContainsKey(key)) { error = "f1-descriptor-duplicate"; return false; }
+                values.Add(key, line.Substring(eq + 1).Trim());
             }
 
             string nonce, pidText, startText, prefix, expiryText;
             if (!values.TryGetValue("runNonce", out nonce) || string.IsNullOrEmpty(nonce))
             { error = "f1-descriptor-nonce"; return false; }
+            foreach (char ch in nonce)
+                if (!char.IsLetterOrDigit(ch) && ch != '-') { error = "f1-descriptor-nonce-characters"; return false; }
             if (!values.TryGetValue("gamePid", out pidText))
             { error = "f1-descriptor-pid"; return false; }
             if (!values.TryGetValue("gameStartUtcTicks", out startText))
             { error = "f1-descriptor-start"; return false; }
             if (!values.TryGetValue("eventPrefix", out prefix) || string.IsNullOrEmpty(prefix))
             { error = "f1-descriptor-prefix"; return false; }
+            foreach (char ch in prefix)
+                if (!char.IsLetterOrDigit(ch) && ch != '-' && ch != '.') { error = "f1-descriptor-prefix-characters"; return false; }
             values.TryGetValue("expirySeconds", out expiryText);
 
             int pid;
@@ -769,11 +829,12 @@ namespace ADOFAI.Renderist.Export
             long start;
             if (!long.TryParse(startText, NumberStyles.Integer, CultureInfo.InvariantCulture, out start) || start <= 0)
             { error = "f1-descriptor-start-invalid"; return false; }
-            int expiry = 0;
-            if (!string.IsNullOrEmpty(expiryText))
-            {
-                int.TryParse(expiryText, NumberStyles.Integer, CultureInfo.InvariantCulture, out expiry);
-            }
+            int expiry;
+            long created;
+            if (!int.TryParse(expiryText, NumberStyles.Integer, CultureInfo.InvariantCulture, out expiry) || expiry <= 0 ||
+                !values.TryGetValue("createdUtcTicks", out var createdText) ||
+                !long.TryParse(createdText, NumberStyles.Integer, CultureInfo.InvariantCulture, out created) || created <= 0)
+            { error = "f1-descriptor-expiry"; return false; }
 
             descriptor = new FrameLocalDeliveryProbeDescriptor
             {
@@ -782,7 +843,9 @@ namespace ADOFAI.Renderist.Export
                 GameStartUtcTicks = start,
                 EventPrefix = prefix,
                 ExpirySeconds = expiry,
+                CreatedUtcTicks = created,
             };
+            if (descriptor.IsExpired(utcNow)) { descriptor = null; error = "f1-descriptor-expired"; return false; }
             return true;
         }
     }
@@ -797,12 +860,88 @@ namespace ADOFAI.Renderist.Export
         private readonly FrameLocalDeliveryEvidence _evidence;
         private readonly string _nonce;
         private FrameLocalDeliveryClaimGate _gate;
+        private FrameLocalDeliveryClaimGate _acceptedGate;
         private long _generation = -1;
         private long _absoluteFrameIndex = -1;
         private long _tokenId = -1;
         private bool _bound;
         private string _pendingCancel;
         private bool _pendingEmergency;
+        private long _waitingTimestamp;
+        private int _waitExited, _eofActive, _canaryCount, _canaryPending, _canaryFault;
+        private OwnedRgb24Frame _source;
+        private string _sourceHash;
+        private Func<int> _nativeFrame;
+        private int _entryNativeFrame, _captureThread, _claims, _commits, _commitCallbacks;
+        private string _runFault, _stopCode, _stopDetail;
+        internal long WaitingTimestamp => Interlocked.Read(ref _waitingTimestamp);
+        internal bool WaitExited => Volatile.Read(ref _waitExited) != 0;
+        internal bool CanarySettled => Volatile.Read(ref _canaryPending) == 0;
+        internal bool EvidenceFailed => Volatile.Read(ref _canaryFault) != 0 || Volatile.Read(ref _runFault) != null;
+        internal int CommitCount => _commits;
+        internal string Decision => "stop=" + _stopCode + ",detail=" + _stopDetail + ",fault=" + _runFault;
+        internal void RecordActualCommit(long generation, long frameIndex, int nativeFrame)
+        {
+            _commits++;
+            _evidence.Record("actual-commit", "gen=" + generation + ",frame=" + frameIndex + ",native=" + nativeFrame + ",count=" + _commits);
+            if (_commits != 1 || generation != BoundGeneration || frameIndex != BoundFrameIndex ||
+                (_nativeFrame != null && nativeFrame != _entryNativeFrame))
+                Interlocked.Exchange(ref _canaryFault, 1);
+        }
+
+        internal static string HashSource(OwnedRgb24Frame frame)
+        {
+            using (var hash = SHA256.Create())
+            {
+                for (int i = 0; i < frame.SegmentCount; i++)
+                {
+                    byte[] bytes = frame.SegmentBuffer(i);
+                    hash.TransformBlock(bytes, 0, frame.Layout.SegmentLength(i), null, 0);
+                }
+                hash.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+                return BitConverter.ToString(hash.Hash).Replace("-", "");
+            }
+        }
+
+        internal void PrepareFrameEvidence(OwnedRgb24Frame frame, Rgb24MainThreadBridge bridge)
+        {
+            if (_source != null) throw new InvalidOperationException("f1-second-source-frame");
+            _source = frame;
+            _sourceHash = HashSource(frame);
+            _captureThread = Thread.CurrentThread.ManagedThreadId;
+            _evidence.Record("source-sha256-before", _sourceHash + ",segments=" + frame.SegmentCount);
+            _evidence.Record("capture-thread", "id=" + _captureThread + ",apartment=" + Thread.CurrentThread.GetApartmentState() +
+                ",context=" + bridge.ContextType + ",gen=" + frame.Generation + ",frame=" + frame.AbsoluteFrameIndex + ",token=" + frame.TokenId);
+            Interlocked.Exchange(ref _canaryPending, 1);
+            try
+            {
+                bridge.PostDiagnosticCanary(onMain =>
+                {
+                    if (!onMain || Volatile.Read(ref _eofActive) != 0 || !WaitExited)
+                        Interlocked.Exchange(ref _canaryFault, 1);
+                    int count = Interlocked.Increment(ref _canaryCount);
+                    if (count != 1) Interlocked.Exchange(ref _canaryFault, 1);
+                    _evidence.Record("canary-post-executed", "count=" + count + ",main=" + onMain + ",waitExited=" + WaitExited);
+                    Interlocked.Exchange(ref _canaryPending, 0);
+                });
+            }
+            catch { Interlocked.Exchange(ref _canaryPending, 0); Interlocked.Exchange(ref _canaryFault, 1); throw; }
+            if (Volatile.Read(ref _canaryCount) != 0) throw new InvalidOperationException("f1-canary-inline");
+            _evidence.Record("canary-post-queued", "executed=0");
+        }
+
+        internal void RecordPublication(FrameLocalDeliveryClaimGate gate)
+        {
+            if (ReferenceEquals(Gate, gate)) _evidence.Record("canonical-published", gate.Describe());
+        }
+
+        internal void RecordClaim(FrameLocalDeliveryClaimGate gate, FrameLocalDeliveryClaimResult claim)
+        {
+            if (!ReferenceEquals(Gate, gate)) return;
+            if (claim.Status == FrameLocalDeliveryClaimStatus.ClaimedSuccess || claim.Status == FrameLocalDeliveryClaimStatus.ClaimedFailure)
+                _claims++;
+            _evidence.Record("claim", claim.Status + ",permit=" + claim.PermitId + ",claims=" + _claims + ",native=" + _nativeFrame?.Invoke());
+        }
 
         internal FrameLocalDeliveryProbeSlot(string nonce, FrameLocalDeliveryEvidence evidence)
         {
@@ -817,6 +956,16 @@ namespace ADOFAI.Renderist.Export
         internal bool IsAwaitingBinding { get { lock (_sync) return !_bound && _pendingCancel == null; } }
 
         internal FrameLocalDeliveryClaimGate Gate { get { lock (_sync) return _gate; } }
+        internal FrameLocalDeliveryClaimGate AcceptedGate { get { lock (_sync) return _acceptedGate ?? _gate; } }
+        internal void TrackAcceptedGate(FrameLocalDeliveryClaimGate gate)
+        {
+            lock (_sync)
+            {
+                if (_acceptedGate != null) throw new InvalidOperationException("f1-second-accepted-write");
+                _acceptedGate = gate;
+            }
+        }
+        internal bool CancelRequested { get { lock (_sync) return _pendingCancel != null || (_gate != null && _gate.CancelAccepted); } }
 
         internal long BoundGeneration { get { lock (_sync) return _generation; } }
         internal long BoundFrameIndex { get { lock (_sync) return _absoluteFrameIndex; } }
@@ -870,17 +1019,19 @@ namespace ADOFAI.Renderist.Export
                 }
             }
             bool accepted = gate.TryAcceptCancel(reason, emergency, out error);
+            if (emergency && !accepted) Volatile.Write(ref _runFault, "f1-late-emergency:" + error);
             _evidence?.Record(accepted ? "cancel-accepted" : "cancel-rejected",
                 (emergency ? "emergency:" : "soft:") + (reason ?? "") + ":" + (error ?? "ok"));
             return accepted;
         }
 
-        internal WaitHandle[] BuildWaitHandles(EventWaitHandle emergency)
+        internal WaitHandle[] BuildWaitHandles(EventWaitHandle emergency, WaitHandle guardianExit = null)
         {
             var handles = new List<WaitHandle>();
             WaitHandle ready = Gate?.ReadyHandle;
             if (ready != null) handles.Add(ready);
             if (emergency != null) handles.Add(emergency);
+            if (guardianExit != null) handles.Add(guardianExit);
             return handles.ToArray();
         }
 
@@ -888,8 +1039,15 @@ namespace ADOFAI.Renderist.Export
         // Callbacks retain scheduler authority: this helper never prepares frames or owns logical time.
         internal void RunSingleFrame(Rgb24FrameTransaction transaction, long generation, long frameIndex,
             bool awaitingDelivery, EventWaitHandle emergency, int budgetMs,
-            Action commit, Action<string, string> stop)
+            Action commit, Action<string, string> stopCallback, Func<int> nativeFrame = null,
+            Action waitingArmed = null, Action waitExited = null, WaitHandle guardianExit = null)
         {
+            Action<string, string> stop = (code, detail) =>
+            {
+                _stopCode = code; _stopDetail = detail;
+                _evidence.Record("stop-requested", code + ":" + detail);
+                stopCallback(code, detail);
+            };
             FrameLocalDeliveryClaimGate gate = Gate;
             if (!IsArmedForFrame(generation, frameIndex) || gate == null || !gate.DirectRoute ||
                 transaction.Generation != generation || transaction.FrameIndex != frameIndex ||
@@ -900,16 +1058,38 @@ namespace ADOFAI.Renderist.Export
             }
             try
             {
+                _nativeFrame = nativeFrame;
+                _entryNativeFrame = nativeFrame?.Invoke() ?? -1;
+                if (_source != null && (Volatile.Read(ref _canaryCount) != 0 || EvidenceFailed))
+                    throw new InvalidOperationException("f1-canary-before-wait");
+                Interlocked.Exchange(ref _eofActive, 1);
+                Interlocked.Exchange(ref _waitingTimestamp, Stopwatch.GetTimestamp());
                 _evidence?.Record("waiting-armed", "frame=" + frameIndex.ToString(CultureInfo.InvariantCulture));
-                int index = gate.WaitForWake(BuildWaitHandles(emergency), budgetMs);
-                _evidence?.Record("wait-exit", "index=" + index.ToString(CultureInfo.InvariantCulture));
+                _evidence?.Record("wait-enter", "native=" + _entryNativeFrame);
+                waitingArmed?.Invoke();
+                int index = gate.WaitForWake(BuildWaitHandles(emergency, guardianExit), budgetMs);
+                _evidence?.Record("wait-exit", "index=" + index.ToString(CultureInfo.InvariantCulture) + ",native=" + nativeFrame?.Invoke());
+                if (nativeFrame != null && nativeFrame() != _entryNativeFrame)
+                    throw new InvalidOperationException("f1-native-frame-changed");
+                if (guardianExit != null && guardianExit.WaitOne(0))
+                {
+                    gate.MarkPublicationFault("f1-guardian-exited-during-wait");
+                    throw new InvalidOperationException("f1-guardian-exited-during-wait");
+                }
+                if (_source != null)
+                {
+                    string after = HashSource(_source);
+                    _evidence.Record("source-sha256-after", after);
+                    if (after != _sourceHash || EvidenceFailed || Volatile.Read(ref _canaryCount) != 0)
+                        throw new InvalidOperationException("f1-source-or-canary-changed");
+                }
                 if (index == WaitHandle.WaitTimeout || (emergency != null && emergency.WaitOne(0)))
                     TryAcceptCancel("f1-emergency-or-wait-timeout", true, out _);
 
                 gate.TryGetPublished(out var envelope);
                 if (gate.CancelAccepted)
                 {
-                    gate.TryClaim(envelope); // may be null while raw completion is still pending
+                    gate.CloseForAbort();
                     stop("f1-single-frame-cancelled", "f1-cancel-accepted-before-claim");
                     return;
                 }
@@ -919,13 +1099,25 @@ namespace ADOFAI.Renderist.Export
                     return;
                 }
                 var outcome = transaction.ConsumeEnvelope(awaitingDelivery, envelope, out var code, out var detail);
+                if (emergency != null && emergency.WaitOne(0))
+                    TryAcceptCancel("f1-emergency-after-consume", true, out _);
                 _evidence?.Record("consume-result", outcome + ":" + (code ?? "ok") + ":" + (detail ?? ""));
                 if (outcome == Rgb24TransactionOutcome.Committed)
                 {
                     // A late cancel cannot rewrite the permit acquired inside ConsumeEnvelope.
-                    try { commit(); }
+                    try
+                    {
+                        if (nativeFrame != null && nativeFrame() != _entryNativeFrame)
+                            throw new InvalidOperationException("f1-native-frame-at-commit");
+                        commit();
+                        if (emergency != null && emergency.WaitOne(0))
+                            TryAcceptCancel("f1-emergency-after-commit", true, out _);
+                        _commitCallbacks++;
+                        _evidence.Record("commit-callback-returned", "count=" + _commitCallbacks + ",native=" + nativeFrame?.Invoke());
+                    }
                     catch (Exception ex)
                     {
+                        Volatile.Write(ref _runFault, "commit:" + ex.GetType().Name + ":" + ex.Message);
                         stop("f1-commit-exception", ex.GetType().Name + ":" + ex.Message);
                         return;
                     }
@@ -936,8 +1128,16 @@ namespace ADOFAI.Renderist.Export
             }
             catch (Exception ex)
             {
+                Volatile.Write(ref _runFault, ex.GetType().Name + ":" + ex.Message);
                 TryAcceptCancel("f1-wait-exception", true, out _);
                 stop("f1-wait-exception", ex.GetType().Name + ":" + ex.Message);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _eofActive, 0);
+                Interlocked.Exchange(ref _waitExited, 1);
+                waitExited?.Invoke();
+                _evidence.Record("eof-control-exited", "claims=" + _claims + ",commits=" + _commits);
             }
         }
 
@@ -967,6 +1167,7 @@ namespace ADOFAI.Renderist.Export
         private readonly Action<string> _openStreamGate;
         private readonly int _softAbortMs;
         private readonly int _emergencyMs;
+        private readonly Action<string> _controlAck;
         private readonly Thread _thread;
         private volatile bool _stop;
         private int _exited;
@@ -974,6 +1175,11 @@ namespace ADOFAI.Renderist.Export
         internal FrameLocalDeliveryProbeMonitor(FrameLocalDeliveryProbeSlot slot, FrameLocalDeliveryEvidence evidence,
             EventWaitHandle release, EventWaitHandle cancel, EventWaitHandle shutdown, EventWaitHandle emergency,
             EventWaitHandle ack, Action<string> openStreamGate, int softAbortMs, int emergencyMs)
+            : this(slot, evidence, release, cancel, shutdown, emergency, ack, openStreamGate, softAbortMs, emergencyMs, null) { }
+
+        internal FrameLocalDeliveryProbeMonitor(FrameLocalDeliveryProbeSlot slot, FrameLocalDeliveryEvidence evidence,
+            EventWaitHandle release, EventWaitHandle cancel, EventWaitHandle shutdown, EventWaitHandle emergency,
+            EventWaitHandle ack, Action<string> openStreamGate, int softAbortMs, int emergencyMs, Action<string> controlAck)
         {
             _slot = slot;
             _evidence = evidence;
@@ -985,6 +1191,7 @@ namespace ADOFAI.Renderist.Export
             _openStreamGate = openStreamGate;
             _softAbortMs = softAbortMs;
             _emergencyMs = emergencyMs;
+            _controlAck = controlAck;
             _thread = new Thread(Loop);
             _thread.IsBackground = true;
             _thread.Name = "Renderist.F1.Monitor";
@@ -1007,16 +1214,18 @@ namespace ADOFAI.Renderist.Export
                 // Reset alone could still be defeated by a producer repeatedly setting the MRE.
                 var controls = new WaitHandle[] { _emergency, _shutdown, _cancel };
                 var withRelease = new WaitHandle[] { _emergency, _shutdown, _cancel, _release };
-                var started = Stopwatch.StartNew();
                 bool softAbortIssued = false;
+                bool emergencyIssued = false;
                 bool releaseHandled = false;
 
                 while (!_stop)
                 {
                     int wait = 200;
-                    int elapsed = (int)started.ElapsedMilliseconds;
-                    if (!softAbortIssued && _softAbortMs > 0 && elapsed >= _softAbortMs) wait = 0;
-                    else if (!softAbortIssued && _softAbortMs > 0) wait = Math.Max(1, Math.Min(200, _softAbortMs - elapsed));
+                    long origin = _slot.WaitingTimestamp;
+                    long elapsed = origin == 0 ? 0 : (Stopwatch.GetTimestamp() - origin) * 1000 / Stopwatch.Frequency;
+                    bool waiting = origin != 0 && !_slot.WaitExited;
+                    if (waiting && !softAbortIssued && _softAbortMs > 0 && elapsed >= _softAbortMs) wait = 0;
+                    else if (waiting && !softAbortIssued && _softAbortMs > 0) wait = Math.Max(1, (int)Math.Min(200, _softAbortMs - elapsed));
 
                     int index = WaitHandle.WaitAny(releaseHandled ? controls : withRelease, wait);
                     if (index != WaitHandle.WaitTimeout)
@@ -1054,13 +1263,19 @@ namespace ADOFAI.Renderist.Export
                     }
 
                     // timeout：只在 PoC 保命预算内触发 soft abort（不是产品 IO 期限）。
-                    if (!softAbortIssued && _softAbortMs > 0 && started.ElapsedMilliseconds >= _softAbortMs)
+                    if (waiting && !softAbortIssued && _softAbortMs > 0 && elapsed >= _softAbortMs)
                     {
                         softAbortIssued = true;
                         string error;
                         _slot.TryAcceptCancel("f1-soft-abort-deadline", false, out error);
                         _evidence?.Record("soft-abort", "budget-ms=" + _softAbortMs.ToString(CultureInfo.InvariantCulture));
                         _openStreamGate?.Invoke("soft-abort");
+                    }
+                    if (waiting && !emergencyIssued && _emergencyMs > 0 && elapsed >= _emergencyMs)
+                    {
+                        emergencyIssued = true;
+                        _slot.TryAcceptCancel("f1-monitor-emergency-deadline", true, out _);
+                        _openStreamGate?.Invoke("monitor-emergency");
                     }
                 }
             }
@@ -1080,6 +1295,7 @@ namespace ADOFAI.Renderist.Export
         {
             try
             {
+                _controlAck?.Invoke(what);
                 if (_ack != null)
                 {
                     _ack.Set();
@@ -1097,11 +1313,13 @@ namespace ADOFAI.Renderist.Export
             _stop = true;
         }
 
+        internal bool TryJoin() => (_thread.ThreadState & System.Threading.ThreadState.Unstarted) != 0 || (!_thread.IsAlive && _thread.Join(0));
+
         public void Dispose()
         {
             _stop = true;
-            try { if (_thread.IsAlive) _thread.Join(5000); }
-            catch (Exception) { }
+            if (_thread.IsAlive && !_thread.Join(5000))
+                throw new InvalidOperationException("f1-monitor-join-residual");
         }
     }
 
@@ -1125,18 +1343,19 @@ namespace ADOFAI.Renderist.Export
         private static FrameLocalDeliveryProbeSlot _slot;
         private static FrameLocalDeliveryProbeMonitor _monitor;
         private static FrameLocalDeliveryStreamGate _streamGate;
-        private static EventWaitHandle _ready;
-        private static EventWaitHandle _ack;
-        private static EventWaitHandle _release;
-        private static EventWaitHandle _cancel;
-        private static EventWaitHandle _shutdown;
         private static EventWaitHandle _emergency;
         private static string _nonce;
         private static int _encoderStarts;
+        private static int _processStartAttempts;
         private static int _encoderPid;
-        private static long _encoderStartUtcTicks;
-        private static string _encoderPath;
         private static string _lastError;
+        private static FrameLocalDeliveryGuardian _guardian;
+        private static Rgb24DeliveryContext _context;
+        private static FfmpegVideoPipeline _pipeline;
+        private static bool _activated, _stopping, _resourcesClosed;
+        private static string _lastSettlement;
+        private static bool _frameTerminalLogged, _cleanupTerminalLogged;
+        internal static bool HasResidualOwnership { get { lock (_sync) return _slot != null && !_resourcesClosed; } }
 
         /// <summary>本进程是否已被 F1 诊断接管。</summary>
         internal static bool IsActive { get { lock (_sync) return _slot != null; } }
@@ -1163,7 +1382,7 @@ namespace ADOFAI.Renderist.Export
             error = null;
             lock (_sync)
             {
-                if (_slot != null) return true;
+                if (_slot != null || _activated) { error = "f1-probe-already-used"; return false; }
             }
 
             var evidence = new FrameLocalDeliveryEvidence();
@@ -1208,62 +1427,45 @@ namespace ADOFAI.Renderist.Export
                 return false;
             }
 
-            string prefix = "Local\\" + descriptor.EventPrefix + "." + descriptor.RunNonce;
-            EventWaitHandle ready = null, ack = null, release = null, cancel = null, shutdown = null, emergency = null;
+            FrameLocalDeliveryGuardian guardian = null;
             try
             {
-                ready = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + ".Ready");
-                ack = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + ".Ack");
-                release = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + ".Release");
-                cancel = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + ".Cancel");
-                shutdown = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + ".Shutdown");
-                emergency = new EventWaitHandle(false, EventResetMode.ManualReset, prefix + ".Emergency");
+                // Atomic, no-overwrite claim. A stale file cannot authorize another session.
+                File.Move(path, path + ".claimed." + descriptor.RunNonce);
+                lock (_sync) _activated = true;
+                if (!string.Equals(File.ReadAllText(path + ".claimed." + descriptor.RunNonce), text, StringComparison.Ordinal) ||
+                    descriptor.IsExpired(DateTime.UtcNow)) throw new InvalidDataException("f1-descriptor-changed-or-expired-at-claim");
+                guardian = new FrameLocalDeliveryGuardian(descriptor, path, evidence);
+                guardian.Connect();
+                evidence.Record("runtime-identity", "pid=" + pid + ",start=" + startTicks +
+                    ",assembly=" + typeof(FrameLocalDeliveryProbe).Assembly.GetName().Version +
+                    ",sha256=" + FrameLocalProcessIdentity.HashFile(typeof(FrameLocalDeliveryProbe).Assembly.Location));
             }
             catch (Exception ex)
             {
-                CloseHandles(ready, ack, release, cancel, shutdown, emergency);
-                error = "f1-events-unavailable:" + ex.GetType().Name;
-                return false;
-            }
-
-            // 双向握手：runtime 先 Ready，guardian 必须回 Ack。
-            try
-            {
-                ready.Set();
-                if (!ack.WaitOne(SoftAbortMs))
-                {
-                    CloseHandles(ready, ack, release, cancel, shutdown, emergency);
-                    error = "f1-handshake-timeout";
-                    return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                CloseHandles(ready, ack, release, cancel, shutdown, emergency);
-                error = "f1-handshake-failed:" + ex.GetType().Name;
+                guardian?.Dispose();
+                error = "f1-activation-failed:" + ex.GetType().Name + ":" + ex.Message;
+                evidence.Record("activation-failed", error);
+                Log.Warn("F1 " + evidence.Dump());
                 return false;
             }
 
             var slot = new FrameLocalDeliveryProbeSlot(descriptor.RunNonce, evidence);
-            var monitor = new FrameLocalDeliveryProbeMonitor(slot, evidence, release, cancel, shutdown, emergency,
-                ack, reason => OpenStreamGate(reason), SoftAbortMs, EmergencyMs);
+            var monitor = new FrameLocalDeliveryProbeMonitor(slot, evidence, guardian["Release"], guardian["Cancel"],
+                guardian["Shutdown"], guardian["Emergency"], null, reason => OpenStreamGate(reason),
+                SoftAbortMs, EmergencyMs, guardian.Acknowledge);
 
             lock (_sync)
             {
                 _evidence = evidence;
                 _slot = slot;
                 _monitor = monitor;
-                _ready = ready;
-                _ack = ack;
-                _release = release;
-                _cancel = cancel;
-                _shutdown = shutdown;
-                _emergency = emergency;
+                _guardian = guardian;
+                _emergency = guardian["Emergency"];
                 _nonce = descriptor.RunNonce;
                 _encoderStarts = 0;
+                _processStartAttempts = 0;
                 _encoderPid = 0;
-                _encoderStartUtcTicks = 0;
-                _encoderPath = null;
             }
 
             monitor.Start();
@@ -1300,7 +1502,8 @@ namespace ADOFAI.Renderist.Export
             if (inner == null) return null;
             FrameLocalDeliveryEvidence evidence;
             lock (_sync) evidence = _evidence;
-            var gate = new FrameLocalDeliveryStreamGate(inner, evidence);
+            var gate = new FrameLocalDeliveryStreamGate(inner, evidence, () => _guardian?.Signal("WriteGateEntered"),
+                () => _guardian != null && _guardian.EncoderExited);
             lock (_sync) _streamGate = gate;
             evidence?.Record("stdin-gate-installed", "");
             return gate;
@@ -1323,6 +1526,18 @@ namespace ADOFAI.Renderist.Export
         {
             return (executablePath, arguments, workingDirectory) =>
             {
+                bool rejected;
+                lock (_sync)
+                {
+                    rejected = ++_processStartAttempts != 1;
+                    if (rejected) _lastError = "f1-second-process-start-attempt";
+                }
+                if (rejected)
+                {
+                    Evidence?.Record("process-start-rejected", "second-start-forbidden-before-launch");
+                    TryEmergencyAbort("f1-second-process-start-attempt", out _);
+                    return null;
+                }
                 Process process = inner(executablePath, arguments, workingDirectory);
                 if (process == null) return null;
 
@@ -1333,9 +1548,6 @@ namespace ADOFAI.Renderist.Export
                     _encoderStarts++;
                     count = _encoderStarts;
                     _encoderPid = process.Id;
-                    try { _encoderStartUtcTicks = process.StartTime.ToUniversalTime().Ticks; }
-                    catch (Exception) { _encoderStartUtcTicks = 0; }
-                    _encoderPath = executablePath;
                     evidence = _evidence;
                 }
 
@@ -1347,79 +1559,23 @@ namespace ADOFAI.Renderist.Export
                     evidence?.Record("encoder-second-start", "f1 forbids a second encoder start");
                     lock (_sync) _lastError = "f1-second-encoder-start";
                 }
+                else
+                {
+                    // Never throw after a successful start: return the Process to its L2 owner
+                    // even when diagnostic identity/ACK fails, then cancel through that owner.
+                    try { _guardian?.RegisterEncoder(process, executablePath); }
+                    catch (Exception ex)
+                    {
+                        lock (_sync) _lastError = "f1-encoder-preflight:" + ex.GetType().Name + ":" + ex.Message;
+                        TryEmergencyAbort(_lastError, out _);
+                        evidence?.Record("encoder-preflight-failed", _lastError);
+                    }
+                }
                 return process;
             };
         }
 
         internal static int EncoderStartCount { get { lock (_sync) return _encoderStarts; } }
-
-        /// <summary>
-        /// 只终止**经身份核实**的本 run encoder。禁止按进程名批量 kill、禁止终止游戏。
-        /// </summary>
-        internal static bool TryTerminateEncoder(out string error)
-        {
-            error = null;
-            int pid;
-            long expectedStart;
-            string path;
-            FrameLocalDeliveryEvidence evidence;
-            lock (_sync)
-            {
-                pid = _encoderPid;
-                expectedStart = _encoderStartUtcTicks;
-                path = _encoderPath;
-                evidence = _evidence;
-            }
-
-            if (pid <= 0 || string.IsNullOrEmpty(path))
-            {
-                error = "f1-encoder-not-identified";
-                return false;
-            }
-
-            try
-            {
-                using (Process process = Process.GetProcessById(pid))
-                {
-                    if (process.HasExited)
-                    {
-                        evidence?.Record("encoder-kill", "already-exited pid=" + pid.ToString(CultureInfo.InvariantCulture));
-                        return true;
-                    }
-                    long actualStart = process.StartTime.ToUniversalTime().Ticks;
-                    if (expectedStart != 0 && actualStart != expectedStart)
-                    {
-                        error = "f1-encoder-identity-mismatch";
-                        return false;
-                    }
-                    string actualPath = null;
-                    try { actualPath = process.MainModule == null ? null : process.MainModule.FileName; }
-                    catch (Exception) { }
-                    if (!string.IsNullOrEmpty(actualPath) &&
-                        !string.Equals(actualPath, path, StringComparison.OrdinalIgnoreCase))
-                    {
-                        error = "f1-encoder-path-mismatch";
-                        return false;
-                    }
-
-                    process.Kill();
-                    bool exited = process.WaitForExit(5000);
-                    evidence?.Record("encoder-kill", "pid=" + pid.ToString(CultureInfo.InvariantCulture) +
-                                                     " exited=" + (exited ? "true" : "false"));
-                    if (!exited)
-                    {
-                        error = "f1-encoder-kill-timeout";
-                        return false;
-                    }
-                    return true;
-                }
-            }
-            catch (Exception ex)
-            {
-                error = "f1-encoder-kill-failed:" + ex.GetType().Name;
-                return false;
-            }
-        }
 
         /// <summary>
         /// 生产默认进程启动（与 FfmpegVideoPipeline.StartDefaultProcess 参数完全一致）的等价实现。
@@ -1480,6 +1636,7 @@ namespace ADOFAI.Renderist.Export
         }
 
         internal static EventWaitHandle EmergencyHandle { get { lock (_sync) return _emergency; } }
+        internal static WaitHandle GuardianExitHandle => _guardian?.GuardianExitHandle;
 
         internal static bool EmergencyRequested()
         {
@@ -1497,6 +1654,38 @@ namespace ADOFAI.Renderist.Export
 
         // ---------------------------------------------------------------- settlement
 
+        internal static void AttachPipeline(FfmpegVideoPipeline pipeline)
+        {
+            if (!IsActive) return;
+            if (_pipeline != null && !ReferenceEquals(_pipeline, pipeline)) throw new InvalidOperationException("f1-pipeline-replaced");
+            _pipeline = pipeline;
+        }
+        internal static void AttachContext(Rgb24DeliveryContext context)
+        {
+            if (!IsActive) return;
+            if (_context != null && !ReferenceEquals(_context, context)) throw new InvalidOperationException("f1-context-replaced");
+            _context = context;
+        }
+        internal static bool PrePlayHealthy(out string error)
+        {
+            error = null;
+            if (!IsActive) return true;
+            error = _lastError;
+            if (Slot.CancelRequested) error = error ?? "f1-control-cancelled-before-play";
+            if (_guardian == null || !_guardian.IsLive) error = error ?? "f1-guardian-not-live";
+            if (_encoderStarts != 1) error = error ?? "f1-encoder-count";
+            return error == null;
+        }
+        internal static void SignalWaitingArmed() => _guardian?.Signal("WaitingArmed");
+        internal static void SignalWaitExited() => _guardian?.Signal("WaitExited");
+        internal static bool ControlStopRequested => IsActive &&
+            (_lastError != null || Slot.CancelRequested || (_guardian != null && !_guardian.IsLive));
+
+        internal static void TickSettlement()
+        {
+            if (IsActive && _stopping) TryObserveSettlement(out _);
+        }
+
         /// <summary>
         /// 诊断资源是否全部收敛：monitor 退出、producer settled、claim 关闭、
         /// ready 句柄已安全释放、stdin 门已开、无第二个 encoder、encoder 已退出。
@@ -1504,73 +1693,93 @@ namespace ADOFAI.Renderist.Export
         internal static bool TryObserveSettlement(out string error)
         {
             error = null;
-            FrameLocalDeliveryProbeSlot slot;
-            FrameLocalDeliveryProbeMonitor monitor;
-            FrameLocalDeliveryStreamGate streamGate;
-            FrameLocalDeliveryEvidence evidence;
-            int encoderStarts, encoderPid;
-            lock (_sync)
-            {
-                slot = _slot;
-                monitor = _monitor;
-                streamGate = _streamGate;
-                evidence = _evidence;
-                encoderStarts = _encoderStarts;
-                encoderPid = _encoderPid;
-            }
-
+            var slot = Slot;
+            if (slot == null || _resourcesClosed) return true;
+            if (!_stopping) { error = "f1-settlement-not-stopping"; return false; }
+            // This observer is a main-thread operation over the SAME old context, including
+            // startup failures. Never inspect a global/new scheduler context to infer retirement.
+            if (_context != null && !_context.Bridge.IsMainThread) { error = "f1-settlement-wrong-thread"; return false; }
             var problems = new List<string>();
-            if (slot != null)
+            FrameLocalDeliveryClaimGate gate = slot.AcceptedGate;
+            if (gate != null)
             {
-                FrameLocalDeliveryClaimGate gate = slot.Gate;
-                if (gate != null)
+                if (!gate.Completion.IsCompleted) problems.Add("frame-completion-pending");
+                else if (gate.Completion.IsFaulted) { var observed = gate.Completion.Exception; }
+                if (!_frameTerminalLogged && gate.Completion.IsCompleted)
                 {
-                    if (!gate.ProducerSettled) problems.Add("producer-unsettled");
-                    if (!gate.ObserverSettled) problems.Add("observer-unsettled");
-                    if (!gate.IsClosed) problems.Add("claim-still-open");
-                    string disposeError;
-                    if (!gate.TryDisposeReadyHandle(out disposeError))
-                        problems.Add("ready-handle:" + (disposeError ?? "unknown"));
+                    _frameTerminalLogged = true;
+                    string frameResult = gate.Completion.Status.ToString();
+                    if (gate.Completion.Status == TaskStatus.RanToCompletion)
+                        frameResult += ",success=" + gate.Completion.Result?.Success + ",error=" + gate.Completion.Result?.ErrorCode;
+                    else if (gate.Completion.IsFaulted) frameResult += ",fault=" + gate.Completion.Exception.GetBaseException().Message;
+                    _evidence?.Record("frame-terminal", frameResult);
                 }
+                if (!gate.ProducerSettled) problems.Add("producer-unsettled");
+                if (!gate.ObserverSettled) problems.Add("observer-unsettled");
+                if (gate.ObserverFault != null) _lastError = _lastError ?? "observer:" + gate.ObserverFault;
+                if (gate.Failure != null) _lastError = _lastError ?? gate.Failure;
+                if (!gate.IsClosed) problems.Add("claim-still-open");
+                if (gate.WaiterCount != 0 || !slot.WaitExited && slot.WaitingTimestamp != 0) problems.Add("waiter-active");
+                if (gate.PendingCallbacks != 0) problems.Add("retirement-callback-pending");
+            }
+            else if (!_frameTerminalLogged) { _frameTerminalLogged = true; _evidence?.Record("frame-terminal", "not-entered"); }
+            if (_context != null)
+            {
+                if (!_context.TryStopAndDrain("f1-settlement", out var contextError)) problems.Add(contextError ?? "context-residual");
+                if (_context.HasFrameOwnership || _context.HasResidualOwnership) problems.Add("context-or-lease-residual");
+            }
+            Task<FfmpegVideoOutcome> cleanup = _pipeline?.CleanupTask;
+            FfmpegVideoOutcome outcome = null;
+            if (_pipeline != null)
+            {
+                if (cleanup == null || !cleanup.IsCompleted) problems.Add("cleanup-pending");
+                else if (cleanup.IsFaulted) { var observed = cleanup.Exception; problems.Add("cleanup-faulted:" + observed.GetBaseException().Message); }
+                else if (cleanup.IsCanceled) problems.Add("cleanup-canceled");
                 else
                 {
-                    problems.Add("gate-missing");
+                    outcome = cleanup.Result;
+                    if (outcome == null) problems.Add("cleanup-null");
+                    else if (outcome.ResidualOwnership || !outcome.TempOwnershipReleased ||
+                             (outcome.ProcessStarted && (!outcome.ProcessReaped || !outcome.ProcessDisposed)))
+                        problems.Add("cleanup-residual:" + outcome.ResidualDetail);
                 }
             }
-
-            if (monitor != null && !monitor.Exited) problems.Add("monitor-not-exited");
-
-            if (streamGate != null && !streamGate.GateEntered) problems.Add("stream-gate-never-entered");
-
-            if (encoderStarts > 1) problems.Add("second-encoder-start");
-
-            if (encoderPid > 0)
+            if (_monitor != null && !_monitor.TryJoin()) problems.Add("monitor-not-joined");
+            if (_streamGate != null && !_streamGate.OwnershipSettled) problems.Add("stdin-residual:" + _streamGate.DisposeError);
+            if (!slot.CanarySettled) problems.Add("canary-callback-pending");
+            if (_guardian != null && !_guardian.EncoderExited) problems.Add("exact-encoder-alive");
+            string snapshot = "frame=" + (gate?.Completion.Status.ToString() ?? "not-entered") +
+                ",cleanup=" + (cleanup?.Status.ToString() ?? "not-created") + ",processReaped=" + outcome?.ProcessReaped +
+                ",processDisposed=" + outcome?.ProcessDisposed + ",tempReleased=" + outcome?.TempOwnershipReleased +
+                ",observer=" + gate?.ObserverSettled + ",callbacks=" + gate?.PendingCallbacks +
+                ",monitorJoined=" + (_monitor == null || _monitor.TryJoin()) + ",commits=" + slot.CommitCount +
+                ",io=[" + (_streamGate?.IoSnapshot ?? "not-installed") + "]";
+            if (!_cleanupTerminalLogged && (_pipeline == null || cleanup != null && cleanup.IsCompleted))
             {
-                try
-                {
-                    using (Process process = Process.GetProcessById(encoderPid))
-                    {
-                        if (!process.HasExited) problems.Add("encoder-still-running");
-                    }
-                }
-                catch (ArgumentException)
-                {
-                    // 进程已不存在：已收敛。
-                }
-                catch (Exception ex)
-                {
-                    problems.Add("encoder-probe:" + ex.GetType().Name);
-                }
+                _cleanupTerminalLogged = true;
+                _evidence?.Record("cleanup-terminal", snapshot + ",residual=" + outcome?.ResidualOwnership);
             }
-
+            if (problems.Count == 0 && gate != null && !gate.TryDisposeReadyHandle(out var handleError)) problems.Add(handleError);
+            if (problems.Count == 0 && _guardian != null && !_guardian.TryClose(out var closeError)) problems.Add(closeError);
             if (problems.Count > 0)
             {
                 error = string.Join(";", problems.ToArray());
-                evidence?.Record("settlement", "FAIL:" + error);
+                if (_lastSettlement != error)
+                {
+                    _lastSettlement = error;
+                    _evidence?.Record("residual-snapshot", snapshot + ",residual=" + error);
+                    Log.Warn("F1 settlement pending: " + snapshot + ",residual=" + error);
+                }
                 return false;
             }
-
-            evidence?.Record("settlement", "clean");
+            _resourcesClosed = true;
+            _evidence?.Record("residual-snapshot", snapshot + ",residual=false");
+            _evidence?.Record("delivery-verdict", slot.Decision + ",actualCommits=" + slot.CommitCount);
+            _evidence?.Record("probe-resources-closed", "guardian-ack-and-exit=true");
+            _evidence?.Record("diagnostic-verdict", (_lastError == null && !slot.EvidenceFailed ? "settled" : "FAIL:") + _lastError);
+            // Evidence is retained, but the closed diagnostic must not bind a later ordinary frame.
+            lock (_sync) { _slot = null; _context = null; _pipeline = null; _monitor = null; _streamGate = null; _emergency = null; }
+            Log.Info("F1 " + DumpEvidence());
             return true;
         }
 
@@ -1595,41 +1804,16 @@ namespace ADOFAI.Renderist.Export
         /// <summary>诊断 session 收尾：停 monitor、放行 stdin 门、关闭命名事件。</summary>
         internal static void Shutdown()
         {
-            FrameLocalDeliveryProbeMonitor monitor;
-            lock (_sync)
-            {
-                monitor = _monitor;
-                _monitor = null;
-            }
-            if (monitor != null)
-            {
-                TryRequestCancel("probe-shutdown", out _);
-                monitor.RequestStop();
-                monitor.Dispose();
-            }
-            OpenStreamGateRethrowSafe("probe-shutdown");
-
-            lock (_sync)
-            {
-                CloseHandles(_ready, _ack, _release, _cancel, _shutdown, _emergency);
-                _ready = _ack = _release = _cancel = _shutdown = _emergency = null;
-            }
-        }
-
-        private static void OpenStreamGateRethrowSafe(string reason)
-        {
-            try { OpenStreamGate(reason); }
-            catch (Exception) { }
-        }
-
-        private static void CloseHandles(params EventWaitHandle[] handles)
-        {
-            for (int i = 0; i < handles.Length; i++)
-            {
-                if (handles[i] == null) continue;
-                try { handles[i].Dispose(); }
-                catch (Exception) { }
-            }
+            if (!IsActive) return;
+            _stopping = true;
+            if (EmergencyRequested()) TryEmergencyAbort("f1-emergency-at-shutdown", out _);
+            TryRequestCancel("probe-shutdown", out _);
+            _monitor?.RequestStop(); // retained until the actual Thread has joined
+            OpenStreamGate("probe-shutdown");
+            if (_context != null) _context.TryRequestStop("f1-shutdown", out _);
+            else _pipeline?.Cancel("f1-shutdown");
+            _evidence?.Record("stop-requested", "diagnostic-shutdown");
+            TryObserveSettlement(out _); // nonblocking; no handles are closed on a pending barrier
         }
     }
 }

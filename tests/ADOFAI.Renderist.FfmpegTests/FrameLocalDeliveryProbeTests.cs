@@ -138,6 +138,8 @@ namespace ADOFAI.Renderist.FfmpegTests
                 using (var c = new ProbeChain(true))
                 {
                     TestKit.Check(FrameLocalDeliveryProbe.TryRequestCancel("before-bind", out _), "accepted before binding");
+                    TestKit.Check(!FrameLocalDeliveryProbe.PrePlayHealthy(out var preplayError) &&
+                        preplayError == "f1-control-cancelled-before-play", "accepted startup cancel forbids Play");
                     TestKit.Check(!c.Slot.IsAwaitingBinding, "authorization cannot revive after cancel");
                     c.Prepare(0);
                     TestKit.CheckEqual(Rgb24TransactionOutcome.RejectedTransportRejected,
@@ -351,7 +353,7 @@ namespace ADOFAI.Renderist.FfmpegTests
 
         // Installs only the authorized slot; all frame/Observe/bridge/lease operations are production code.
         // OS descriptor activation is a separate guardian concern, not fabricated by this fixture.
-        private sealed class ProbeChain : SynchronizationContext, IDisposable
+        internal sealed class ProbeChain : SynchronizationContext, IDisposable
         {
             private static readonly FieldInfo SlotField = typeof(FrameLocalDeliveryProbe).GetField("_slot",
                 BindingFlags.Static | BindingFlags.NonPublic);
@@ -446,7 +448,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 finally { SlotField.SetValue(null, null); }
             }
         }
-        private sealed class ProbeTransport : IRgb24FrameTransport, IRgb24PipelineLifetime
+        internal sealed class ProbeTransport : IRgb24FrameTransport, IRgb24PipelineLifetime
         {
             private readonly Task<Rgb24FrameWriteOutcome> _write;
             internal ProbeTransport(Task<Rgb24FrameWriteOutcome> write) { _write = write; }
