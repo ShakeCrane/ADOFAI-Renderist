@@ -27,7 +27,7 @@ namespace ADOFAI.Renderist
         /// 当前 mod 版本。与 Info.json / csproj / 启动日志保持同步，
         /// 由 scripts/set-version.ps1 自动同步。
         /// </summary>
-        internal const string ModVersion = "0.3.12.0";
+        internal const string ModVersion = "0.3.12.1";
 
         internal static UnityModManager.ModEntry Mod;
         internal static UnityModManager.ModEntry.ModLogger Logger;
@@ -140,7 +140,7 @@ namespace ADOFAI.Renderist
 
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.3.12.0 (Phase 3.10.0 Camera & Particle Visual Time Ownership).");
+                Log.Info("Loaded ADOFAI Renderist 0.3.12.1 (Phase 3.10.0 Camera & Particle Visual Time Ownership).");
 
                 // TEMP DIAGNOSTIC: 本构建启用了原生视觉时间**只读**探针，用于一次实机取证。
                 // 它绝不是已实机验证的 L3-C 构建：日志以 NVT| 前缀输出采样，
