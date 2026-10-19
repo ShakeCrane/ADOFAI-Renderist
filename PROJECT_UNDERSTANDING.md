@@ -10,7 +10,7 @@
 
 ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器内非实时渲染导出 Mod。
 
-当前**已实现**路线：编辑器内原生 Camera → Renderist-owned RenderTexture → PNG 序列 / Log-only；`MasterTimeline` 控制逻辑帧。L1 FFmpeg 组件管理已完成主路径实机验收；L2 独立 FFmpeg 视频管线已通过 net48 回归及目标 Unity Mono 定向探针，并由 L3-A 启动接线接入编辑器；L3 第一闭环 Planet 视觉时间 ownership 已正式实机验收。L3-A 已在 Gamma/D3D11 下完成连续 RGB24 交付与像素语义验收，L3-B Controlled IO Backpressure Acceptance 已取得完整 runtime PASS（§2.2.10 / §2.2.11）；Finalizing 尚未实现，不产生可用 MP4。
+当前**已实现**路线：编辑器内原生 Camera → Renderist-owned RenderTexture → PNG 序列 / Log-only；`MasterTimeline` 控制逻辑帧。L1 FFmpeg 组件管理已完成主路径实机验收；L2 独立 FFmpeg 视频管线已通过 net48 回归及目标 Unity Mono 定向探针，并由 L3-A 启动接线接入编辑器；L3 第一闭环 Planet 视觉时间 ownership 已正式实机验收。L3-A 已在 Gamma/D3D11 下完成连续 RGB24 交付与像素语义验收，L3-B Controlled IO Backpressure Acceptance 已取得完整 runtime PASS（§2.2.10 / §2.2.11）。**L3-C MP4 Finalizing 已在 `0.3.10.4` 实现**（ownership 一次性交接 → FFmpeg FinishAsync → 独立核验 → 同卷原子发布 → `Completed`，§2.2.13）：源码闭环 + 自动化回归已完成，**尚未实机验收**，因此当前 DLL 仍不得声称"可从编辑器导出成品 MP4"。
 
 硬边界：
 
@@ -31,17 +31,17 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 产品版本 | `0.3.10.3`（第四位 revision：在 `0.3.10.2` 之上补齐**旧 LocalLow 托管安装 → 当前 Local 托管根的一次性安全迁移**（§2.3.0）；**核心 runtime upgrade A+B 已实机验收通过**。受测代码提交 `edccf02c9ff33b17d0e1cf3db536826ee3c175e0`，受测 DLL SHA256 `1F25D057194B91E929F5DD7AA327156DA7579A2C4E43377141D8E9CA47B64AC6`。前三位保持 `0.3.10`。） |
+| 产品版本 | `0.3.10.4`（第四位 revision：在 `0.3.10.3` 之上**实现 L3-C MP4 Finalizing 关口**（§2.2.13）。源码闭环 + 自动化回归已完成；**实机验收尚未执行**。前三位保持 `0.3.10`。） |
 | Phase | `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions` |
-| 版本定位 | **当前 `0.3.10.3` = `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`**：L1、L3 第一闭环、L3-A、L3-B 与 `0.3.10.2` startup readiness 均已有既有实机基线；`0.3.10.3` 相对 `0.3.10.2` **只**增加旧 LocalLow 托管安装 → 当前 Local 托管根的一次性迁移及其 cancellation 生命周期（§2.3.0），其核心真实升级场景与幂等重启已在受测提交 `edccf02…` / DLL `1F25D057…` 上实机 PASS。**Finalizing 尚未实现**，因此 `0.3.10.3` 仍不代表可导出成品 MP4。 |
+| 版本定位 | **当前 `0.3.10.4` = `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`**：L1、L3 第一闭环、L3-A、L3-B、`0.3.10.2` startup readiness 与 `0.3.10.3` LocalLow→Local 托管根迁移均已有既有实机基线；`0.3.10.4` 相对 `0.3.10.3` **只**增加 L3-C MP4 Finalizing（§2.2.13）与其异常收敛加固（Phase 1）。**该增量只有源码 + 自动化证据，未实机验收**，因此 `0.3.10.4` 的"可从编辑器导出成品 MP4"仍**待实机确认**。 |
 | 稳定实机基线 | **最新实机验收基线提升为 `0.3.10.3`**。新增证据：真实升级场景中，新 Local target 预先移走、旧 LocalLow valid install 保留；首次启动出现 `FFmpeg 旧托管安装已迁移到当前托管目录`，随后同一 initial generation 直接 `Ready/none@gen0`；第二次启动仅 `new-target-present` 且再次直接 `Ready/none@gen0`，证明迁移幂等。目录取证确认新 Local 与旧 LocalLow 的 `ffmpeg.exe` / `ffprobe.exe` SHA256 均与 manifest 一致，旧根原样保留，新/旧 `.staging` / `.downloads` 无残留文件。受测代码提交 `edccf02c9ff33b17d0e1cf3db536826ee3c175e0`，受测 DLL SHA256 `1F25D057194B91E929F5DD7AA327156DA7579A2C4E43377141D8E9CA47B64AC6`。上一稳定实机基线为 `0.3.10.2`。 |
 | L1 实机状态 | **`0.3.8.0`（DLL `AE2326D3…` / `+4d35801862d0828ea248d9934e8ebe74af11f2bb`）已通过用户最小实机验收**：UMM 显示 `0.3.8.0`、FFmpeg `Ready`、`libx264` / `mp4` / `rawvideo`、禁用并重新启用、无新可见异常。**L1 主路径已具备阶段性基线证据**；未覆盖边界（活动下载生命周期、异常网络、真实回调竞态）见 §2.7。 |
 | L2 实现状态 | **独立 L2 管线已接入 L3-A 编辑器启动路径，并已在目标 Unity Mono 完成连续帧交付**：目标 Unity Mono 正常/写入中取消定向探针 PASS（§2.8.3）；`2026-09-28` 的编辑器 MP4 失败已定位为托管 FFmpeg 位于 `LocalLow` 后无法写普通完整性级别的 `D:\Output`，并非 L2 临时文件句柄自锁（§2.2.9）。L2 写入及终态 API 未变；托管安装根已改用 `LocalApplicationData`，随后实机完成 **254/254 连续 RGB24 交付**（§2.2.10）。历史真实 fixture 结果见 §2.8，当前可选 fixture 的环境失败见 §2.2.9。 |
 | L3 视觉时间 ownership 状态 | **`0.3.9.0` 已正式实现 `PlanetVisualTimeOwnership` 并完成正式 runtime 验收（`0.3.9.1` 仅第四位收敛、实现未变；§2.2.4 / §2.2.6）**：30 FPS 与 60 FPS 均 strict acquisition 唯一命中（`before=5 / after=6 / new=1 / accepted=1`）、`creationLeadSteps=4` 成立、terminal 于 30 FPS `N=11` / 60 FPS `N=26` 一次性定位、terminal-hold 连续跨 pre-entry → gameplay、normal completion cleanup 成功、Cancel→Restart generation `3→4` 无 residual / stale 污染。**MP4 / RGB24 delivery 已由 L3-A 接入并通过实机验收（§2.2.7 / §2.2.10）**；Trail / Particle / Animator / Camera / Shader 等其它视觉系统**未纳入** ownership。pre-terminal cancel 的 `restore-original-playing` 分支仍只有静态覆盖（§2.2.6）。 |
-| L3-A 状态（`0.3.10.0` → `0.3.10.1`） | **单帧 RGB24 ownership / 分段缓冲 / 行序策略 / main-thread 交付桥 + 最小 MP4 session 启动接线 + 像素语义均已通过实机验收（Gamma/D3D11）**（§2.2.7 / §2.2.8 / §2.2.10）：主链 **254/254 连续交付** + pre-entry→gameplay handoff + canonical completion + 12 tail + Cancel→Restart 均有产物级证据；raw row order = **top-first**、byte order = **RGB**、band seam 与 **16 个 segment 边界逐字节一致**、scale=2 输出几何 = frozen output（3072×1920）。`Rgb24FrameLayout` / `Rgb24FrameBufferPool` / `Rgb24FrameTransaction` / `Rgb24MainThreadBridge` / `FfmpegRgb24FrameTransport` / `Rgb24DeliveryContext` / `OutputModePolicy` / `Mp4SessionStartup`；driver 分块读回且**不**调用 `TryWriteFrame`。输出模式由 `Settings.EditorOutputModeValue` 唯一决定（PNG / MP4 / Log-only，旧布尔仅作一次性迁移输入）。**无 Finalizing，终态按设计 fail-closed，不产出成品**；一次性 `Rgb24ValidationDump` 已删除。**唯一环境覆盖缺口：Linear（未覆盖）**；LocalLow→Local 托管根迁移见 §2.3.0。 |
+| L3-A 状态（`0.3.10.0` → `0.3.10.1`） | **单帧 RGB24 ownership / 分段缓冲 / 行序策略 / main-thread 交付桥 + 最小 MP4 session 启动接线 + 像素语义均已通过实机验收（Gamma/D3D11）**（§2.2.7 / §2.2.8 / §2.2.10）：主链 **254/254 连续交付** + pre-entry→gameplay handoff + canonical completion + 12 tail + Cancel→Restart 均有产物级证据；raw row order = **top-first**、byte order = **RGB**、band seam 与 **16 个 segment 边界逐字节一致**、scale=2 输出几何 = frozen output（3072×1920）。`Rgb24FrameLayout` / `Rgb24FrameBufferPool` / `Rgb24FrameTransaction` / `Rgb24MainThreadBridge` / `FfmpegRgb24FrameTransport` / `Rgb24DeliveryContext` / `OutputModePolicy` / `Mp4SessionStartup`；driver 分块读回且**不**调用 `TryWriteFrame`。输出模式由 `Settings.EditorOutputModeValue` 唯一决定（PNG / MP4 / Log-only，旧布尔仅作一次性迁移输入）。**`0.3.10.0`–`0.3.10.3` 无 Finalizing，终态按设计 fail-closed、不产出成品（历史事实，见 §2.2.13 起的变更）**；一次性 `Rgb24ValidationDump` 已删除。**唯一环境覆盖缺口：Linear（未覆盖）**；LocalLow→Local 托管根迁移见 §2.3.0。 |
 | L3-B 状态（`0.3.10.1`） | **Controlled IO Backpressure Acceptance — 已完成（validation-led closure，无新增 production 架构）**（§2.2.11）：在 L2 帧写入 Completion 被可控地保持 pending 时，logical frame freeze、single-in-flight、cancel during pending WriteAsync、cancellation observation 与 write terminal 可分离、frame Completion 与 CleanupTask 双屏障、residual 未清时 restart fail-closed、residual 清除后新 generation restart、lease exactly-once 释放均实机 PASS。长期合同由 `Rgb24BackpressureTests` + `PipelineBackpressureTests`（net48，含测试内专有可控 stdin 流）固定。旧的**同步**取消探针已被证明不忠实于 cancellation contract，已废弃并连同全部 TEMP instrumentation 删除。 |
-| 当前开发方向 | **`0.3.10.3 — FFmpeg Video Export Pipeline` 当前为稳定实机基线**：L3-A / L3-B、`0.3.10.2` readiness 与 `0.3.10.3` LocalLow→Local 升级迁移核心路径均已实机验收。迁移剩余未覆盖边界（冲突 fail-closed、PNG/Log-only 在受控 FFmpeg 不 Ready 下、timing-sensitive disable cancellation）见 §2.3.0，不阻塞核心升级兼容闭环。仍未覆盖 Unity Linear 色彩空间与极端资源失败路径。 |
-| 下一阶段 | **L3-C：MP4 Finalizing 关口**（FFmpeg FinishAsync / 退出码与双流 EOF 仲裁 / 独立核验 / 原子发布，仍未接入）。`0.3.10.3` 的升级迁移核心 A+B 已实机验收，不再作为 L3-C 前置阻塞。当前正式 DLL **仍不具备编辑器 MP4 成品导出能力**。 |
+| 当前开发方向 | **`0.3.10.4 — L3-C MP4 Finalizing` 已实现（源码 + 自动化），等待实机验收**：`0.3.10.3` 仍是**最新实机验收基线**（L1 / L3 第一闭环 / L3-A / L3-B / readiness / LocalLow→Local 迁移核心路径）；`0.3.10.4` 只在其上增加 Finalizing 关口，未改变既有帧事务、PNG / Log-only 与 MasterTimeline authority。仍未覆盖 Unity Linear 色彩空间与极端资源失败路径。 |
+| 下一阶段 | **L3-C 实机验收**（编辑器内 MP4 → `video.mp4` 成品 + metadata 终态证据），随后是 L3-D cancel 全矩阵与 Linear 色彩空间覆盖。`0.3.10.4` 的 Finalizing 已接入但**尚未实机验收**，因此当前正式 DLL **是否**具备编辑器 MP4 成品导出能力仍待实机确认。 |
 
 `0.3.6.2` 相对 `0.3.6.1` 的四个 hardening 点（功能语义不变，只收敛异常路径与输入判定）：
 
@@ -98,14 +98,14 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 ---
 
-### 2.1 Event-Driven A+ 视频导出设计（L3 MP4 帧事务仍待实施；L2 已实现，见 §2.8；L3 第一闭环 ownership 已实现，见 §2.2.4）
+### 2.1 Event-Driven A+ 视频导出设计（设计基线；L2 已实现见 §2.8，L3-A/B 见 §2.2.7–§2.2.11，L3-C Finalizing 见 §2.2.13）
 
 **调查依据**：本次在干净工作区核对 HEAD `01555e2300d38c938801d69d6d4387691ee96b58`、版本点、`MasterTimeline`、`DeterministicFrameScheduler`、`FrameCaptureDriver`、`OutputGeometryPolicy`、`EditorExportController`、`EditorExportSession`、Settings / GUI / preflight / metadata。以下“已确认”均指当前 `0.3.7.1` 源码静态事实，不是 MP4 实机验收。
 
 - **已确认基线**：唯一 `MasterTimeline` 用已提交的 `_outputFrameIndex` 映射输出/谱面时间；PNG / Log-only 共用一个 EOF coroutine 和 `OnCaptureResult` → 唯一 `CommitFrame`。当前捕获回调在 Unity 主线程同步执行；PNG 在 ReadPixels、GPU 状态恢复、`Texture2D.Apply`、PNG 编码及写盘成功后提交，Log-only 在帧末校验后提交。Source RT 与下采样链由冻结几何驱动；当前链只在 PNG 且 scale>1 时创建。metadata 的 `imageOutputEnabled` 是旧两模式布尔语义，不足以表示独立 MP4 类型。
 - **已确认的改造点**：`PrepareFrame` 与 `PreparePreEntryFrame` 把跨 Unity 帧 `_pendingCapture` 视为失败；视频等待 IO 时不能沿用该判断。现有捕获/进展 watchdog 均为 30 秒 wall-clock deadline；合法的编码背压须从 EOF 捕获超时中分离。`CommitFrame` 内包含 B−1 / G timeScale 转换、End Tail 完成判断，不能另设视频提交点。`EditorExportController.FinalizeFromScheduler` 当前把 scheduler Completed 直接记为 session Completed；视频须增加 FFmpeg 封装确认关口。
 - **已确定路线（用户批准，尚未实现）**：保留 PNG 与 Log-only，新增互斥的 MP4 输出类型；PNG 与 MP4 在 GUI 中平级，Log-only 可继续作为独立验证选项。一个 session 冻结输出类型、几何、FPS、编码参数及 FFmpeg 可执行文件身份。MP4 沿用现有 Camera / EOF / scale>1 降采样链，从最终 output 尺寸读回，复制到由视频管线独占的完整 CPU 帧缓冲；不编码/写入中间 PNG，不建立 Renderist 主动管理的多帧队列。主线程只做 Unity / GPU 操作和短暂交付，后台异步写 FFmpeg stdin；保持至多一帧在途，完整帧写入成功的完成事件回到 Unity 主线程并通过 session generation + pending index 校验后才调用原 `CommitFrame`。下一帧的准备和逻辑时间推进必须等待该提交；IO 慢则自然背压，不能用固定单帧时限或性能估算拒绝合法工作。等待 FFmpeg 不使用 Update / Coroutine / 固定间隔轮询；Unity 既有 Tick 仍负责既有环境与生命周期观察，不充当视频 IO 探测器。
-- **终态与隔离（L3 接线待实现）**：FFmpeg stdin 完整写入只说明帧已交付，**不是 MP4 成功**。canonical completion / End Tail 排空后关闭 stdin、异步等待进程退出及 stderr 完成，确认退出码 0 和临时 MP4 有效，再将同卷临时文件发布为最终文件，随后标记 session Completed。取消/失败时废弃当前 generation、关闭管道、终止并回收进程、清理或隔离临时文件；迟到回调不能提交新 session 帧，cleanup residual 未收敛不得重开。后台线程不接触 Unity 对象。Unity 主线程完成通知采用事件驱动调度；当前环境的合成帧 L2 后台完成经 `SynchronizationContext.Post` 回主线程已由 §2.8.3 验证，**正式 L3 帧事务回投仍待验证**，不得用定期轮询 IO 代替。
+- **终态与隔离（已由 `0.3.10.4` 的 §2.2.13 实现；本节保留为设计基线）**：FFmpeg stdin 完整写入只说明帧已交付，**不是 MP4 成功**。canonical completion / End Tail 排空后关闭 stdin、异步等待进程退出及 stderr 完成，确认退出码 0 和临时 MP4 有效，再将同卷临时文件发布为最终文件，随后标记 session Completed。取消/失败时废弃当前 generation、关闭管道、终止并回收进程、清理或隔离临时文件；迟到回调不能提交新 session 帧，cleanup residual 未收敛不得重开。后台线程不接触 Unity 对象。Unity 主线程完成通知采用事件驱动调度；当前环境的合成帧 L2 后台完成经 `SynchronizationContext.Post` 回主线程已由 §2.8.3 验证，**正式 L3 帧事务回投已由 §2.2.10 实机确认**，不得用定期轮询 IO 代替。
 - **安装路线（L1 下载代码已实现，目标游戏收尾仍未验收，见 §2.6）**：优先级为用户明确指定路径 → Renderist 私有安装 → 系统 PATH → 用户主动选择一键安装；明确指定的路径失效时报错，不能静默换用其他候选（该语义已由回归测试固定）。Gyan 9.0.2 Release Essentials ZIP 已固化为 manifest 中**唯一可安装资产**（固定 tag 地址 + 归档 SHA-256 + 归档字节数 + 内部 `ffmpeg.exe` / `ffprobe.exe` 固定 SHA-256）；BtbN 的日构建只作能力交叉验证，不把可变 `latest` 或短期保留资产当长期回退源。安装须在用户点击后经 HTTPS 获取固定资产、校验哈希、只提取白名单内容到同卷 staging、验证可执行能力并原子发布版本目录；不修改 PATH、不要求管理员权限、不覆盖现有安装、不进入三文件发布 ZIP。MP4 + H.264 / `libx264` 软件编码仍是初期建议，Gyan 构建为 GPLv3，分发与告知义务须在发布前审查。FFmpeg 缺失不阻断 PNG / Log-only。
 - **未解决 / 待验证**：RGB24 已在目标 Unity 形成 3072×1920、17,694,720 字节、17 段，frame 0 可 Commit；frame 1 两次 `write-failed` 的真实 L2 异常、FFmpeg stderr 与退出状态仍待新构建定向复测（§2.2.9）。行顺序、通道、画面、pre-entry→gameplay、Cancel→Restart、scale>1 与 Linear 色彩尚未验收；其它视觉系统的确定性仍未成立。
 
@@ -133,7 +133,7 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 ### 2.2.2 Visual Time Ownership：Planet Tween 的 Probe A/B/C 最终结论（2026-09-26～27）
 
-证据限于当前游戏 `Assembly-CSharp.dll` FileVersion `0.4.3.0`、Unity Mono / bundled DOTween、指定谱面第一砖、30/60 FPS 的 Log-only 诊断；**本节的 Probe 结论来自正式 ownership 实现之前**（正式 `PlanetVisualTimeOwnership` 已在 `0.3.9.0` 实现，见 §2.2.4；L3 MP4 帧事务仍未实施）。Probe A 四次、Probe B 一次、Probe C 三次（30 FPS 一次、60 FPS 两次）的结果由各自 `Player.log` 核实，临时诊断源码已在上一轮清理。
+证据限于当前游戏 `Assembly-CSharp.dll` FileVersion `0.4.3.0`、Unity Mono / bundled DOTween、指定谱面第一砖、30/60 FPS 的 Log-only 诊断；**本节的 Probe 结论来自正式 ownership 实现之前**（正式 `PlanetVisualTimeOwnership` 已在 `0.3.9.0` 实现，见 §2.2.4；L3 MP4 帧事务现已在 `0.3.10.0`–`0.3.10.4` 分阶段实现，见 §2.2.7–§2.2.13）。Probe A 四次、Probe B 一次、Probe C 三次（30 FPS 一次、60 FPS 两次）的结果由各自 `Player.log` 核实，临时诊断源码已在上一轮清理。
 
 - **实例获取**：Probe A/B/C 各次 `scrController.OnMusicScheduled` 局部 Prefix/Postfix `DOTween.PlayingTweens()` 差分均为 `before=5 / after=6 / new=1 / accepted=1`；目标为 `TweenerCore<float,float,FloatOptions>`，getter `<OnMusicScheduled>b__0()`、setter `<OnMusicScheduled>b__1(float)` 共享闭包，闭包 planet 属于当前 controller。当前优先生产方案是局部差分加严格闭包/ownership 过滤；数量或身份不唯一须 fail-closed，不需全局 `DOTween.To` Patch。当前 DLL 的该 `DOTween.To` 返回值后立即 `pop`，没有链式 callback 注册；真实目标创建时与两次真实 Goto 前反射检查 `onStart/onPlay/onPause/onUpdate/onStepComplete/onComplete/onRewind/onKill/onWaypointChange` 均为空（只代表受测实例）。
 - **Pause 与 Goto 运行时语义**：真实目标创建时 active/playing 且 position/fullPosition 均为 0；Postfix 实例级 Pause 后，Unity 原生 Update 继续运行时该目标仍 active、paused、position=0，阻止了这个已识别 Tween 的自动 scaled-delta aging。synthetic float OutQuad Tween 上，`Goto(0,false)` 执行 setter/OnUpdate；`Goto(0.25,false)` 可正向定位，`Goto(duration=0.5,false)` 触发一次 OnComplete 且默认 autoKill=true 时仍 active/paused；可反向定位，回到 0 触发一次 OnRewind，重复回 0 不重复触发，显式 Kill 才 deactive/触发 OnKill。真实目标只在 position < duration 的 frame 0/1 做过 Goto，**duration 完成路径在 Probe 阶段尚未实测**——该路径已由正式实现在 `0.3.9.0` 实机覆盖（§2.2.6）；以上语义不得推广至其它 DOTween 版本。
@@ -213,7 +213,7 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 **仍未独立取得 runtime 证据的分支**：**pre-terminal cancel → 恢复 originalPlaying**。最新 Cancel session 是在 `terminal-positioned` **之后**取消，因此已覆盖的是 generation 失效、Patch 精确撤销、residual cleanup、terminal 实例不强行 Play 与同进程 restart。未 terminal 的 active owned Tween 被取消时走 `TryRestoreOriginalPlaying`：静态复审确认其条件为 `originalPlaying=true` **且** 同一 owned instance **且** 同一 controller/session **且** `active=true` **且** `terminalPositioned=false`，全部满足才用最小操作 `Play()`（不 Kill / 不 Restart / 不 Rewind / 不改 position），恢复后再校验 `IsPlaying()`。该分支为**静态覆盖，尚无独立 runtime 证据**，不得声称已实机验证；也未为此新建 Probe 或要求用户重测。
 
-**仍未成立的整体结论**：整体视觉确定性尚未成立；Trail / Particle / Animator / Camera / Shader / effect manager 等**未纳入** ownership；MP4 / RGB24 **尚未接入**；real FFmpeg fixture 本轮因环境 `Permission denied` 未复现，正式 release 前仍需在正常环境恢复真实 fixture 回归（§12.4）。
+**仍未成立的整体结论**：整体视觉确定性尚未成立；Trail / Particle / Animator / Camera / Shader / effect manager 等**未纳入** ownership。（历史注记：当时 MP4 / RGB24 尚未接入，现已由 §2.2.7–§2.2.11 与 §2.2.13 实现；real FFmpeg fixture 的 `Permission denied` 环境问题已由 §2.3.0 的托管根迁移解决。）
 
 ### 2.2.7 L3-A 单帧 RGB24 ownership 与交付事务（`0.3.10.0`；已实现，启动接线见 §2.2.8）
 
@@ -245,7 +245,7 @@ GUI 用户体验、L3-B 背压实机验收、L3-C 短谱面成片、L3-D cancel 
 - **启动顺序（严格在 `editor.Play()` 之前；顺序以 `0.3.10.2` 的实际代码为准）**：`Start()` 的既有 preflight 与 residual / controller gate → `StartSession`：**解析输出模式** → **MP4 readiness gate**（`0.3.10.2` 新增，见 §2.2.12；非 MP4 模式恒通过）→ 创建 session 目录 → 写初始 metadata → 冻结 geometry / FPS / 编码参数 → L1 Ready 身份（`FfmpegVideoIdentity.TryFreeze`）→ 主线程 `SynchronizationContext` 捕获 → 构造**唯一** L2 `FfmpegVideoPipeline` → 建立 `Rgb24DeliveryContext` → `Start` pipeline → `ArmRgb24Delivery` → 才进入 `TryStart` / `editor.Play`。**context 刻意在 Start 之前建立**：这样 Start 之后任何失败都能经该 context 既有的 Cancel / CleanupTask 收敛，**绝不留下"已启动但无 owner"的编码进程**。readiness gate 先于目录创建与 metadata：不允许启动时**不产生**任何 session 副作用。
 - **失败收敛**：任一失败都不进入新的 Play / capture；已建立的 context 经既有 `TryStopAndDrain` 收敛，未收敛时保留为 `EditorExportController._startupContext`（`IsBusy` 计入 + `Tick` 非阻塞收敛 + residual gate 阻止重开）。**没有第二套终态系统**、没有第二 process owner。
 - **输出路径**：沿用既有 session 目录体系，本 session 只有一个 `video.mp4` 目标；已存在的最终目标在**启动进程之前**即拒绝（`final-video-exists`），绝不静默覆盖；临时文件仍由 L2 ownership 管理。
-- **终态验证边界（无 L3-C Finalizing）**：`Mp4TerminalBoundaryPolicy` 明确 MP4 session **永远**不能映射为 `Completed`。到达既有导出终态时 **fail-closed**：session 记 `Failed`、`stopReason = l3a-validation-boundary:no-finalizing`，StateDetail 明确说明未执行 FFmpeg Finish / 核验 / 发布、没有可用成品，并写警告日志。**绝不**把 L2 的临时产物呈现为成功 MP4；metadata 记 `finalizingNotImplemented=true`。
+- **终态验证边界（`0.3.10.0`–`0.3.10.3` 的历史行为；`0.3.10.4` 起已由 §2.2.13 的 Finalizing 取代）**：`Mp4TerminalBoundaryPolicy` 明确 MP4 session **不能**把 scheduler 终态**直接**映射为 `Completed`。在尚无 Finalizing 的构建里，到达既有导出终态时 **fail-closed**：session 记 `Failed`、`stopReason = l3a-validation-boundary:no-finalizing`；该常量与文案已在 `0.3.10.4` 删除，策略只剩"MP4 必须过 Finalizing 关口"这一条语义。**绝不**把 L2 的临时产物呈现为成功 MP4；旧构建的 metadata 记 `finalizingNotImplemented=true`（`0.3.10.4` 起恒为 `false`）。
 - **metadata 新增**：`outputMode`、`finalVideoPath`、`ffmpegExecutablePath`、`ffmpegExecutableSha256`、`ffmpegVersionLine`、`mp4Crf`、`mp4Preset`、`mp4InputPixelFormat`（恒 `rgb24`）、`mp4OutputPixelFormatPolicy`、`finalizingNotImplemented`。
 - **独立回归（本轮实测）**：`tests/run-ffmpeg-tests.ps1` → **214 passed / 0 failed / 12 skipped**（基线 `194/0/12`；新增 20 项 `mp4` 用例全部通过；12 个 skip 仍是既有真实 FFmpeg fixture 用例）。覆盖旧设置迁移、非法模式 fail-closed、显式模式优先、仅 MP4 走帧事务、几何/FPS/CRF/preset 结构性失败、非 Ready 报告在 identity gate fail-closed、最终路径冻结与不覆盖、缺目录拒绝、pipeline create / context / start 失败均不启动进程且**不丢 ownership**、成功 Bind 的几何与精确 long 长度、终态边界不映射 Completed，以及生产接线源码契约（冻结模式 gate 在 Play 之前、freeze → bind → Arm 顺序、`IsBusy` 与 `Tick` 收敛、无第二 process owner、单模式 authority）。
 - **未验收（不得误读）**：此前为**独立 net48 回归 + 源码契约**证据；首轮目标 Unity 证据见 §2.2.9。目标 Unity Mono 的分块读回语义、RGB24 channel order、**row orientation 定向对照**、band 读回、`SynchronizationContext.Post` 真实回投、pre-entry → gameplay handoff、single in-flight、Cancel → Restart residual、scale>1 几何、以及 PNG / Log-only smoke 中，**Gamma/D3D11 的 PNG 与 Log-only 完整运行已确认**，其余仍待实机确认。`0.3.10.0` 仍**不能**完成一次成功的 MP4 导出（本轮没有 Finalizing）。
@@ -348,7 +348,7 @@ GUI 用户体验、L3-B 背压实机验收、L3-C 短谱面成片、L3-D cancel 
 - **Ready 下 MP4 startup**：实际进入既有 L3-A 流程（输出 `MP4 FFmpeg executable=…`），RGB24 frame transaction 正常，scheduler 到达 canonical-completion-tail-drained / `Completed`，controller 终态仍为 `state=Failed` / `stopReason=l3a-validation-boundary:no-finalizing` —— 这是**既有 L3-A validation boundary 的设计内结果，不是 readiness failure**。
 - **通用 preflight 与 FFmpeg 解耦**：FFmpeg 处于 `Failed/component-Invalid` 期间，日志仍出现 `EditorExportPreflight: Ready / None`。这**符合当前设计**，不是缺陷：通用 `EditorExportPreflight` 不检查 FFmpeg，PNG / Log-only 不应被 readiness 污染，MP4 走独立的 startup readiness gate。
 
-**仍未实机覆盖的边界（不得记为已验收）**：① 组件 GUI 的“重新检查 FFmpeg 组件”按钮（`user-recheck`）本轮**没有单独的实机点击证据** —— 本轮的恢复是由 `explicit-path-changed` 自动重查完成的；该路径在 `0.3.10.2` 未被修改，由自动化契约覆盖。② **inspection task fault**（后台检查任务自身抛异常 → `Failed/inspection-faulted`）的**真实运行时路径**仍未实机覆盖；本轮实机得到的是报告级 `component-Invalid`，二者不是同一状态。③ **MP4 Finalizing 仍未实现**：`l3a-validation-boundary:no-finalizing` 是当前设计终态，`0.3.10.2` 仍不产出可用 MP4 成品。
+**仍未实机覆盖的边界（不得记为已验收）**：① 组件 GUI 的“重新检查 FFmpeg 组件”按钮（`user-recheck`）本轮**没有单独的实机点击证据** —— 本轮的恢复是由 `explicit-path-changed` 自动重查完成的；该路径在 `0.3.10.2` 未被修改，由自动化契约覆盖。② **inspection task fault**（后台检查任务自身抛异常 → `Failed/inspection-faulted`）的**真实运行时路径**仍未实机覆盖；本轮实机得到的是报告级 `component-Invalid`，二者不是同一状态。③ **MP4 Finalizing 在 `0.3.10.2` 时仍未实现**（当时的 `l3a-validation-boundary:no-finalizing` 是设计终态）；该项已由 `0.3.10.4` 的 §2.2.13 实现取代，但 `0.3.10.4` 自身**尚未实机验收**。
 
 ### 2.3.0 FFmpeg 托管根迁移（`0.3.10.3` **代码、自动化与核心 runtime upgrade A+B 已完成**）
 
@@ -378,7 +378,87 @@ GUI 用户体验、L3-B 背压实机验收、L3-C 短谱面成片、L3-D cancel 
 3. **冲突 fail-closed — 未实机覆盖**：自动化已覆盖；真实游戏内“新根无效 + 旧根 valid”尚未单独制造场景。
 4. **PNG / Log-only 与 explicit/PATH 不回归 — 本轮未新增实机覆盖**：自动化已有覆盖；本轮核心 A+B 未专门制造 FFmpeg 不 Ready 场景。
 5. **清理边界 — 核心部分 PASS**：旧 LocalLow 根与旧安装未删除；新/旧 `.staging` / `.downloads` 当前均无残留文件；本轮未清理旧根。
-6. **取消 lifecycle — 未实机稳定命中**：timing-sensitive disable/cancel 仍以自动化为主；未为触发而加入测试 Hook 或修改 production 代码。
+6. **取消 lifecycle — 未实机稳定命中**：timing-sensitive disable/cancel 仍以自动化为主；未为触发而加入测试钩子或修改 production 代码。
+
+### 2.2.13 L3-C MP4 Finalizing（`0.3.10.4`；**源码 + 自动化闭环完成，未实机验收**）
+
+**范围**：把既有 L3 MP4 帧交付流程安全接入 L2 FinishAsync，使完整逻辑帧交付后能够完成
+`CommitFrame → canonical completion + End Tail → context ownership transfer → FFmpeg Finalizing → verification → atomic publish → Completed`。
+**未**新增 Harmony Patch、**未**新增 ADOFAI 内部 API / 程序集引用、**未**重设计 L3-A / L3-B 帧事务、**未**改变 `MasterTimeline` authority、**未**改变 PNG / Log-only 行为、**未**新增帧数 / 分辨率 / FPS / 时长或 wall-clock 上限。
+
+**修复的缺陷（`0.3.10.3` 及之前的静态事实）**：scheduler 的正常完成路径在 `RestoreAll` 中无条件调用
+`_rgb24Delivery.TryStopAndDrain(...)` → L2 `Cancel()`，即**在全部帧成功交付后主动取消编码进程并删除临时产物**；
+controller 随后按 L3-A 验证边界把 MP4 终态强制记为 `Failed(l3a-validation-boundary:no-finalizing)`。
+因此 `0.3.10.3` 永远不可能产出 MP4 成品。
+
+- **Phase 1 —— 异常收敛加固（L2）**：终态收敛任务改为**永不 fault**。`FfmpegVideoPipeline` 的 finish 与
+  cancel/failure 收敛分别经 `RunFinalizeGuarded` / `RunConvergenceGuarded` 运行；逃逸异常一律翻译成一次
+  **仍执行唯一 Teardown** 的 `Failed` 终态（`finalize-exception` / `convergence-exception`），最坏情况用
+  不触 I/O 的 failsafe outcome 并如实置 `ResidualOwnership=true`。理由：ownership 的唯一收敛判据是
+  `CleanupTask`，faulted Task 会让"是否已回收"永远不可判定，调用方只能永久 fail-closed，资源再无回收路径。
+  `FfmpegVideoVerifier.VerifyAsync` 同样改为永不 fault（`verify-harness-exception`），并把 `#dimensions` 头与
+  Stream 行的 `int.Parse` 换成 `TryParse`（病态输入不得变成异常）。
+- **Phase 2 —— completed context 一次性交接**：`ProcessStop` 先用**同一个** `MapTerminal(stopEvent)` 判定
+  `completionTerminal`；`RestoreAll(bool allowRgb24CompletionHandoff, …)` 只在 canonical completion 路径
+  **跳过**取消，其余终态保持原取消路径。交接**只发生在 Unity cleanup 全部成功之后**：`RestoreAll` 返回 false
+  或抛异常 ⇒ `RevokeRgb24CompletionHandoff(...)` 回原取消路径；终态不是 `Completed` 同样撤销。
+  `TryDetachRgb24CompletionHandoff` 另有三条硬前提（存在 context、无 frame ownership、未被取消），
+  且**绝不**调用 `RequestStop` / `Cancel`。交接槽 `_rgb24CompletionHandoff` 计入 residual ownership 与
+  `HasPendingRgb24Cleanup`，因此未取走前禁止重开；撤销后的 context 由 `TryConvergeRevokedRgb24Handoff`
+  在既有 residual 泵上继续收敛（**不丢 ownership**），且**不可再被取走**。
+- **Phase 3 —— controller Finalizing ownership**：`EditorExportController` 在 scheduler `Completed` + MP4 模式时
+  **绝不**直接映射 `Completed`，而是 `TryTakeCompletedRgb24Delivery`（一次性）→
+  `Rgb24DeliveryContext.TryBeginFinalizing()`（主线程、一次性、要求无 frame ownership、要求 L2 已建立收敛任务）
+  → 等待 `FinishAsync` 完成通知。`EditorExportState.Finalizing` 是**session / UI 投影**，不复制 L2 pipeline 状态；
+  观察在 `Tick` 中**非阻塞**进行（`if (!task.IsCompleted) return;`），**没有 wall-clock deadline**（合法封装与
+  核验可以任意长）。期间 `IsBusy` 恒为真（**禁止新 session**），但 `IsConvergingTerminalResources` 为 false，
+  因此 GUI 保持可操作的 Stop；`Stop` / `Cancel`（含 `mod-disabled` / `mod-unload`）在该状态只**请求**取消，
+  L2 保证取消后绝不发布。判决应用后槽位继续保留到 frame Completion 与 pipeline CleanupTask 都收敛。
+- **成功判定（fail-closed）**：新增 Unity-free `Mp4FinalizationPolicy`，把 L2 outcome 映射为
+  `Published / Failed / Cancelled`，并且**只有**同时满足 `State == Completed` + `Verification != null && IsVerified`
+  - 最终路径非空且与 session 冻结路径一致，才可能 `Published`（`stopReason = mp4-published-verified`）。
+  `Completed` 但缺少核验证据、路径不一致、faulted/cancelled Task、null outcome 一律 `Failed`。
+  **未验证的 MP4 绝不允许成为成功产物；取消后绝不允许发布。**
+- **同一个 RGB24 context / 唯一 L2 管线**：`IRgb24PipelineLifetime.BeginFinalize()` →
+  `FfmpegRgb24FrameTransport.BeginFinalize()` → 既有 `FfmpegVideoPipeline.FinishAsync()`，**不**创建第二个
+  FFmpeg pipeline 或第二个进程，也未新增第二套完成协议。`TryBeginFinalizing` 在 L2 拒绝受理却**没有**
+  建立收敛任务时（`not-running` / `pipe-poisoned` / `write-in-flight`）主动请求取消，避免"既不能 Finalize
+  也无法回收"的悬空 ownership。controller 侧另有 `RevokeAbandonedFinalizingHandoff`：交接只可能被同一 Tick 内的
+  `FinalizeFromScheduler` 取走，若下一次 Tick 开始时它仍在，说明没有消费方，立即回取消路径（自愈、绝不发布）。
+- **metadata 投影（新增键）**：`mp4FinalizingState`（`completed` / `failed` / `cancelled`）、
+  `mp4FinalizingErrorCode`、`mp4FinalizingErrorDetail`、`mp4EncoderExitCode`、`mp4DeliveredFrameCount`、
+  `mp4VerificationStatus`、`mp4VerifiedFrameCount`、`mp4VerifiedPacketCount`、`mp4VerifiedCodec`、
+  `mp4VerifiedPixelFormat`、`mp4FinalizingResidual`、`mp4TempFileRemoved`。
+  `finalizingNotImplemented` 语义收窄为"该构建根本没有 Finalizing 关口"：`0.3.10.4` 起恒为 `false`，
+  它**不是**本次 Finalizing 的结果判据。终止分类新增 `finalize-failure`。
+- **自动验证（`0.3.10.4` 最终实测）**：`tests/run-ffmpeg-tests.ps1` 带真实 Gyan 9.0.2 fixture 为
+  **330 passed / 0 failed / 0 skipped**（无 fixture 为 315/0/15；`0.3.10.3` 基线为 304/0/0）。
+  `Mp4FinalizingTests` 共 **26 项**，覆盖：判决策略（已验证/未验证/路径不一致/取消/失败/null/faulted/residual）、
+  一次性与主线程闸门、被拒绝时回取消路径、frame ownership 与 stopping 门禁、**Finalizing 前的帧数一致性关口**；
+  **跨层端到端**（真实 `FfmpegVideoPipeline` + 假进程真实子进程 + 真实 `Rgb24DeliveryContext` / transaction /
+  transport）：交付→交接→发布且 temp 清除、核验失败不发布且删除 temp、Finalizing 中取消不发布、收敛后无 residual；
+  **真实 FFmpeg fixture** 端到端（真编码 + 真核验经交付 context 发布 `video.mp4`）；以及 scheduler 交接顺序 /
+  controller ownership / 无第二 process owner / 复用既有 FinishAsync 的**源码契约**。
+- **定向 hardening 轮（同一 `0.3.10.4`，见 §12.9 的构建身份）**：审查发现并修复了 5 处异常收敛 / 交接边界，
+  其中 1 处（A 的同类缺陷）由新增故障注入测试**直接实测复现**（`Cancel` 的收敛任务原本可以 fault）：
+  ① `RunFinalizeGuarded` 第一次 catch 后的 `ConvergeByState()` 未被封闭 ⇒ 改为经
+  `RunConvergenceGuarded`（复用同一 failsafe）；② `Cancel()` 的收敛任务**未**经异常闭合包装
+  （`Task.Run(() => ConvergeCancel())`）⇒ 同样改为 `RunConvergenceGuarded`，这是本轮唯一被实测复现的 fault 路径；
+  ③ 核验 `RunPass` 的初始化中途失败会丢弃已创建的 exit task / 两个 pump，且 `finally` 的 Kill + Dispose
+  被直接当作收敛 ⇒ 新增唯一回收路径 `ReapPass`（等待真实退出与已启动的排空任务、无法确认时记
+  `ResidualProcessOwnership`，并新增 `FfmpegVideoVerificationResult.ResidualProcessOwnership/ResidualDetail`，
+  由 L2 并入 outcome 的 residual）；进程对象不可用时**立即**停止等待以免阻塞收敛线程；
+  ④ scheduler 在 Unity cleanup 失败时只撤销空的交接槽、不主动取消尚未交接的 `_rgb24Delivery`
+  ⇒ 新增 `RevokeRgb24CompletionForCleanupFailure`（三个回退分支立即 `TryStopAndDrain`，不再依赖下一次 Tick）；
+  ⑤ 进入 `FinishAsync` 前新增帧数一致性关口（`DeliveredFrameCount == LogicalFrameCount > 0`，
+  由 `IRgb24PipelineLifetime.DeliveredFrameCount` 只读交叉核对，**不新增计数 authority**）；
+  ⑥ `mp4FinalizingResidual` 不再被无条件写成 `false`，改为 `CurrentFinalizingResidual`（L2 outcome **或**
+  context 仍持有的 ownership），且收敛成功后才把先前快照改正为 `false` 并重写 metadata。
+  为让上述不可复现的逃逸异常可被确定性验证，新增**回归测试专用故障注入缝**
+  `FfmpegVideoPipelineOptions.FaultInjection`（`finalize` / `teardown` 两个注入点，生产恒为 null，
+  与既有 `StreamWrapper` / `WriteCommitBarrier` 同一约定）。
+- **未验收（不得误读）**：以上全部为**独立 net48 回归 + 源码契约**证据，**没有**在目标 Unity Mono 中执行过
+  任何一次真实 Finalizing。待实机确认项见 §11 第 11 项；整体视觉确定性仍只覆盖 Planet 视觉时间 ownership。
 
 ### 2.3 FFmpeg 构建、安装与独立进程取证（2026-09-23；未接入产品）
 
@@ -662,7 +742,7 @@ scrController.OnLandOnPortal Postfix 观察到完成请求
 = 当前 PNG / Log-only 导出可 Completed
 ```
 
-MP4 的计划语义另有 `Finalizing`：所有逻辑帧完成后仍需等待 FFmpeg 正常封装与最终文件发布（§2.1）；这**尚未实现**。
+MP4 另有 `Finalizing` 阶段：所有逻辑帧完成后仍需等待 FFmpeg 正常封装、独立核验与最终文件发布（§2.1）；该关口已在 `0.3.10.4` 实现（§2.2.13），但**尚未实机验收**。
 
 最后一个 floor 被 `Hit(true)` 不等于完成；不能用 floor index / hit count 推导完成。
 
@@ -833,7 +913,8 @@ Seconds / Beats 换算得到的 raw frame count 属于计算结果，不等同�
 - `EndTailPolicy`：Frames / Seconds / Beats 校验与 output-frame 解析。
 - `OutputFpsPolicy`：正整数 Output FPS 与 targetFrameRate 安全派生。
 - `SafetyFrameLimitPolicy`：unbounded / explicit frame limit 的唯一 policy。
-- `EditorExportController` / `EditorExportSession`：preflight、session、metadata、终态；`StartSession` 在解析输出模式后、创建 session 目录与写 metadata **之前**执行 MP4 readiness 门禁。
+- `EditorExportController` / `EditorExportSession`：preflight、session、metadata、终态；`StartSession` 在解析输出模式后、创建 session 目录与写 metadata **之前**执行 MP4 readiness 门禁。**L3-C 起**：controller 还持有 Finalizing 槽（scheduler 一次性交接过来的同一个 RGB24 context），在 `Tick` 中非阻塞观察 L2 `FinishAsync` 的完成通知，并按判决把 session 记为 `Completed`（仅 `mp4-published-verified`）/ `Cancelled` / `Failed`；Finalizing 期间 `IsBusy` 为真（禁止新 session）但 Stop 仍可取消。见 §2.2.13。
+- `Mp4FinalizationPolicy`（`Export/Mp4FinalizationPolicy.cs`，Unity-free）：把 L2 `FfmpegVideoOutcome` 映射为 session 判决（Published / Failed / Cancelled）的唯一单点；**只有** `Completed` + 核验通过 + 最终路径一致才可能 Published，未核验产物一律 Failed。见 §2.2.13。
 - `FfmpegReadinessTracker`（`Ffmpeg/FfmpegReadiness.cs`）：进程内 FFmpeg readiness（Preparing / Ready / Failed）的唯一 authority，用 generation 绑定“报告是否仍代表当前输入”；`Mp4SessionStartup.TryCheckReadiness` 是 GUI 与 controller 共用的唯一 MP4 启动判定（非 MP4 模式恒允许）。见 §2.2.12。
 - `EditorGameReflection`：当前 ADOFAI 内部 API 的运行时反射层。
 
@@ -845,11 +926,12 @@ Seconds / Beats 换算得到的 raw frame count 属于计算结果，不等同�
 
 | 状态 | 条件 | terminationKind |
 | --- | --- | --- |
-| Completed | canonical completion + tail 排空 | `canonical-completion` |
-| Cancelled | Stop / Esc / leave editor / mod disabled | `user-cancel` |
+| Completed | canonical completion + tail 排空（MP4 还需 §2.2.13 的 Finalizing 判决为 Published） | `canonical-completion` |
+| Cancelled | Stop / Esc / leave editor / mod disabled（含 Finalizing 中取消） | `user-cancel` |
 | Failed | 显式 safety frame limit | `safety-limit` |
 | Failed | initialization/capture/progress watchdog | `watchdog` |
 | Failed | 帧末事务 / PNG 请求 / 写盘 | `capture-failure` |
+| Failed | MP4 Finalizing 失败（未核验 / 核验失败 / 发布失败 / 完成关口无法开始） | `finalize-failure` |
 | Failed | API/lifecycle/cleanup | `lifecycle-failure` |
 
 取消时允许 `captureRequestCount = capturedFrameCount + 1`：一个已请求但未 commit 的事务可以被取消，不能为了计数相等而伪 commit。
@@ -880,7 +962,7 @@ Seconds / Beats 换算得到的 raw frame count 属于计算结果，不等同�
 - PNG 模式的写盘失败原因不变（`write-png-failed`）；log-only 的帧末事务失败为 `frame-transaction-failed`，不会被误报为 `write-png-failed`。
 - metadata 的 `mode`：PNG 为 `editor-export-png-sequence`（既有值不变），log-only 为 `editor-export-log-only`；新增 `imageOutputEnabled`。旧字段全部保留。
 
-metadata 记录：版本/phase/mode/imageOutputEnabled、state/detail/reason/kind、completion signal/index、output FPS、pitch、End Tail 输入与解析结果、safety policy、capture source/尺寸、上述全部逻辑与 PNG 计数。
+metadata 记录：版本/phase/mode/imageOutputEnabled、state/detail/reason/kind、completion signal/index、output FPS、pitch、End Tail 输入与解析结果、safety policy、capture source/尺寸、上述全部逻辑与 PNG 计数；MP4 模式另记 `outputMode` / `finalVideoPath` / FFmpeg 身份与编码参数 / `finalizingNotImplemented`（`0.3.10.4` 起恒 `false`）与 §2.2.13 的 12 个 `mp4*` Finalizing 投影字段。
 
 ### 8.2 输出几何与运行时 inventory（0.3.7.0 新增字段）
 
@@ -1244,7 +1326,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 > 此处只列**当前未收敛事项**；已完成的 End Tail、pre-entry、Log-only、Custom Resolution 和 Supersampling 不再重复充当待办。历史验收数据见 §9，实施不变量见 §3–§8，当前 ADOFAI 内部事实见 §10。
 
-1. **`0.3.10.3` 视频导出**：L1、L3 第一闭环、L3-A、L3-B 与 `0.3.10.2` startup readiness 均已形成既有实机基线；`0.3.10.3` 新增的 LocalLow→Local 托管根升级迁移也已完成核心 A+B runtime acceptance（§2.3.0），因此最新稳定实机基线提升到 `0.3.10.3`。受测代码提交 `edccf02…` / DLL `1F25D057…`。当前独立 net48 回归仍为 **304/0/0**（带真实 Gyan 9.0.2 fixture；无 fixture 290/0/14）。**仍不能从编辑器导出成品 MP4**：L3-C Finalizing 关口尚未实现；整体视觉确定性也仍未扩展到 Trail / Particle / Animator / Camera / Shader 等其它漂移来源。下一独立任务为 L3-C。
+1. **`0.3.10.4` 视频导出（L3-C Finalizing 已实现，待实机验收）**：L1、L3 第一闭环、L3-A、L3-B、`0.3.10.2` startup readiness 与 `0.3.10.3` LocalLow→Local 迁移均有既有实机基线，**最新稳定实机基线仍为 `0.3.10.3`**（受测提交 `edccf02…` / DLL `1F25D057…`）。`0.3.10.4` 只增加 L3-C MP4 Finalizing（§2.2.13），其证据目前**只有独立 net48 回归（带真实 Gyan 9.0.2 fixture 322/0/0）+ 源码契约**。因此：**编辑器内能否真正产出可用 MP4 成品仍未实机确认**；整体视觉确定性也仍未扩展到 Trail / Particle / Animator / Camera / Shader 等其它漂移来源。下一独立任务即 §11 第 11 项的实机验收。
 9. **L3-A 像素语义验收（已完成，全部 PASS）**：Gamma/D3D11 下 raw row orientation = **top-first**、`Rgb24RowOrderPolicy` **runtime verified 正确**、RGB byte order **PASS**、band seam **PASS**、segment stitching **PASS**、scale=2 downsample/output geometry **PASS**；主链（254/254 连续交付、pre-entry→gameplay handoff、canonical completion + 12 tail、Cancel→Restart）此前已由产物级证据确认。一次性 raw dump **已完全删除**。**唯一环境覆盖缺口是 Linear**（未切换、不阻塞）。详见 §2.2.10。
 10. **FFmpeg 托管根迁移（`0.3.10.3` 核心 runtime acceptance 已完成）**：见 §2.3.0。真实游戏内 A（首次升级迁移）+ B（幂等重启）均 PASS；最新稳定实机基线已提升到 `0.3.10.3`。仍未实机覆盖冲突 fail-closed、受控 FFmpeg 不 Ready 下 PNG/Log-only gate、timing-sensitive disable cancellation；这些是边界覆盖缺口，不再阻塞核心升级兼容闭环。
 2. **Linear 与极端 GPU 资源失败**：Supersampling 已在 Gamma / Direct3D11 的所述范围实机通过，**Linear 色彩空间从未实机覆盖**；接近硬件极限的 RT 分配与 GPU 状态恢复故障仍只有 stub / 静态证据。详见 §9.7.3。
@@ -1254,12 +1336,14 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 6. **Camera aspect 边界**：当前受测环境的三台 baseline 均一致（1.6）；Unity 自动 aspect 对屏幕 / camRT 的内部来源未确认。若游戏合法出现三台 Camera 不同 aspect，现有 baseline-incompatible gate 可能误拒绝；不得将该理论风险记成已经发生（§9.1、§10.1）。
 7. **原生 lifecycle / 音频遗留**：`lifecycleSongPosition` 与 raw DSP 非视觉 authority；count-in 文本/SFX 和未来音频同步仍待独立调查（§10.5）。曾见 `Coroutine couldn't be started ... Conductor is inactive` 的 native Esc teardown 警告，尚未做 disable-mod A/B。
 8. **工具债务**：`set-version.ps1` 自 `0.3.9.0` 起已原子同步全部**权威**版本 / Phase 字符串（含 `EditorExportSession.PhaseLabel` 与 `ModEntry` 标识性 `/// Phase` 注释），因此常规版本 / Phase 切换**不再需要**人工核查这两处。但它是**权威载体同步器，不是全仓库 phase 同步器**：功能溯源注释（如 `// ---- Phase 3.8.0: FFmpeg 组件管理 …`）与其它类的历史 phase 注释刻意不改。`0.3.10.3` 修复了该脚本残留断言的一处误报：行首 `// <四位版本>：` 形式的功能溯源注释（`0.3.10.2` 周期引入，例如 `// 0.3.10.2：readiness 是唯一 authority`）此前会被当成权威残留，使此后任何一次递增都**永久失败**；现在残留扫描按同一意图忽略这类行，而每个权威载体的新值仍逐个正向核对。该模式刻意只用 ASCII（`\uFF1A` 表示全角冒号），因为在未安装 PowerShell 7 的机器上脚本由 Windows PowerShell 5.1 运行，BOM-less UTF-8 脚本里的非 ASCII **正则字面量**会被按系统代码页误读。仅当后续新增权威版本 / Phase 载体（例如新的版本常量或启动横幅）时才需要扩展该脚本；不阻塞当前稳定基线。
+   **`0.3.10.4` 周期新增的一条边界事实（供后续版本递增参考）**：该残留扫描只覆盖脚本实际写入的四个载体（`Info.json` / csproj / `ModEntry.cs` / `EditorExportSession.cs`），**不是**全仓库扫描；但任一被写入文件里出现裸的旧四位版本号（含 XML doc 注释中的 `` `0.3.10.3` ``）仍会让整次递增**回滚并失败**。写版本区间说明时应改用"Finalizing 实现之前的构建/之后的构建"这类措辞，或使用行首 `// <四位版本>：` 溯源注释形式。
+11. **L3-C 实机验收清单（`0.3.10.4`；尚未执行）**：① 编辑器内 MP4 session 走完 254 帧 + canonical completion + End Tail 后**不再**记为 `l3a-validation-boundary:no-finalizing`，而是进入 `Finalizing` 并在完成后得到 `state=Completed` / `stopReason=mp4-published-verified`；② session 目录出现**已被核验**的 `video.mp4`（非零字节、可解码），且临时产物已清除、无 `.mp4.partial` 残留；③ metadata 的 `mp4FinalizingState=completed`、`mp4VerificationStatus=Verified`、`mp4VerifiedFrameCount == mp4DeliveredFrameCount == logicalFrameCount`、`mp4EncoderExitCode=0`、`mp4FinalizingResidual=false`；④ Finalizing 期间 GUI 显示"正在完成 MP4 封装与核验…"且 Stop 仍可操作，Start 被拒绝；⑤ Finalizing 中按下 Stop ⇒ session `Cancelled`、**没有** `video.mp4`、无残留进程；⑥ Finalizing 完成后下一次 Start 正常进入（terminal re-arm 语义不变）；⑦ PNG 与 Log-only 行为完全不变（回归 smoke）。
 
 ---
 
 ## 12. 发布与部署
 
-- 当前产品版本 **`0.3.10.3`** / Phase **`Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`**。L1、L3 第一闭环、L3-A、L3-B 与 `0.3.10.2` startup readiness 均已有实机基线；`0.3.10.3` 的旧 LocalLow → 当前 Local 托管根一次性迁移也已完成核心 A+B 实机验收（§2.3.0），**最新稳定实机基线为 `0.3.10.3`**。Finalizing 未实现，编辑器仍不能产出可用 MP4。引用构建必须同时给出 DLL SHA256 或 `+hash`。
+- 当前产品版本 **`0.3.10.4`** / Phase **`Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`**。L1、L3 第一闭环、L3-A、L3-B、`0.3.10.2` startup readiness 与 `0.3.10.3` LocalLow→Local 迁移均已有实机基线，**最新稳定实机基线为 `0.3.10.3`**；`0.3.10.4` 新增的 L3-C MP4 Finalizing（§2.2.13）**只有源码 + 自动化证据**，实机验收清单见 §11 第 11 项。引用构建必须同时给出 DLL SHA256 或 `+hash`。
 - `0.3.10.3` **实机验收构建身份**：受测代码提交 `edccf02c9ff33b17d0e1cf3db536826ee3c175e0`；`FileVersion = 0.3.10.3`；`ProductVersion = 0.3.10.3+edccf02c9ff33b17d0e1cf3db536826ee3c175e0`；受测 DLL SHA256 `1F25D057194B91E929F5DD7AA327156DA7579A2C4E43377141D8E9CA47B64AC6`。该构建在用户真实 LocalLow→Local 升级场景与幂等重启中 PASS。Release Rebuild 0 warning / 0 error；发布包仍严格只有 `Info.json` / `ADOFAI.Renderist.dll` / `LICENSE`；部署 DLL 与 `bin\Release` 逐字节一致。
 - §12 固化的是**实际受测代码构建**而不是后续文档提交自身：runtime evidence 绑定 `edccf02…` / DLL `1F25D057…`。后续仅文档提交会使仓库 HEAD 前移，但不得把该 docs-only HEAD 冒充受测 DLL 的 `ProductVersion`。
 - 本轮（`0.3.10.3`）改动文件：新增 `src/ADOFAI.Renderist/Ffmpeg/FfmpegLegacyRootMigration.cs`（迁移）、`src/ADOFAI.Renderist/Ffmpeg/FfmpegInspectionSequence.cs`（**唯一的**检查序列 + 每代 `FfmpegInspectionCancellation`）、`tests/.../FfmpegMigrationTests.cs`、`tests/.../FfmpegInspectionLifecycleTests.cs`；修改 `ModEntry.cs`（主线程解析旧根、冻结本代 token、shutdown 取消在途检查、取消结果先失效再走既有发布、**disabled 兜底取消先于任何 download-controller 早退**，并以 `_ffmpegEverEnabled` 区分“尚未启用”与 disabled）、`UiText.cs`、`Ffmpeg/FfmpegComponentReport.cs`（报告新增迁移结论 + 资产注入点）、`Ffmpeg/FfmpegInstaller.cs`（`CleanupOrphanStaging` 可见性改为 internal 以便迁移复用同一 ownership 规则）、`tests/.../Fixtures.cs`、`tests/.../Program.cs`、`tests/.../FakeFfmpeg.cs`（探测调用记录钩子）、`tests/.../FfmpegReadinessTests.cs`（失效触发点集合新增 `ffmpeg-inspection-cancelled`）、`scripts/set-version.ps1`（residual 误报修复，见 §11.8）、版本载体 `mod/Info.json` / csproj / `ModEntry.ModVersion` / 启动日志。**未**修改 README、Settings 的 managed root、MP4 Finalizing、L3-A / L3-B 帧事务、downloader 与正常 installer 的写入根，**未**新增 Harmony Patch。
@@ -1445,3 +1529,21 @@ L3-B Controlled IO Backpressure Acceptance 取得完整 runtime PASS 后形成�
 | 实机状态 | **已部署并通过实机验收**：readiness 三态生命周期的真实启动时序、首次 enable 不重扫、模式切换不重扫、disable→enable 自动重查、无效与恢复 explicit path、Ready 下进入既有 L3-A MP4 flow 全部确认；**未覆盖边界见 §2.2.12**（`user-recheck` 按钮无单独点击证据、inspection task fault 的真实运行时路径、Finalizing 未实现） |
 
 **身份引用规则（同 §12.4 / §12.5）**：上表的**实机验收构建**身份是稳定引用 —— 其构建时 HEAD `e53e468` 早于本文档的验收记录提交，`ProductVersion +<hash>` 与 DLL SHA256 不会再变化，可用于把该轮实机日志绑定到确切二进制。相对地，**在本文档提交之后**才执行的 Release Rebuild，其 `ProductVersion +<hash>` 与 DLL / ZIP SHA256 **刻意不写入本文档**（写入会立刻制造 tracked diff）；需要引用时以当轮工作报告给出的最终 HEAD 与构建 / 部署 SHA256 为准。
+
+### 12.9 `0.3.10.4` L3-C MP4 Finalizing 实现节点（第四位 revision；**未实机验收**）
+
+`0.3.10.3` 之上把既有 L3 MP4 帧交付流程接入 L2 `FinishAsync` 形成的实现闭环（第四位 revision，前三位保持 `0.3.10`；Phase 未变），随后在同一版本线内完成**定向 hardening 轮**（5 处异常收敛 / 交接边界，见 §2.2.13）。实现范围、不变量与验证边界见 §2.2.13；实机验收清单见 §11 第 11 项。
+
+| 项 | 值 |
+| --- | --- |
+| 产品版本 / FileVersion | `0.3.10.4` |
+| Phase | `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`（未变） |
+| 版本载体 | `mod/Info.json`、csproj `<Version>`、`ModEntry.ModVersion`、`ModEntry` 启动日志（由 `scripts/set-version.ps1` 原子同步；Phase 载体无变化） |
+| 改动文件 | 新增 `src/ADOFAI.Renderist/Export/Mp4FinalizationPolicy.cs`、`tests/ADOFAI.Renderist.FfmpegTests/Mp4FinalizingTests.cs`；修改 `Export/DeterministicFrameScheduler.cs`（一次性交接槽 + 撤销/自愈 + cleanup 失败立即回退 + residual gate）、`Export/EditorExportController.cs`（Finalizing ownership / 判决 / 取消与 restart 门禁 / residual 真实投影）、`Export/Rgb24DeliveryContext.cs`（一次性闸门 + 帧数一致性关口）、`Export/FfmpegRgb24FrameTransport.cs`、`Export/EditorExportState.cs`、`Export/EditorExportSession.cs`、`Export/Mp4SessionStartup.cs`（终态边界语义收窄）、`Ffmpeg/FfmpegVideoPipeline.cs`（收敛异常闭合 + 故障注入缝 + 核验 residual 并入）、`Ffmpeg/FfmpegVideoVerifier.cs`（唯一回收路径 + residual 上报）、`ModEntry.cs`、`UiText.cs` 及四个测试文件 |
+| 独立回归 | **330 passed / 0 failed / 0 skipped**（带真实 Gyan 9.0.2 fixture；无 fixture 315/0/15；`0.3.10.3` 基线 304/0/0；其中 `Mp4FinalizingTests` 26 项） |
+| 构建 / 验证 | Release Rebuild **0 error**（仅离线 NuGet `NU1900` 环境噪声）；`package-release.ps1` + 独立 `verify-release-package.ps1` 均 **PASS 11 checks / 0 failures**；`git diff --check` clean |
+| 本节点构建身份（hardening 轮部署构建） | `FileVersion = 0.3.10.4`；`ProductVersion = 0.3.10.4+9f9ff34eee4ff1f9a73a260d7d753219297d0950`（构建时 HEAD = `9f9ff34`，本轮改动尚未提交，因此 `+hash` 仍指向实现轮之前的提交）；DLL SHA256 **`61AD91AF89690EA51C019B61DB0E6E42422EE57D02985637745028AD49BFB7F7`**；发布包 ZIP SHA256 **`014EFD5BE39103461AF8F22F7E4570C8A184CBEEC3C180A697A68D170EEE3F9E`** |
+| 同版本线内的前一个构建 | `0.3.10.4` 实现轮（未 hardening）DLL SHA256 `4CF08653F1D2107BEB8674006515DE57822B726589E8F7DE7D810748F3344427` / ZIP `C7C9DE5BD41A8E8843D3F4D234E1234692FE65E6D9B7164D8E3BFDD9099AA9A1` —— **已被 hardening 轮构建取代**，不得再用它做实机验收。 |
+| 发布包内容 | 仅 `Info.json` + `ADOFAI.Renderist.dll` + `LICENSE`（3 个顶层文件，无目录） |
+| 未修改 | README、AGENTS.md、Settings 持久化语义、输出模式 authority、L3-A / L3-B 帧事务、`MasterTimeline` authority、PNG / Log-only 行为；**未**新增 Harmony Patch / ADOFAI 内部 API / 程序集引用 |
+| 实机状态 | **已部署到游戏 `Mods\ADOFAI.Renderist\`（DLL `61AD91AF…` 与 `bin\Release` 逐字节一致、`Info.json` 为 `0.3.10.4`），但尚未实机验收**：待办清单见 §11 第 11 项。 |

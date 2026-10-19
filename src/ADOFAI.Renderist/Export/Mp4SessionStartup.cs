@@ -421,23 +421,20 @@ namespace ADOFAI.Renderist.Export
     }
 
     /// <summary>
-    /// L3-A 终态边界策略。
+    /// MP4 session 的终态边界策略。
     ///
-    /// 本轮**没有** L3-C Finalizing：不存在正式 FinishAsync / 核验 / 原子发布。因此 MP4 session
-    /// 到达既有导出终态边界时**必须 fail-closed**，绝不能把"尚未执行正式完成关口"的视频当作
-    /// 成功导出呈现给用户。
+    /// L3-C 起 Finalizing 已经实现（FFmpeg Finish → 独立核验 → 同卷原子发布），
+    /// 但**到达导出终态本身仍然不等于成功导出**：MP4 session 的 `Completed` 只能由
+    /// <see cref="Mp4FinalizationPolicy"/> 对 L2 outcome 的判决产生。
+    ///
+    /// 因此本策略的语义从"没有 Finalizing，所以永远 fail-closed"收窄为
+    /// "绝不**直接**把 scheduler 终态映射成 Completed；MP4 必须先过 Finalizing 关口"。
     /// </summary>
     internal static class Mp4TerminalBoundaryPolicy
     {
-        internal const string ValidationBoundaryStopReason = "l3a-validation-boundary:no-finalizing";
-
-        internal const string ValidationBoundaryDetail =
-            "L3-A 验证边界：本 session 到达导出终态时未执行 FFmpeg Finish / 核验 / 发布，" +
-            "因此这不是一次成功的 MP4 导出，也没有可用的最终成品。";
-
         /// <summary>
-        /// MP4 session 在 scheduler 报告的终态是否仍然可以记为 Completed。
-        /// 无 Finalizing 时**永远**返回 false —— 这是 fail-closed，不是降级。
+        /// MP4 session 在 scheduler 报告的终态是否**直接**记为 Completed。
+        /// 恒为 false —— MP4 必须走 Finalizing 判决（这是唯一允许的完成路径）。
         /// </summary>
         internal static bool CanMapToCompleted(CaptureOutputMode mode)
         {

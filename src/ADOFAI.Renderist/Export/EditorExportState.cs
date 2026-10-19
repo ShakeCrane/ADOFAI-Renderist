@@ -15,6 +15,15 @@ namespace ADOFAI.Renderist.Export
         /// <summary>运行中：DeterministicFrameScheduler 正在推进并捕获。</summary>
         Running,
 
+        /// <summary>
+        /// L3-C 完成关口：全部逻辑帧（含 End Tail）已交付并提交，session 正在等待
+        /// FFmpeg Finish / 独立核验 / 同卷原子发布。
+        ///
+        /// 这是**session / UI 投影**，不是 L2 pipeline 状态的复制：管线状态的唯一 authority
+        /// 始终是 L2 自己的 <c>FfmpegVideoPipelineState</c>。本阶段仍然禁止启动新 session。
+        /// </summary>
+        Finalizing,
+
         /// <summary>已完成：观察到 canonical completion 且已排空 deterministic tail。</summary>
         Completed,
 

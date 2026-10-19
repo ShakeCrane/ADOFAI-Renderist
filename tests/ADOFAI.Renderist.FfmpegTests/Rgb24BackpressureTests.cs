@@ -689,6 +689,13 @@ namespace ADOFAI.Renderist.FfmpegTests
             public Task<FfmpegVideoOutcome> CleanupTask => Cleanup.Task;
             public void RequestStop(string reason) { }
 
+            // L3-C：该假 lifetime 不模拟 Finalizing；返回 null 表示"连开始都无法成立"，
+            // 生产 context 会据此 fail-closed 并回既有取消路径。
+            public Task<FfmpegVideoOutcome> BeginFinalize() => null;
+
+            // L3-C：本假 lifetime 不模拟交付计数（进入 Finalizing 前的交叉核对由真实管线用例覆盖）。
+            public long DeliveredFrameCount => 0;
+
             public Rgb24TransportAttempt TryBeginWrite(OwnedRgb24Frame frame)
             {
                 return Rgb24TransportAttempt.Accepted(Write.Task);

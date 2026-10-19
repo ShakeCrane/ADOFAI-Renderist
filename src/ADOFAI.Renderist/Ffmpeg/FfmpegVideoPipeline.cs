@@ -337,6 +337,16 @@ namespace ADOFAI.Renderist.Ffmpeg
         public Func<Stream, string, Stream> StreamWrapper { get; set; }
 
         /// <summary>
+        /// **回归测试专用故障注入缝**：在完成关口与唯一回收路径的关键点上注入异常
+        /// （参数为注入点名：<c>finalize</c> = FinalizeCore 之前、<c>teardown</c> = Teardown 最开始）。
+        ///
+        /// 存在理由：这两处的逃逸异常在生产里**不可确定性复现**（内部每一步都已各自收敛），
+        /// 但它们正是"收敛任务绝不允许以 fault 结束"这一不变量的边界形态。
+        /// null = 无操作。生产恒为 null。
+        /// </summary>
+        public Action<string> FaultInjection { get; set; }
+
+        /// <summary>
         /// **回归测试专用故障注入缝**：在"字节已完整写出"与"写入结果提交到会话状态"之间的
         /// 可控屏障。null = 无屏障。生产恒为 null。
         ///
@@ -483,6 +493,7 @@ namespace ADOFAI.Renderist.Ffmpeg
         private readonly IFfmpegVideoVerifier _verifier;
         private readonly Func<Stream, string, Stream> _streamWrapper;
         private readonly Action _writeCommitBarrier;
+        private readonly Action<string> _faultInjection;
         private readonly long _frameLengthBytes;
 
         private readonly CancellationTokenSource _cancellation = new CancellationTokenSource();
@@ -551,6 +562,7 @@ namespace ADOFAI.Renderist.Ffmpeg
             _processStart = options.ProcessStart;
             _streamWrapper = options.StreamWrapper;
             _writeCommitBarrier = options.WriteCommitBarrier;
+            _faultInjection = options.FaultInjection;
 
             string settingsError;
             string settingsDetail;
@@ -1204,7 +1216,7 @@ namespace ADOFAI.Renderist.Ffmpeg
                     return Task.FromResult(BuildFailure("write-in-flight", "await the pending frame write first"));
 
                 _state = FfmpegVideoPipelineState.Finalizing;
-                _convergence = Task.Run(() => FinalizeCore());
+                _convergence = Task.Run(() => RunFinalizeGuarded());
                 return _convergence;
             }
         }
@@ -1239,7 +1251,11 @@ namespace ADOFAI.Renderist.Ffmpeg
                 }
 
                 if (_convergence == null)
-                    _convergence = Task.Run(() => ConvergeCancel());
+                {
+                    // 与 finish / failure 收敛同一个异常闭合包装：取消路径的收敛自身若抛异常，
+                    // 同样不能让它逃逸出本 Task（faulted CleanupTask 会让 ownership 永远不可判定）。
+                    _convergence = Task.Run(() => RunConvergenceGuarded(() => ConvergeCancel()));
+                }
             }
 
             // 主动解除可能被阻塞的写入：终止进程会让对端管道关闭。
@@ -1269,7 +1285,7 @@ namespace ADOFAI.Renderist.Ffmpeg
             lock (_gate)
             {
                 if (_convergence == null)
-                    _convergence = Task.Run(body);
+                    _convergence = Task.Run(() => RunConvergenceGuarded(body));
             }
 
             // 失败收敛同样需要主动解除阻塞写入。
@@ -1293,6 +1309,125 @@ namespace ADOFAI.Renderist.Ffmpeg
             }
 
             return State;
+        }
+
+        // ==================================================================== guard
+
+        /// <summary>
+        /// **终态收敛绝不允许以 fault 结束。**
+        ///
+        /// 为什么这不是"额外一层保险"而是必要不变量：ownership 的唯一收敛判据是
+        /// <see cref="CleanupTask"/>（见 Rgb24DeliveryContext.HasPipelineOwnership）。一个 faulted 的
+        /// 收敛 Task 会让"资源是否已回收"永远无法判定 —— 调用方只能永久 fail-closed，
+        /// 进程句柄、stdin 与临时产物也就再没有任何回收路径。
+        ///
+        /// 因此：逃逸异常一律翻译成一次**仍带 teardown** 的 Failed 终态：
+        ///   * 状态仍处于 Finalizing / Running ⇒ 锁定 Failed 后走正常失败收敛；
+        ///   * 收敛路径自身再抛异常 ⇒ 至少尽力执行一次 Teardown，并如实报告 residual ownership。
+        /// 绝不把"未能回收"伪装成 clean。
+        /// </summary>
+        private FfmpegVideoOutcome RunFinalizeGuarded()
+        {
+            try
+            {
+                InjectFault("finalize");
+                return FinalizeCore();
+            }
+            catch (Exception ex)
+            {
+                lock (_gate)
+                {
+                    if (_state == FfmpegVideoPipelineState.Finalizing ||
+                        _state == FfmpegVideoPipelineState.Running)
+                    {
+                        _state = FfmpegVideoPipelineState.Failed;
+                        _failureCode = "finalize-exception";
+                        _failureDetail = ex.GetType().FullName + ": " + ex.Message;
+                    }
+                }
+
+                // **二次异常也必须封闭**：收敛自身再抛异常时不能让它逃逸出本 Task，
+                // 否则 Finalizing Task 会 fault，ownership 将永远不可判定。
+                // 这里复用与 cancel / failure 收敛完全相同的 RunConvergenceGuarded（含 failsafe）。
+                return RunConvergenceGuarded(() => ConvergeByState());
+            }
+        }
+
+        /// <summary>故障注入缝入口（生产恒为 null，见 <see cref="FfmpegVideoPipelineOptions.FaultInjection"/>）。</summary>
+        private void InjectFault(string point)
+        {
+            Action<string> injection = _faultInjection;
+            if (injection != null)
+                injection(point);
+        }
+
+        /// <summary>取消 / 失败收敛任务的异常闭合包装（语义见 <see cref="RunFinalizeGuarded"/>）。</summary>
+        private FfmpegVideoOutcome RunConvergenceGuarded(Func<FfmpegVideoOutcome> body)
+        {
+            try
+            {
+                return body();
+            }
+            catch (Exception ex)
+            {
+                string detail = "convergence-exception:" + ex.GetType().FullName + ": " + ex.Message;
+
+                // 尽力再执行一次唯一回收路径；失败也只作为可观察 residual 上报。
+                try
+                {
+                    TeardownOutcome teardown = Teardown();
+                    lock (_gate)
+                    {
+                        var outcome = BuildOutcome();
+                        outcome.State = FfmpegVideoPipelineState.Failed;
+                        outcome.ErrorCode = _failureCode ?? "convergence-exception";
+                        outcome.ErrorDetail = Append(_failureDetail, detail);
+                        ApplyTeardown(outcome, teardown);
+
+                        // 收敛本身异常：绝不因为 Teardown "看起来返回了" 就宣称 clean。
+                        outcome.ResidualOwnership = true;
+                        outcome.ResidualDetail = Append(outcome.ResidualDetail, detail);
+                        return outcome;
+                    }
+                }
+                catch (Exception nested)
+                {
+                    return BuildFailsafeOutcome(detail + "; teardown-exception:" +
+                        nested.GetType().FullName + ": " + nested.Message);
+                }
+            }
+        }
+
+        /// <summary>
+        /// 最后兜底：不再做任何可能抛异常的 I/O，只如实报告"已终止但资源未能证明回收"。
+        /// 刻意不做 File.Exists —— 走到这里的原因正是常规路径不可用。
+        /// </summary>
+        private FfmpegVideoOutcome BuildFailsafeOutcome(string detail)
+        {
+            FfmpegVideoOutcome outcome;
+            try
+            {
+                lock (_gate)
+                    outcome = BuildOutcome();
+            }
+            catch (Exception)
+            {
+                outcome = new FfmpegVideoOutcome();
+            }
+
+            outcome.State = FfmpegVideoPipelineState.Failed;
+            outcome.ErrorCode = _failureCode ?? "convergence-exception";
+            outcome.ErrorDetail = Append(_failureDetail, detail);
+            outcome.ProcessStarted = _processStarted;
+            outcome.ProcessReaped = _processReaped;
+            outcome.ProcessDisposed = _processDisposed;
+            outcome.TempOwnershipReleased = _tempOwnershipReleased;
+            outcome.TempPath = _tempPath;
+            outcome.DeliveredFrameCount = _deliveredFrames;
+            outcome.TempFileRemoved = false;
+            outcome.ResidualOwnership = true;
+            outcome.ResidualDetail = Append(outcome.ResidualDetail, detail);
+            return outcome;
         }
 
         private FfmpegVideoOutcome FinalizeCore()
@@ -1371,6 +1506,18 @@ namespace ADOFAI.Renderist.Ffmpeg
             catch (Exception ex)
             {
                 return Fail("verification-threw", ex.Message);
+            }
+
+            // 核验自身的子进程 / 输出流若未能确认收敛，同样属于本 session 的 residual ownership。
+            // 记入 _releaseDetail 后，本方法后续**任何** BuildOutcome() 都会如实报告 residual ——
+            // 既不把 Kill + Dispose 当作"已经回收"，也不允许在无法确认时宣称 clean。
+            if (verification != null && verification.ResidualProcessOwnership)
+            {
+                lock (_gate)
+                {
+                    _releaseDetail = Append(_releaseDetail,
+                        "verification-residual:" + (verification.ResidualDetail ?? "unspecified"));
+                }
             }
 
             lock (_gate)
@@ -1571,6 +1718,9 @@ namespace ADOFAI.Renderist.Ffmpeg
         /// </summary>
         private TeardownOutcome Teardown()
         {
+            // 故障注入点在**最前面**：模拟"回收路径自身抛异常"这一最坏形态。
+            InjectFault("teardown");
+
             var teardown = new TeardownOutcome();
 
             Process process;

@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.IO;
+using System.Threading.Tasks;
 using ADOFAI.Renderist.Ffmpeg;
 using ADOFAI.Renderist.Logging;
 using UnityEngine;
@@ -41,6 +42,22 @@ namespace ADOFAI.Renderist.Export
         /// </summary>
         private static Rgb24DeliveryContext _startupContext;
 
+        /// <summary>
+        /// L3-C Finalizing 槽：scheduler 在 canonical completion + End Tail 之后**一次性交接**
+        /// 过来的、已完成全部帧交付的 context。
+        ///
+        /// 它仍是同一个 L2 pipeline / 同一个 RGB24 buffer 与进程 —— 本槽只转移 ownership，
+        /// 不复制 L2 pipeline 状态、不建第二个 FFmpeg pipeline。判决应用之后槽位仍会保留，
+        /// 直到 frame Completion 与 pipeline CleanupTask 都收敛（否则 IsBusy 一直为真）。
+        /// </summary>
+        private static Rgb24DeliveryContext _finalizingContext;
+
+        /// <summary>已受理的 L2 完成通知（FinishAsync 的返回任务）。</summary>
+        private static Task<FfmpegVideoOutcome> _finalizingTask;
+
+        /// <summary>true = Finalizing 判决已经应用（终态已定），只剩资源收敛。</summary>
+        private static bool _finalizingVerdictApplied;
+
         /// <summary>本 session 冻结的输出模式（唯一 authority）。</summary>
         public static CaptureOutputMode FrozenOutputMode => _frozenOutputMode;
 
@@ -51,13 +68,22 @@ namespace ADOFAI.Renderist.Export
         public static EditorExportState CurrentState =>
             _terminalRearmPending ? EditorExportState.Preparing : _session?.State ?? EditorExportState.Idle;
 
-        /// <summary>是否仍占用：Preparing / Running，或终态 RGB24 资源仍在收敛。</summary>
+        /// <summary>是否仍占用：Preparing / Running / Finalizing，或终态 RGB24 资源仍在收敛。</summary>
         public static bool IsBusy =>
-            _terminalRearmPending || _startupContext != null ||
+            _terminalRearmPending || _startupContext != null || _finalizingContext != null ||
             DeterministicFrameScheduler.HasPendingRgb24Cleanup ||
             (_session != null &&
              (_session.State == EditorExportState.Preparing ||
-              _session.State == EditorExportState.Running));
+              _session.State == EditorExportState.Running ||
+              _session.State == EditorExportState.Finalizing));
+
+        /// <summary>
+        /// true = 活动会话正处于 MP4 Finalizing（FFmpeg Finish / 核验 / 原子发布在途）。
+        ///
+        /// 这是**只读投影**，不是第二套状态机：L2 的管线状态仍是唯一 authority，
+        /// 这里只回答"session 现在是不是在等完成关口"。
+        /// </summary>
+        public static bool IsFinalizing => _finalizingContext != null && !_finalizingVerdictApplied;
 
         private static bool HasTerminalSession =>
             _session != null &&
@@ -70,14 +96,17 @@ namespace ADOFAI.Renderist.Export
         ///
         /// 这是**只读投影**，不改变任何安全语义：<see cref="IsBusy"/> 仍为 true，Start 仍被拒绝。
         /// 它只用于让 GUI 不再把"residual 收敛中"错误表达成"仍可 Stop"：此时 Stop 没有实际效果。
-        /// terminal controller re-arm 是**进行中**的过渡状态，Stop 在那里仍然有意义，因此不算收敛态。
+        /// terminal controller re-arm 是**进行中**的过渡状态，Stop 在那里仍然有意义，因此不算收敛态；
+        /// Finalizing 同样不是收敛态 —— 此时 Stop 仍然有效（请求 L2 取消并放弃发布）。
         /// </summary>
         public static bool IsConvergingTerminalResources =>
             IsBusy &&
             !_terminalRearmPending &&
+            !IsFinalizing &&
             (_session == null ||
              (_session.State != EditorExportState.Preparing &&
-              _session.State != EditorExportState.Running));
+              _session.State != EditorExportState.Running &&
+              _session.State != EditorExportState.Finalizing));
 
         /// <summary>最近一次 Start 被拒绝的原因（机器可读短句），null 表示无拒绝或已成功。</summary>
         internal static string LastStartRejectReason { get; private set; }
@@ -92,7 +121,11 @@ namespace ADOFAI.Renderist.Export
             {
                 if (IsBusy)
                 {
-                    LastStartRejectReason = "已有会话进行中";
+                    // L3-C：Finalizing 期间禁止新 session（restart 门禁）。此时 Stop 仍然可用，
+                    // 因此绝不把"正在完成封装"表达成"无法操作"。
+                    LastStartRejectReason = IsFinalizing
+                        ? "MP4 正在完成封装与核验，禁止启动新会话"
+                        : "已有会话进行中";
                     Log.Warn(UiText.Format(UiText.LogEditorExportStartRejectedFormat, LastStartRejectReason));
                     return false;
                 }
@@ -207,6 +240,91 @@ namespace ADOFAI.Renderist.Export
             if (context.TryStopAndDrain("mp4-startup-failed", out error))
                 return;
             _startupContext = context;
+        }
+
+        /// <summary>
+        /// L3-C：判决已经应用之后，把仍被 controller 持有的 finalizing context 收敛掉
+        /// （幂等、非阻塞）。收敛完成前 <see cref="IsBusy"/> 保持为真，因此仍然禁止新 session。
+        /// </summary>
+        private static void TickFinalizingConvergence()
+        {
+            Rgb24DeliveryContext context = _finalizingContext;
+            if (context == null || !_finalizingVerdictApplied) return;
+
+            string error;
+            if (context.TryStopAndDrain("mp4-finalizing-complete", out error))
+            {
+                _finalizingContext = null;
+                _finalizingTask = null;
+                _finalizingVerdictApplied = false;
+                Log.Info("EditorExportController: L3-C finalizing context 已收敛。");
+
+                // 判决时刻记录的 residual 只是当时的快照：资源此后真正收敛了，
+                // 就必须把它改正为 false（否则 metadata 会永久谎报仍有 residual）。
+                // 反向不成立：仍未收敛时绝不改写。
+                EditorExportSession session = _session;
+                if (session != null && session.Mp4FinalizingResidual == true)
+                {
+                    session.Mp4FinalizingResidual = false;
+                    TryWriteMetadataBestEffort(session);
+                    Log.Info("EditorExportController: L3-C finalizing residual 已清除（metadata 已更新）。");
+                }
+                return;
+            }
+
+            Log.Debug("EditorExportController: L3-C finalizing context 仍在收敛： " + (error ?? "unknown"));
+        }
+
+        /// <summary>
+        /// Finalizing 期间的取消门禁：只**请求**停止（L2 保证取消后绝不发布），
+        /// 不同步等待、也不假装资源已回收。session 仍是 Finalizing，直到完成通知被观察到。
+        /// </summary>
+        private static void CancelFinalizing(string reason)
+        {
+            Rgb24DeliveryContext context = _finalizingContext;
+            if (context == null || _finalizingVerdictApplied) return;
+
+            string error;
+            if (!context.TryRequestStop(string.IsNullOrEmpty(reason) ? "cancelled" : reason, out error))
+            {
+                Log.Warn("EditorExportController: L3-C finalizing 取消请求失败： " + (error ?? "unknown"));
+                return;
+            }
+
+            Log.Info("EditorExportController: L3-C finalizing 已请求取消（" +
+                     (string.IsNullOrEmpty(reason) ? "cancelled" : reason) + "），不会发布任何成品。");
+        }
+
+        /// <summary>
+        /// 终止 / 重开路径上的 finalizing 槽统一收敛入口（幂等、非阻塞）：
+        /// 仍有在途完成关口时只能请求取消；已有判决时走既有 frame + CleanupTask 收敛。
+        /// </summary>
+        private static void ConvergeFinalizingSlot(string reason)
+        {
+            if (_finalizingContext == null) return;
+            if (!_finalizingVerdictApplied)
+            {
+                CancelFinalizing(reason);
+                return;
+            }
+
+            TickFinalizingConvergence();
+        }
+
+        /// <summary>
+        /// L3-C 自愈：交接 context 只可能被**同一次调用内**的 <see cref="FinalizeFromScheduler"/> 取走
+        /// （scheduler 在 <c>Tick</c> / <c>StopNow</c> 内交接，紧接着就是终态映射）。
+        /// 因此如果一次 Tick 开始时它仍然存在，就说明上一轮没有任何消费方 ——
+        /// 此时绝不能让它变成永久占用：立刻回原取消路径（fail-closed，绝不发布）。
+        /// </summary>
+        private static void RevokeAbandonedFinalizingHandoff()
+        {
+            if (_finalizingContext != null) return;
+            if (!DeterministicFrameScheduler.HasCompletedRgb24Handoff) return;
+
+            DeterministicFrameScheduler.RevokeCompletedRgb24Delivery("controller-handoff-abandoned");
+            Log.Warn("EditorExportController: L3-C 交接 context 未被接管，已回原取消路径" +
+                     "（本 session 不会产出成品）。");
         }
 
         /// <summary>
@@ -386,8 +504,11 @@ namespace ADOFAI.Renderist.Export
                     StateDetail = "正在启动确定性帧调度器。",
                     OutputFps = outputFps,
                     OutputModeKind = outputMode,
-                    // L3-A 终态边界：本轮没有 Finalizing，因此本 session 到达终态时不会产出成品。
-                    FinalizingNotImplemented = OutputModePolicy.IsMp4(outputMode),
+                    // L3-C：本构建已经实现 Finalizing，因此该字段恒为 false。
+                    // 它保留下来只为让既有 metadata 读者区分"到达终态时完全没有执行 FFmpeg
+                    // Finish 的旧构建"（true）与之后的构建；它不是本次 Finalizing 的结果，
+                    // 那由 mp4FinalizingState 记录。
+                    FinalizingNotImplemented = false,
                     OutputGeometryMode = OutputGeometryPolicy.KindLabel(geometry.Mode),
                     GeometryCustomResolutionEnabled = geometryInput.CustomResolutionEnabled,
                     GeometryConfiguredWidth = geometryInput.Width,
@@ -574,8 +695,9 @@ namespace ADOFAI.Renderist.Export
         }
 
         /// <summary>
-        /// 用户主动停止。仅 Running 可停止；terminal session 不改写记录，
-        /// 但 scheduler 可能仍持有 residual ownership，需经统一入口收敛。
+        /// 用户主动停止。仅 Running 可停止；Finalizing 期间请求取消（绝不发布）；
+        /// terminal session 不改写记录，但 scheduler / controller 可能仍持有 residual
+        /// ownership，需经统一入口收敛。
         /// </summary>
         public static void Stop()
         {
@@ -587,6 +709,13 @@ namespace ADOFAI.Renderist.Export
 
             EditorExportSession s = _session;
             if (s == null) return;
+
+            if (s.State == EditorExportState.Finalizing)
+            {
+                CancelFinalizing("user-stop");
+                return;
+            }
+
             if (s.State != EditorExportState.Running)
             {
                 // 与 Cancel 的 terminal 分支同一 invariant：正常 Completed/Cancelled/Failed
@@ -600,6 +729,7 @@ namespace ADOFAI.Renderist.Export
                 {
                     Log.Exception("EditorExportController.Stop terminal cleanup 失败", cleanupEx);
                 }
+                ConvergeFinalizingSlot("user-stop");
                 return;
             }
 
@@ -635,6 +765,15 @@ namespace ADOFAI.Renderist.Export
 
             EditorExportSession s = _session;
             if (s == null) return;
+
+            if (s.State == EditorExportState.Finalizing)
+            {
+                // disable / unload / 离开编辑器期间的取消同样必须 fail-closed：请求取消，
+                // 绝不发布 MP4。
+                CancelFinalizing(string.IsNullOrEmpty(reason) ? "cancelled" : reason);
+                return;
+            }
+
             if (s.State == EditorExportState.Completed ||
                 s.State == EditorExportState.Cancelled ||
                 s.State == EditorExportState.Failed)
@@ -648,6 +787,7 @@ namespace ADOFAI.Renderist.Export
                 {
                     Log.Exception("EditorExportController.Cancel terminal cleanup 失败", cleanupEx);
                 }
+                ConvergeFinalizingSlot(terminalCleanReason);
                 return;
             }
 
@@ -670,8 +810,10 @@ namespace ADOFAI.Renderist.Export
         public static void Tick()
         {
             DeterministicFrameScheduler.TickResidualOwnership();
-            // L3-A 启动阶段残留：非阻塞收敛入口（与 scheduler 的同一个 TryStopAndDrain）。
+            // L3-A 启动阶段残留 + L3-C finalizing 槽：非阻塞收敛入口（与 scheduler 的同一个 TryStopAndDrain）。
             TickStartupContextConvergence();
+            TickFinalizingConvergence();
+            RevokeAbandonedFinalizingHandoff();
             if (_terminalRearmPending)
             {
                 TickTerminalControllerRearm();
@@ -680,6 +822,16 @@ namespace ADOFAI.Renderist.Export
 
             EditorExportSession s = _session;
             if (s == null) return;
+
+            // L3-C：Finalizing 只等 FFmpeg Finish / 核验 / 发布回到主线程。
+            // 刻意不做环境校验、不推进 scheduler、不设 wall-clock deadline：
+            // 合法的封装与核验可以持续任意长时间。
+            if (s.State == EditorExportState.Finalizing)
+            {
+                TickFinalizing();
+                return;
+            }
+
             if (s.State != EditorExportState.Running) return;
 
             try
@@ -716,22 +868,23 @@ namespace ADOFAI.Renderist.Export
             if (s.State != EditorExportState.Running) return;
 
             DeterministicFrameScheduler.SchedulerStatus status = DeterministicFrameScheduler.Status;
+
+            // ---- L3-C：MP4 的正常完成路径必须先过 Finalizing 关口 ----
+            // scheduler 只在 canonical completion + End Tail 全部提交、且 Unity cleanup 全部
+            // 成功之后才把 context 一次性交接出来；这里把它接过来并开始既有 L2 FinishAsync
+            // （关闭 stdin → 等待退出与双流 EOF → 独立核验 → 同卷原子发布）。
+            // MP4 session **绝不**在此时直接记为 Completed。
+            if (status == DeterministicFrameScheduler.SchedulerStatus.Completed &&
+                !Mp4TerminalBoundaryPolicy.CanMapToCompleted(_frozenOutputMode))
+            {
+                CopySchedulerResultIntoSession(s);
+                BeginFinalizing(s);
+                return;
+            }
+
             switch (status)
             {
                 case DeterministicFrameScheduler.SchedulerStatus.Completed:
-                    if (!Mp4TerminalBoundaryPolicy.CanMapToCompleted(_frozenOutputMode))
-                    {
-                        // L3-A 验证边界：本轮**没有** L3-C Finalizing（无 FinishAsync / 核验 /
-                        // 原子发布），因此到达导出终态绝不等于成功导出。fail-closed，并且绝不
-                        // 把只存在于 L2 ownership 下的临时产物呈现为最终 MP4 成品。
-                        s.State = EditorExportState.Failed;
-                        s.StopReason = Mp4TerminalBoundaryPolicy.ValidationBoundaryStopReason;
-                        s.StateDetail = Mp4TerminalBoundaryPolicy.ValidationBoundaryDetail;
-                        s.TerminationKind = "l3a-validation-boundary";
-                        Log.Warn("EditorExportController: L3-A 验证边界到达导出终态（未执行 FFmpeg " +
-                                 "Finish / 核验 / 发布）。本 session 记为 Failed，且没有可用的最终 MP4 成品。");
-                        break;
-                    }
                     s.State = EditorExportState.Completed;
                     s.StopReason = DeterministicFrameScheduler.StopReason ?? "completed";
                     s.StateDetail = "已观察到 canonical completion，且视觉尾帧已排空。";
@@ -751,6 +904,19 @@ namespace ADOFAI.Renderist.Export
             }
 
             s.EndedAtUtc = DateTime.UtcNow;
+            CopySchedulerResultIntoSession(s);
+            TryWriteMetadataBestEffort(s);
+            Log.Info(UiText.Format(UiText.LogEditorExportFinishedFormat,
+                s.State.ToString(), s.StopReason));
+        }
+
+        /// <summary>
+        /// 把 scheduler 在本 session 实际冻结并产出的结果投影进 session
+        /// （计数 / 几何 / 环境 inventory / completion 证据 / 终止分类）。
+        /// 本方法只做投影，不改写任何 authority。
+        /// </summary>
+        private static void CopySchedulerResultIntoSession(EditorExportSession s)
+        {
             s.CaptureRequestCount = DeterministicFrameScheduler.CaptureRequestCount;
             s.CapturedFrameCount = DeterministicFrameScheduler.CapturedFrameCount;
             s.FrameTransactionRequestCount = DeterministicFrameScheduler.FrameTransactionRequestCount;
@@ -767,9 +933,196 @@ namespace ADOFAI.Renderist.Export
             s.CompletionFrameIndex = DeterministicFrameScheduler.CanonicalCompletionFrameIndex;
             s.CompletionSignal = DeterministicFrameScheduler.CompletionSignal;
             s.TerminationKind = DeterministicFrameScheduler.TerminationKind;
+        }
+
+        /// <summary>
+        /// L3-C：从 scheduler 取走一次性交接的 context，并开始 FFmpeg 完成关口。
+        ///
+        /// 取不到 context 或 L2 拒绝受理时**绝不**把 session 记为成功：直接 fail-closed，
+        /// 且仍保留已取到的 context 交给既有收敛路径回收（不丢 ownership）。
+        /// </summary>
+        private static void BeginFinalizing(EditorExportSession s)
+        {
+            Rgb24DeliveryContext context;
+            string takeError;
+            if (!DeterministicFrameScheduler.TryTakeCompletedRgb24Delivery(out context, out takeError))
+            {
+                MarkFinalizingUnavailable(s, "mp4-finalize-handoff-missing:" + (takeError ?? "unknown"));
+                return;
+            }
+
+            // 计数一致性关口（在 L2 FinishAsync **之前**）：session 的逻辑提交帧数由 scheduler
+            // 冻结并投影，L2 的 delivered 计数由管线自己维护 —— 两者必须精确相等，否则
+            // fail-closed。这里只做交叉核对，不新增第二套计数 authority。
+            Rgb24FinalizeStart start = context.TryBeginFinalizing(s.LogicalFrameCount);
+            _finalizingContext = context;
+            if (!start.Started)
+            {
+                MarkFinalizingUnavailable(s, "mp4-finalize-start-failed:" + (start.ErrorCode ?? "unknown") +
+                    (string.IsNullOrEmpty(start.ErrorDetail) ? string.Empty : (":" + start.ErrorDetail)));
+                return;
+            }
+
+            _finalizingTask = start.Completion;
+            _finalizingVerdictApplied = false;
+
+            s.State = EditorExportState.Finalizing;
+            s.StopReason = null;
+            s.StateDetail = "FFmpeg 正在完成封装、独立核验与原子发布。";
+            s.FinalizingNotImplemented = false;
             TryWriteMetadataBestEffort(s);
-            Log.Info(UiText.Format(UiText.LogEditorExportFinishedFormat,
-                s.State.ToString(), s.StopReason));
+
+            Log.Info("EditorExportController: L3-C finalizing started (Finish → verification → atomic publish); " +
+                     "deliveredFrames=" + s.LogicalFrameCount.ToString(CultureInfo.InvariantCulture));
+        }
+
+        /// <summary>
+        /// 完成关口无法开始：session fail-closed。context（若已取得）保留在 finalizing 槽，
+        /// 由既有 frame + CleanupTask 收敛路径回收并继续阻止重开。
+        ///
+        /// `mp4FinalizingResidual` 必须反映**当下真实**的收敛状态：只要 context 仍在 controller
+        /// 手里且 frame Completion / pipeline CleanupTask 尚未确认收敛，就绝不能记成 false。
+        /// </summary>
+        private static void MarkFinalizingUnavailable(EditorExportSession s, string errorCode)
+        {
+            _finalizingTask = null;
+            _finalizingVerdictApplied = true;
+
+            s.Mp4FinalizingState = Mp4FinalizationPolicy.FailedLabel;
+            s.Mp4FinalizingErrorCode = errorCode;
+            s.Mp4FinalizingResidual = CurrentFinalizingResidual(null);
+            s.State = EditorExportState.Failed;
+            s.StopReason = "mp4-finalize-failed:" + errorCode;
+            s.StateDetail = "MP4 完成关口无法开始：本 session 没有可用成品。";
+            s.TerminationKind = "finalize-failure";
+            s.EndedAtUtc = DateTime.UtcNow;
+            TryWriteMetadataBestEffort(s);
+
+            Log.Warn("EditorExportController: L3-C finalizing unavailable: " + errorCode +
+                     "；本 session 记为 Failed，且没有可用的最终 MP4 成品。" +
+                     " residual=" + (s.Mp4FinalizingResidual ?? false));
+        }
+
+        /// <summary>
+        /// 判决时刻的 residual 投影：**同时**考虑 L2 outcome 与 controller 仍持有的 context。
+        ///
+        /// 只报 L2 outcome 是不够的：判决应用时 context 可能仍持有 frame ownership
+        /// （例如完成关口被拒绝、或判决与资源收敛并不同时结束）。绝不在这种情况下记成 clean。
+        /// </summary>
+        private static bool CurrentFinalizingResidual(Mp4FinalizationOutcome outcome)
+        {
+            if (outcome != null && outcome.ResidualOwnership)
+                return true;
+
+            Rgb24DeliveryContext context = _finalizingContext;
+            return context != null && context.HasResidualOwnership;
+        }
+
+        /// <summary>
+        /// L3-C：在主线程观察完成关口（非阻塞、无 wall-clock deadline）。
+        /// 完成通知一旦结束即按 <see cref="Mp4FinalizationPolicy"/> 应用终态判决，绝不推断。
+        /// </summary>
+        private static void TickFinalizing()
+        {
+            EditorExportSession s = _session;
+            if (s == null) return;
+
+            Task<FfmpegVideoOutcome> task = _finalizingTask;
+            if (_finalizingContext == null || task == null)
+            {
+                MarkFinalizingUnavailable(s, "mp4-finalize-slot-inconsistent");
+                return;
+            }
+
+            // 合法：FFmpeg 封装与独立核验可以持续任意长时间（与 L3-B 的 IO 背压同一原则）。
+            if (!task.IsCompleted) return;
+
+            Mp4FinalizationOutcome outcome;
+            if (task.IsFaulted)
+            {
+                Exception inner = task.Exception == null ? null : task.Exception.GetBaseException();
+                outcome = Mp4FinalizationPolicy.Faulted(inner == null ? "unknown" : inner.Message);
+            }
+            else if (task.IsCanceled)
+            {
+                outcome = Mp4FinalizationPolicy.CancelledTask("finalize-task-canceled");
+            }
+            else
+            {
+                outcome = Mp4FinalizationPolicy.Map(task.Result, s.FinalVideoPath);
+            }
+
+            ApplyFinalizingVerdict(s, outcome);
+        }
+
+        /// <summary>
+        /// 应用 Finalizing 判决：只有 Published（= L2 Completed + 核验通过 + 最终路径一致）
+        /// 才允许把 session 记为 Completed。其余一律 Failed / Cancelled，且都明确声明没有成品。
+        /// </summary>
+        private static void ApplyFinalizingVerdict(EditorExportSession s, Mp4FinalizationOutcome outcome)
+        {
+            _finalizingVerdictApplied = true;
+            _finalizingTask = null;
+
+            s.Mp4FinalizingState = Mp4FinalizationPolicy.Label(outcome.Verdict);
+            s.Mp4FinalizingErrorCode = outcome.ErrorCode;
+            s.Mp4FinalizingErrorDetail = outcome.ErrorDetail;
+            s.Mp4EncoderExitCode = outcome.EncoderExitCode;
+            s.Mp4DeliveredFrameCount = outcome.DeliveredFrameCount;
+            s.Mp4VerificationStatus = outcome.VerificationStatus;
+            s.Mp4VerifiedFrameCount = outcome.DecodedFrameCount;
+            s.Mp4VerifiedPacketCount = outcome.PacketCount;
+            s.Mp4VerifiedCodec = outcome.CodecName;
+            s.Mp4VerifiedPixelFormat = outcome.PixelFormat;
+            s.Mp4FinalizingResidual = CurrentFinalizingResidual(outcome);
+            s.Mp4TempFileRemoved = outcome.TempFileRemoved;
+
+            switch (outcome.Verdict)
+            {
+                case Mp4FinalizationVerdict.Published:
+                    s.State = EditorExportState.Completed;
+                    s.StopReason = Mp4FinalizationPolicy.PublishedStopReason;
+                    s.StateDetail = "已通过 FFmpeg Finish、独立核验与原子发布，最终 MP4 可用。";
+                    s.TerminationKind = "canonical-completion";
+                    if (!string.IsNullOrEmpty(outcome.FinalPath))
+                        s.FinalVideoPath = outcome.FinalPath;
+                    Log.Info("EditorExportController: L3-C MP4 published: " +
+                             Mp4FinalizationPolicy.Describe(outcome));
+                    break;
+
+                case Mp4FinalizationVerdict.Cancelled:
+                    s.State = EditorExportState.Cancelled;
+                    s.StopReason = outcome.ErrorCode ?? "cancelled";
+                    s.StateDetail = "MP4 完成关口已取消：没有发布任何成品。";
+                    s.TerminationKind = ClassifyFinalizeCancellation(outcome.ErrorCode);
+                    Log.Warn("EditorExportController: L3-C MP4 finalizing cancelled: " +
+                             Mp4FinalizationPolicy.Describe(outcome));
+                    break;
+
+                default:
+                    s.State = EditorExportState.Failed;
+                    s.StopReason = "mp4-finalize-failed:" + (outcome.ErrorCode ?? "unknown");
+                    s.StateDetail = "MP4 完成关口失败：没有可用成品。" +
+                                    (string.IsNullOrEmpty(outcome.ErrorDetail)
+                                        ? string.Empty
+                                        : ("(" + outcome.ErrorDetail + ")"));
+                    s.TerminationKind = "finalize-failure";
+                    Log.Warn("EditorExportController: L3-C MP4 finalizing failed: " +
+                             Mp4FinalizationPolicy.Describe(outcome));
+                    break;
+            }
+
+            s.EndedAtUtc = DateTime.UtcNow;
+            TryWriteMetadataBestEffort(s);
+            Log.Info(UiText.Format(UiText.LogEditorExportFinishedFormat, s.State.ToString(), s.StopReason));
+        }
+
+        private static string ClassifyFinalizeCancellation(string reason)
+        {
+            if (reason == "user-stop" || reason == "cancelled" ||
+                reason == "mod-disabled" || reason == "mod-unload" || reason == "left-editor")
+                return "user-cancel";
+            return "lifecycle-failure";
         }
 
         /// <summary>
@@ -894,6 +1247,22 @@ namespace ADOFAI.Renderist.Export
             if (DeterministicFrameScheduler.IsRunning)
             {
                 try { DeterministicFrameScheduler.StopNow("failed", "controller-fail"); } catch { }
+            }
+
+            // 即使 scheduler 已经终态，也可能留下 L3-C 交接 context（例如终态映射在取走之前抛异常）：
+            // 统一收敛入口会把它放回取消路径，不会留下无人管理的编码进程或永久占用。
+            try { DeterministicFrameScheduler.EnsureCleanedUp("failed", "controller-fail"); }
+            catch (Exception cleanupEx)
+            {
+                Log.Exception("EditorExportController: controller-fail scheduler 收敛异常", cleanupEx);
+            }
+
+            // L3-C：controller 层异常时 finalizing 槽同样不得悬空 —— 仍有在途完成关口时
+            // 只能请求取消（绝不发布），已有判决时走既有收敛路径。
+            try { ConvergeFinalizingSlot("controller-fail"); }
+            catch (Exception convergeEx)
+            {
+                Log.Exception("EditorExportController: finalizing 槽收敛异常", convergeEx);
             }
 
             EditorExportSession s = _session;

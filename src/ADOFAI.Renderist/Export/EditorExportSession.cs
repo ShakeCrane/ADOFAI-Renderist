@@ -92,10 +92,42 @@ namespace ADOFAI.Renderist.Export
         /// </summary>
         public string Mp4OutputPixelFormatPolicy;
         /// <summary>
-        /// true = 本 session 在终态边界 fail-closed，**没有**执行 FFmpeg Finish / 核验 / 发布，
-        /// 因此不存在可用的最终 MP4 成品（L3-A 验证边界）。绝不把临时产物当作成功成品。
+        /// true = 本 session 到达终态时**没有**执行 FFmpeg Finish / 核验 / 发布，
+        /// 因此不存在可用的最终 MP4 成品。
+        ///
+        /// Finalizing 实现之前的 MP4 session 恒为 true（L3-A 验证边界：到达终态时完全没有
+        /// 执行 FFmpeg Finish）。Finalizing 实现之后本字段恒为 false，只保留给既有 metadata
+        /// 读者区分构建能力，**不是**"本次 Finalizing 是否成功"的判据
+        /// （那是 <see cref="Mp4FinalizingState"/> 与 <see cref="Mp4FinalizingErrorCode"/>）。
         /// </summary>
         public bool FinalizingNotImplemented;
+
+        // ---- Phase 3.9.0 / L3-C: MP4 Finalizing 结果投影 ----
+        //
+        // 以下字段是 L2 outcome 的**只读投影**（由 Mp4FinalizationPolicy 映射），
+        // 不是第二套管线状态机：L2 的 FfmpegVideoPipelineState 仍是唯一 authority。
+
+        /// <summary>Finalizing 判决：completed（已发布且已核验）/ failed / cancelled；未执行时为 null。</summary>
+        public string Mp4FinalizingState;
+        /// <summary>判决的机读原因（失败 / 取消时非 null）。</summary>
+        public string Mp4FinalizingErrorCode;
+        public string Mp4FinalizingErrorDetail;
+        /// <summary>编码进程退出码（L2 实测；未取到时为 null）。</summary>
+        public long? Mp4EncoderExitCode;
+        /// <summary>完整写入 FFmpeg stdin 的帧数（L2 计数）。</summary>
+        public long? Mp4DeliveredFrameCount;
+        /// <summary>独立核验状态：Verified / Failed / Cancelled；未跑到核验时为 null。</summary>
+        public string Mp4VerificationStatus;
+        /// <summary>核验实测的解码帧数（必须精确等于交付帧数才可能 Verified）。</summary>
+        public long? Mp4VerifiedFrameCount;
+        /// <summary>核验实测的容器包数（与解码帧数是两种时间语义，分别验证）。</summary>
+        public long? Mp4VerifiedPacketCount;
+        public string Mp4VerifiedCodec;
+        public string Mp4VerifiedPixelFormat;
+        /// <summary>true = 终态后仍有本会话未收敛的资源（绝不伪装成 clean）。</summary>
+        public bool? Mp4FinalizingResidual;
+        /// <summary>true = 本会话临时产物在终态后已不存在。</summary>
+        public bool? Mp4TempFileRemoved;
         public long TailFramesCommitted;
         public long TailFramesCaptured;
         public long FrameTransactionRequestCount;
@@ -298,6 +330,18 @@ namespace ADOFAI.Renderist.Export
             AppendStringNullable(sb, "mp4InputPixelFormat", Mp4InputPixelFormat, true);
             AppendStringNullable(sb, "mp4OutputPixelFormatPolicy", Mp4OutputPixelFormatPolicy, true);
             AppendBool(sb, "finalizingNotImplemented", FinalizingNotImplemented, true);
+            AppendStringNullable(sb, "mp4FinalizingState", Mp4FinalizingState, true);
+            AppendStringNullable(sb, "mp4FinalizingErrorCode", Mp4FinalizingErrorCode, true);
+            AppendStringNullable(sb, "mp4FinalizingErrorDetail", Mp4FinalizingErrorDetail, true);
+            AppendLongNullable(sb, "mp4EncoderExitCode", Mp4EncoderExitCode, true);
+            AppendLongNullable(sb, "mp4DeliveredFrameCount", Mp4DeliveredFrameCount, true);
+            AppendStringNullable(sb, "mp4VerificationStatus", Mp4VerificationStatus, true);
+            AppendLongNullable(sb, "mp4VerifiedFrameCount", Mp4VerifiedFrameCount, true);
+            AppendLongNullable(sb, "mp4VerifiedPacketCount", Mp4VerifiedPacketCount, true);
+            AppendStringNullable(sb, "mp4VerifiedCodec", Mp4VerifiedCodec, true);
+            AppendStringNullable(sb, "mp4VerifiedPixelFormat", Mp4VerifiedPixelFormat, true);
+            AppendBoolNullable(sb, "mp4FinalizingResidual", Mp4FinalizingResidual, true);
+            AppendBoolNullable(sb, "mp4TempFileRemoved", Mp4TempFileRemoved, true);
             AppendString(sb, "sessionId", SessionId ?? string.Empty, true);
             AppendStringNullable(sb, "createdAt", IsoUtc(StartedAtUtc), true);
             AppendStringNullable(sb, "endedAt", IsoUtc(EndedAtUtc), true);

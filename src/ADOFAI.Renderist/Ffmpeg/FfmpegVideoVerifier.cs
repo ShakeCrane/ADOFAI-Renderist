@@ -89,6 +89,19 @@ namespace ADOFAI.Renderist.Ffmpeg
 
         public long ElapsedMilliseconds { get; set; }
 
+        /// <summary>
+        /// true = 本核验自身的子进程 / 输出流**未能确认**收敛（例如 Kill 之后仍无法确认进程退出，
+        /// 或已启动的排空任务未能结束）。
+        ///
+        /// 它绝不影响"是否 Verified"的判定（见 <see cref="IsVerified"/>），而是让调用方
+        /// 把这份不确定性如实计入 residual ownership —— 既不能把 Kill + Dispose 当作
+        /// "进程已退出、两个输出流已到真实 EOF"，也不允许在无法确认时宣称 clean。
+        /// </summary>
+        public bool ResidualProcessOwnership { get; set; }
+
+        /// <summary>未能确认收敛的具体原因（仅在 <see cref="ResidualProcessOwnership"/> 为 true 时有意义）。</summary>
+        public string ResidualDetail { get; set; }
+
         public bool IsVerified
         {
             get { return Status == FfmpegVideoVerificationStatus.Verified; }
@@ -144,13 +157,45 @@ namespace ADOFAI.Renderist.Ffmpeg
 
         public Task<FfmpegVideoVerificationResult> VerifyAsync(FfmpegVideoVerificationRequest request)
         {
-            return Task.Run(() => Verify(request));
+            return Task.Run(() => VerifyGuarded(request));
         }
 
-        private FfmpegVideoVerificationResult Verify(FfmpegVideoVerificationRequest request)
+        /// <summary>
+        /// **核验任务绝不允许以 fault 结束。**
+        ///
+        /// 核验是 Finalizing 的一个阶段：调用方（L2 <c>FinalizeCore</c>）在核验之后决定
+        /// 是否发布。若这里以 fault 结束，调用方只看到"核验没返回"，无法区分
+        /// "核验明确失败"与"核验器自身崩溃"，也就无法给出机读原因。因此任何逃逸异常
+        /// 一律翻译成 <see cref="FfmpegVideoVerificationStatus.Failed"/> + 稳定错误码。
+        /// 注意：这**不**放宽任何期望值 —— 异常路径同样不构成"已验证"。
+        /// </summary>
+        private FfmpegVideoVerificationResult VerifyGuarded(FfmpegVideoVerificationRequest request)
         {
             var stopwatch = Stopwatch.StartNew();
-            FfmpegVideoVerificationResult result = VerifyCore(request);
+            FfmpegVideoVerificationResult result;
+            try
+            {
+                result = VerifyCore(request);
+            }
+            catch (Exception ex)
+            {
+                result = new FfmpegVideoVerificationResult
+                {
+                    Status = FfmpegVideoVerificationStatus.Failed,
+                    ErrorCode = "verify-harness-exception",
+                    ErrorDetail = ex.GetType().FullName + ": " + ex.Message,
+                };
+            }
+
+            if (result == null)
+            {
+                result = new FfmpegVideoVerificationResult
+                {
+                    Status = FfmpegVideoVerificationStatus.Failed,
+                    ErrorCode = "verify-no-result",
+                };
+            }
+
             stopwatch.Stop();
             result.ElapsedMilliseconds = stopwatch.ElapsedMilliseconds;
             return result;
@@ -193,6 +238,10 @@ namespace ADOFAI.Renderist.Ffmpeg
             result.DecodeExitCode = decode.ExitCode;
             result.DecodeStdErrBytes = decodeStderr.TotalChars;
             result.DecodeStdErrTail = decodeStderr.Tail;
+
+            // 核验自身子进程的收敛证据与"是否 Verified"完全独立：无法确认收敛时
+            // 仍然继续按正常规则判定，但把不确定性如实带出（绝不宣称 clean）。
+            NoteProcessResidual(result, "decode", decode);
 
             if (decode.Cancelled)
                 return Cancel(result);
@@ -239,6 +288,8 @@ namespace ADOFAI.Renderist.Ffmpeg
             result.PacketExitCode = packets.ExitCode;
             result.PacketStdErrBytes = packetStderr.TotalChars;
             result.PacketStdErrTail = packetStderr.Tail;
+
+            NoteProcessResidual(result, "packet", packets);
 
             if (packets.Cancelled)
                 return Cancel(result);
@@ -298,6 +349,20 @@ namespace ADOFAI.Renderist.Ffmpeg
             result.ErrorCode = errorCode;
             result.ErrorDetail = errorDetail;
             return result;
+        }
+
+        /// <summary>
+        /// 把单个 pass 未能确认收敛的事实带进核验结果（两个 pass 分别记录、合并保留）。
+        /// 它不改变 Verified / Failed 判定，只让调用方能把不确定性计入 residual ownership。
+        /// </summary>
+        private static void NoteProcessResidual(
+            FfmpegVideoVerificationResult result, string pass, PassOutcome outcome)
+        {
+            if (outcome == null || string.IsNullOrEmpty(outcome.ResidualDetail))
+                return;
+
+            result.ResidualProcessOwnership = true;
+            result.ResidualDetail = Append(result.ResidualDetail, pass + ":" + outcome.ResidualDetail);
         }
 
         private static FfmpegVideoVerificationResult Cancel(FfmpegVideoVerificationResult result)
@@ -452,6 +517,12 @@ namespace ADOFAI.Renderist.Ffmpeg
             var outcome = new PassOutcome();
             Process process = null;
 
+            // 已经取得的 task / process ownership 全部登记在局部变量里，
+            // 由 finally 的唯一回收路径统一收敛 —— 绝不在中途失败时丢弃它们。
+            Task exitTask = null;
+            Task stdoutTask = null;
+            Task stderrTask = null;
+
             try
             {
                 process = StartProcess(request.ExecutablePath, arguments, workingDirectory);
@@ -461,14 +532,14 @@ namespace ADOFAI.Renderist.Ffmpeg
                     return outcome;
                 }
 
-                Task exitTask = WaitForExitAsync(process);
+                exitTask = WaitForExitAsync(process);
 
-                Task stdoutTask = PumpAsync(
+                stdoutTask = PumpAsync(
                     process.StandardOutput.BaseStream,
                     rows.FeedLine,
                     ex => outcome.ReadError = outcome.ReadError ?? ("stdout: " + ex.Message));
 
-                Task stderrTask = PumpAsync(
+                stderrTask = PumpAsync(
                     process.StandardError.BaseStream,
                     line =>
                     {
@@ -508,26 +579,122 @@ namespace ADOFAI.Renderist.Ffmpeg
             }
             finally
             {
-                if (process != null)
+                ReapPass(process, exitTask, stdoutTask, stderrTask, outcome);
+            }
+        }
+
+        /// <summary>
+        /// 核验进程的**唯一**回收路径，在包括"初始化中途失败"在内的每一条返回路径上执行。
+        ///
+        /// 不变量：
+        ///   * 已经启动的进程与已经启动的排空任务都必须在返回前被动等待收敛；
+        ///   * **Kill 与 Dispose 绝不等于**"进程已退出"与"两个输出流已到真实 EOF" ——
+        ///     终止之后仍必须确认真实退出，也必须等待已启动的排空任务结束；
+        ///   * 任何无法确认的部分都如实记录到 <see cref="PassOutcome.ResidualDetail"/>，
+        ///     调用方据此**不得**把本次核验当作 clean（见
+        ///     <see cref="FfmpegVideoVerificationResult.ResidualProcessOwnership"/>）。
+        ///
+        /// 阻塞边界：本方法运行在 L2 的后台收敛线程（正常路径同样在这里等待核验进程结束），
+        /// **不是** Unity 主线程；等待对象只有本方法自己启动的子进程与其输出流。
+        /// </summary>
+        private static void ReapPass(
+            Process process, Task exitTask, Task stdoutTask, Task stderrTask, PassOutcome outcome)
+        {
+            if (process == null)
+                return;
+
+            bool associated = true;
+            bool exited;
+            try
+            {
+                exited = process.HasExited;
+            }
+            catch (Exception ex)
+            {
+                // 进程对象本身不可用（例如未关联任何 OS 进程）：既不能终止、也不可能等到退出。
+                // 这里必须**立即**停止等待，否则会无意义地永久阻塞收敛线程 —— 但绝不因此宣称 clean。
+                associated = false;
+                exited = false;
+                outcome.ProcessReaped = false;
+                outcome.ResidualDetail = Append(outcome.ResidualDetail,
+                    "verify-process-not-associated:" + ex.GetType().Name);
+            }
+
+            if (associated && !exited)
+            {
+                TryKill(process);
+
+                // 终止之后仍然必须等待**真实退出**。
+                try
+                {
+                    if (exitTask != null)
+                        exitTask.Wait();
+                    else
+                        process.WaitForExit();
+
+                    exited = process.HasExited;
+                }
+                catch (Exception ex)
+                {
+                    exited = false;
+                    outcome.ResidualDetail = Append(outcome.ResidualDetail,
+                        "verify-exit-wait-failed:" + ex.GetType().Name + ": " + ex.Message);
+                }
+            }
+
+            if (associated)
+            {
+                if (!exited)
+                {
+                    outcome.ResidualDetail = Append(outcome.ResidualDetail, "verify-process-not-reaped");
+                    outcome.ProcessReaped = false;
+                }
+                else
+                {
+                    outcome.ProcessReaped = true;
+                }
+
+                // 已启动的排空任务同样必须等待：否则"进程没了"会被误当成"日志已排空到 EOF"。
+                var pumps = new List<Task>(2);
+                if (stdoutTask != null) pumps.Add(stdoutTask);
+                if (stderrTask != null) pumps.Add(stderrTask);
+                if (pumps.Count > 0)
                 {
                     try
                     {
-                        if (!process.HasExited)
-                            TryKill(process);
+                        Task.WaitAll(pumps.ToArray());
                     }
-                    catch
+                    catch (Exception ex)
                     {
+                        outcome.ResidualDetail = Append(outcome.ResidualDetail,
+                            "verify-drain-wait-failed:" + ex.GetType().Name + ": " + ex.Message);
                     }
 
-                    try
+                    for (int i = 0; i < pumps.Count; i++)
                     {
-                        process.Dispose();
-                    }
-                    catch
-                    {
+                        if (!pumps[i].IsCompleted)
+                            outcome.ResidualDetail = Append(outcome.ResidualDetail, "verify-drain-not-completed");
                     }
                 }
             }
+
+            try
+            {
+                process.Dispose();
+            }
+            catch (Exception ex)
+            {
+                outcome.ResidualDetail = Append(outcome.ResidualDetail,
+                    "verify-dispose-failed:" + ex.GetType().Name + ": " + ex.Message);
+            }
+        }
+
+        private static string Append(string existing, string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return existing;
+
+            return string.IsNullOrEmpty(existing) ? value : existing + "; " + value;
         }
 
         private Process StartProcess(string executablePath, string arguments, string workingDirectory)
@@ -696,8 +863,20 @@ namespace ADOFAI.Renderist.Ffmpeg
             if (!dimensions.Success)
                 return false;
 
-            width = int.Parse(dimensions.Groups["w"].Value, CultureInfo.InvariantCulture);
-            height = int.Parse(dimensions.Groups["h"].Value, CultureInfo.InvariantCulture);
+            // 用 TryParse 而不是 Parse：病态/恶意输入里的超大数字不允许变成异常。
+            // 解析不出合法尺寸时按"无法解析该行"处理（fail-closed），绝不猜测。
+            int parsedWidth;
+            int parsedHeight;
+            if (!int.TryParse(dimensions.Groups["w"].Value, NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out parsedWidth) ||
+                !int.TryParse(dimensions.Groups["h"].Value, NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out parsedHeight))
+            {
+                return false;
+            }
+
+            width = parsedWidth;
+            height = parsedHeight;
 
             string head = stripped.Substring(0, dimensions.Index);
             string[] fields = head.Split(',');
@@ -741,6 +920,12 @@ namespace ADOFAI.Renderist.Ffmpeg
             public bool Cancelled { get; set; }
             public string StartError { get; set; }
             public string ReadError { get; set; }
+
+            /// <summary>true = 已确认本 pass 启动的进程真实退出。</summary>
+            public bool ProcessReaped { get; set; }
+
+            /// <summary>无法确认收敛的原因（null = 已确认收敛）。</summary>
+            public string ResidualDetail { get; set; }
         }
     }
 
@@ -936,9 +1121,18 @@ namespace ADOFAI.Renderist.Ffmpeg
                 Match match = HeaderDimensionRegex.Match(line);
                 if (match.Success)
                 {
-                    DimensionsWidth = int.Parse(match.Groups["w"].Value, CultureInfo.InvariantCulture);
-                    DimensionsHeight = int.Parse(match.Groups["h"].Value, CultureInfo.InvariantCulture);
-                    HasDimensions = true;
+                    // TryParse：超大数字只表示"该头不可用"，绝不允许抛异常。
+                    int parsedWidth;
+                    int parsedHeight;
+                    if (int.TryParse(match.Groups["w"].Value, NumberStyles.Integer,
+                            CultureInfo.InvariantCulture, out parsedWidth) &&
+                        int.TryParse(match.Groups["h"].Value, NumberStyles.Integer,
+                            CultureInfo.InvariantCulture, out parsedHeight))
+                    {
+                        DimensionsWidth = parsedWidth;
+                        DimensionsHeight = parsedHeight;
+                        HasDimensions = true;
+                    }
                 }
                 return;
             }

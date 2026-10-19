@@ -306,16 +306,16 @@ namespace ADOFAI.Renderist.FfmpegTests
 
         private static void TerminalBoundaryTests()
         {
-            TestKit.Run("mp4 boundary: an MP4 session can never be mapped to Completed without Finalizing", () =>
+            TestKit.Run("mp4 boundary: an MP4 session is never mapped directly to Completed", () =>
             {
+                // L3-C 起 Finalizing 已实现，但"到达导出终态"仍然**不等于**成功导出：
+                // MP4 必须先过 Finalizing 判决，只有它才能产生 Completed。
                 TestKit.Check(!Mp4TerminalBoundaryPolicy.CanMapToCompleted(CaptureOutputMode.Mp4Rgb24),
-                    "L3-A has no Finalizing, so the terminal boundary must fail closed");
+                    "MP4 must go through Finalizing before it can be Completed");
                 TestKit.Check(Mp4TerminalBoundaryPolicy.CanMapToCompleted(CaptureOutputMode.PngSequence),
                     "PNG keeps the existing Completed mapping");
                 TestKit.Check(Mp4TerminalBoundaryPolicy.CanMapToCompleted(CaptureOutputMode.LogOnly),
                     "Log-only keeps the existing Completed mapping");
-                TestKit.Check(Mp4TerminalBoundaryPolicy.ValidationBoundaryStopReason.Contains("no-finalizing"),
-                    "the stop reason names the missing Finalizing step");
             });
         }
 
@@ -364,8 +364,8 @@ namespace ADOFAI.Renderist.FfmpegTests
                     "metadata mode and outputMode share the frozen enum");
                 TestKit.Check(start.Contains("TryResolveOutputMode(out outputMode, out modeMigrated"),
                     "the mode is resolved once per session");
-                TestKit.Check(start.Contains("FinalizingNotImplemented = OutputModePolicy.IsMp4(outputMode)"),
-                    "metadata records that Finalizing was never implemented for this session");
+                TestKit.Check(start.Contains("FinalizingNotImplemented = false"),
+                    "L3-C implements Finalizing, so the boundary flag stays false");
             });
 
             TestKit.Run("mp4 wiring: the MP4 startup helper freezes, binds, starts and arms in order", () =>
@@ -401,18 +401,19 @@ namespace ADOFAI.Renderist.FfmpegTests
                     "the slot is only cleared after convergence succeeded");
             });
 
-            TestKit.Run("mp4 wiring: the terminal boundary fails closed instead of showing a successful MP4", () =>
+            TestKit.Run("mp4 wiring: the terminal boundary never reports a successful MP4 on its own", () =>
             {
                 string finalize = Method(Source("Export/EditorExportController.cs"),
                     "private static void FinalizeFromScheduler()");
-                TestKit.Check(finalize.Contains("Mp4TerminalBoundaryPolicy.CanMapToCompleted(_frozenOutputMode)"),
-                    "Completed mapping is gated by the L3-A boundary policy");
-                TestKit.Check(finalize.Contains("s.State = EditorExportState.Failed;"),
-                    "an MP4 session at the boundary is recorded as Failed, never Completed");
-                TestKit.Check(finalize.Contains("Mp4TerminalBoundaryPolicy.ValidationBoundaryDetail"),
-                    "the user-visible detail states this is an L3-A validation boundary");
-                TestKit.Check(finalize.Contains("Log.Warn("),
-                    "the boundary is logged explicitly");
+                TestKit.Check(finalize.Contains("!Mp4TerminalBoundaryPolicy.CanMapToCompleted(_frozenOutputMode)"),
+                    "the MP4 branch is gated by the tested boundary policy");
+                TestKit.Check(finalize.IndexOf("BeginFinalizing(s)", StringComparison.Ordinal) >= 0,
+                    "the MP4 branch starts Finalizing instead of mapping a terminal state");
+                TestKit.Check(finalize.IndexOf("BeginFinalizing(s)", StringComparison.Ordinal) <
+                              finalize.IndexOf("s.State = EditorExportState.Completed", StringComparison.Ordinal),
+                    "Finalizing must be entered before any Completed mapping");
+                TestKit.Check(!Source("Export/EditorExportController.cs").Contains("l3a-validation-boundary"),
+                    "the removed L3-A validation boundary must not linger");
             });
 
             TestKit.Run("mp4 wiring: settings keep a single output-mode authority", () =>

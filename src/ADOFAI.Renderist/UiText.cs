@@ -108,6 +108,10 @@ namespace ADOFAI.Renderist
         public const string GuiMasterTimelineHandoffConvergingHint =
             "上一会话已终止，终态资源仍在收敛；完成后可再次启动。";
 
+        // L3-C：MP4 完成关口（FFmpeg Finish → 独立核验 → 同卷原子发布）在途。
+        // 与"正在清理"不同：此时 Stop 仍然有效（请求取消并放弃发布），因此按钮保持可操作。
+        public const string GuiMasterTimelineHandoffStateFinalizing = "正在完成 MP4 封装与核验…";
+
         // ---- Phase 3.8.0: FFmpeg 组件管理 ----
 
         public const string GuiFfmpegSectionTitle = "FFmpeg 组件";

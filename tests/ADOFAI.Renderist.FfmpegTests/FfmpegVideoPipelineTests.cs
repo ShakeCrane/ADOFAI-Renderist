@@ -2577,7 +2577,7 @@ namespace ADOFAI.Renderist.FfmpegTests
             }
         }
 
-        private static FfmpegVideoIdentity MakeRealIdentity(string ffmpegPath)
+        internal static FfmpegVideoIdentity MakeRealIdentity(string ffmpegPath)
         {
             FfmpegCapabilityReport capability =
                 FfmpegCapabilityProbe.Probe(ffmpegPath, 30, CancellationToken.None);

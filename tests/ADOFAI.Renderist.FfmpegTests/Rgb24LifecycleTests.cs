@@ -364,7 +364,13 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.Check(prefix.Contains("CanPrepareGameplay(_status, _preEntryCapturing, _timeline != null)"), "handoff guard wired");
                 string postfix = Method(scheduler, "private static void ConductorUpdatePostfix()");
                 TestKit.Check(postfix.Contains("CanObservePreparedGameplay") && postfix.Contains("_lastAutoplayFrameIndex == _outputFrameIndex"), "autoplay exactly once");
-                TestKit.Check(Method(scheduler, "private static bool RestoreAll(out string error)").Contains("TryStopAndDrain"), "cancel owns both barriers");
+                // L3-C：cancel 仍然是唯一回收路径，但只对**非** canonical completion 终态生效
+                // （正常完成路径改为一次性交接给 Finalizing，绝不取消已成功交付的 context）。
+                string restore = Method(scheduler,
+                    "private static bool RestoreAll(bool allowRgb24CompletionHandoff, out string error)");
+                TestKit.Check(restore.Contains("TryStopAndDrain"), "cancel owns both barriers");
+                TestKit.Check(restore.IndexOf("if (!allowRgb24CompletionHandoff)") <
+                              restore.IndexOf("TryStopAndDrain"), "the cancel path is skipped only for the completion handoff");
                 string handoff = Method(scheduler, "private static void TickInitializationHold()");
                 TestKit.Check(handoff.Contains("if (_preEntryCapturing && _pendingCapture)"), "handoff waits for pending capture");
                 TestKit.Check(handoff.IndexOf("_timeline = new MasterTimeline") < handoff.IndexOf("_status = SchedulerStatus.Capturing"), "timeline before gameplay");
@@ -470,6 +476,13 @@ namespace ADOFAI.Renderist.FfmpegTests
             internal bool Reject;
             public Task<FfmpegVideoOutcome> CleanupTask => Cleanup.Task;
             public void RequestStop(string reason) { }
+
+            // L3-C：该假 lifetime 不模拟 Finalizing；返回 null 表示"连开始都无法成立"，
+            // 生产 context 会据此 fail-closed 并回既有取消路径。
+            public Task<FfmpegVideoOutcome> BeginFinalize() => null;
+
+            // L3-C：本假 lifetime 不模拟交付计数（进入 Finalizing 前的交叉核对由真实管线用例覆盖）。
+            public long DeliveredFrameCount => 0;
             public Rgb24TransportAttempt TryBeginWrite(OwnedRgb24Frame frame)
             {
                 BeforeReturn?.Invoke();

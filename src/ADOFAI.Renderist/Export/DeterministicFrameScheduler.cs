@@ -278,6 +278,22 @@ namespace ADOFAI.Renderist.Export
         /// <summary>启动路径是否已把本 **下一次** TryStart 标记为 RGB24 交付 session。每次 TryStart 消费并清零。</summary>
         private static bool _rgb24DeliveryArmed;
 
+        /// <summary>
+        /// L3-C：正常完成路径上**一次性交接**出去的、已经完成全部帧交付的 context。
+        ///
+        /// 它不是第二套 owner：scheduler 一旦交接就不再触碰它（<see cref="TickResidualOwnership"/>
+        /// 只看 <see cref="_rgb24Delivery"/>）。取走方（controller 的 Finalizing）成为唯一 owner；
+        /// 若始终无人取走，它仍是 residual ownership，既阻止重开，也会在下一次
+        /// cleanup / 重开门禁中被放回原取消路径。
+        /// </summary>
+        private static Rgb24DeliveryContext _rgb24CompletionHandoff;
+
+        /// <summary>
+        /// true = 该交接 context 已被撤销，**必须**走原取消路径而不是 Finalizing。
+        /// 撤销后仍保留引用直到资源真正收敛（绝不丢 ownership、绝不假装已回收）。
+        /// </summary>
+        private static bool _rgb24HandoffRevoked;
+
         // saved Unity timing state is itself ownership until restoration succeeds
         private static bool _ownsUnityTiming;
 
@@ -884,6 +900,9 @@ namespace ADOFAI.Renderist.Export
                    // L3-A：帧 Completion 与 pipeline cleanup 未各自收敛前，RGB24 lease 仍然是
                    // residual ownership（CleanupTask 完成**不能**推导 frame buffer 已可复用）。
                    (!_rgb24DeliveryArmed && _rgb24Delivery != null && _rgb24Delivery.HasResidualOwnership) ||
+                   // L3-C：已交接、等待 Finalizing 取走的 context 同样是 ownership；
+                   // 未取走前既不允许重开，也不允许被当作"已回收"。
+                   _rgb24CompletionHandoff != null ||
                    _inputGuardHooks.Count > 0 ||
                    EditorVisualClock.HasTrackedHooks ||
                    _patchedConductorUpdate != null || _patchedAsyncInputAdjustAngle != null ||
@@ -907,7 +926,9 @@ namespace ADOFAI.Renderist.Export
                 return true;
             }
 
-            if (!RestoreAll(out error))
+            // 重开门禁从不允许交接通过：这里一律走非交接（原取消）语义，因此一个始终
+            // 无人取走的 L3-C 交接 context 会在这里被放回既有取消路径，而不是永久阻塞重开。
+            if (!RestoreAll(false, out error))
             {
                 _running = false;
                 _status = SchedulerStatus.Failed;
@@ -928,7 +949,7 @@ namespace ADOFAI.Renderist.Export
         private static string FailStart(string reason)
         {
             _terminalStopReason = reason;
-            if (!RestoreAll(out string cleanupError))
+            if (!RestoreAll(false, out string cleanupError))
             {
                 _terminalStopReason = "cleanup-failed:" + cleanupError;
             }
@@ -2130,11 +2151,15 @@ namespace ADOFAI.Renderist.Export
         }
 
         public static bool HasPendingRgb24Cleanup =>
-            !_rgb24DeliveryArmed && _rgb24Delivery != null && _rgb24Delivery.HasResidualOwnership;
+            _rgb24CompletionHandoff != null ||
+            (!_rgb24DeliveryArmed && _rgb24Delivery != null && _rgb24Delivery.HasResidualOwnership);
 
         // 逻辑终态之后仍执行；只退休旧 context，不推进 scheduler、不 Commit、不操作新 generation。
         public static void TickResidualOwnership()
         {
+            // L3-C：已撤销的交接 context 独立收敛（它刻意不在 _rgb24Delivery 里）。
+            TryConvergeRevokedRgb24Handoff(_terminalStopReason);
+
             if (_running || _rgb24DeliveryArmed || _rgb24Delivery == null) return;
             bool clean = _rgb24Delivery.TryStopAndDrain(_terminalStopReason ?? "session-stopped", out _);
             if (_rgb24DeliveryFailureObserved && _rgb24Delivery.PipelineCleanupSettled)
@@ -2789,10 +2814,19 @@ namespace ADOFAI.Renderist.Export
             _running = false;
             _clockActive = false;
 
+            // L3-C：只有 canonical completion（全部逻辑尾帧已提交）这一条正常完成路径才允许
+            // 把**已成功交付**的 FFmpeg context 交接给 Finalizing。其余任何终态（用户取消 /
+            // 失败 / 超时 / cleanup 失败）都必须走原取消路径：取消进程、删除临时产物，
+            // 绝不发布任何 MP4。
+            bool completionTerminal = MapTerminal(stopEvent) == SchedulerStatus.Completed;
+
             try
             {
-                if (!RestoreAll(out string cleanupError))
+                if (!RestoreAll(completionTerminal, out string cleanupError))
                 {
+                    // Unity cleanup 失败 ⇒ **立即**回原取消路径（不依赖后续 Tick 才第一次发起取消）。
+                    // 此时交接尚未发生，所以必须主动取消原来的 _rgb24Delivery。
+                    RevokeRgb24CompletionForCleanupFailure("cleanup-failed");
                     _terminalStopReason = "cleanup-failed:" + cleanupError;
                     _status = SchedulerStatus.Failed;
                     Log.Info(UiText.Format(UiText.LogSchedulerStoppedFormat,
@@ -2802,6 +2836,7 @@ namespace ADOFAI.Renderist.Export
             }
             catch (Exception ex)
             {
+                RevokeRgb24CompletionForCleanupFailure("cleanup-exception");
                 Log.Exception("DeterministicFrameScheduler: 恢复异常", ex);
                 _restored = false;
                 _terminalStopReason = "cleanup-failed:restore-exception";
@@ -2812,10 +2847,145 @@ namespace ADOFAI.Renderist.Export
             }
 
             _status = MapTerminal(stopEvent);
+
+            if (_status == SchedulerStatus.Completed)
+            {
+                // Unity cleanup 已全部成功，且本 session 的帧交付已完整结束：现在才允许
+                // 一次性交接。交接前提不成立时同样回原取消路径。
+                if (!TryDetachRgb24CompletionHandoff())
+                    RevokeRgb24CompletionForCleanupFailure("handoff-precondition-failed");
+            }
+            else
+            {
+                RevokeRgb24CompletionForCleanupFailure("terminal-not-completed");
+            }
+
             Log.Info(UiText.Format(UiText.LogSchedulerStoppedFormat, stopReason ?? "?", _status.ToString()));
         }
 
-        private static bool RestoreAll(out string error)
+        /// <summary>
+        /// L3-C：把唯一那个**已完成全部帧交付**的 RGB24 context 一次性交接出去，使 FFmpeg
+        /// 进程继续存活并被 controller 用于 FinishAsync。
+        ///
+        /// 刻意**不**调用 <c>RequestStop</c> / <c>Cancel</c>：正常完成路径提前取消一个已经成功
+        /// 交付的 context，会终止编码进程并删除临时产物，使 Finalizing 永远不可能成立。
+        ///
+        /// 返回 false 表示交接前提不成立（没有 context / 仍有帧 ownership / 已被取消），
+        /// 调用方必须回原取消路径。绝不在这里放宽任何前提。
+        /// </summary>
+        private static bool TryDetachRgb24CompletionHandoff()
+        {
+            Rgb24DeliveryContext context = _rgb24Delivery;
+            if (context == null) return false;
+            if (context.HasFrameOwnership) return false;
+            if (context.Stopping) return false;
+            if (_rgb24CompletionHandoff != null) return false;
+
+            _rgb24Delivery = null;
+            _rgb24DeliveryEnabled = false;
+            _rgb24CompletionHandoff = context;
+            Log.Info("DeterministicFrameScheduler: RGB24 context handed off for MP4 finalizing " +
+                     "(encoder process intentionally left running).");
+            return true;
+        }
+
+        /// <summary>
+        /// L3-C：把尚未被取走的交接 context 放回**原取消路径**（幂等）。
+        /// 撤销后引用仍然保留，直到 frame Completion 与 pipeline CleanupTask 都收敛
+        /// （由 <see cref="TryConvergeRevokedRgb24Handoff"/> 负责），因此 residual gate 始终关闭。
+        /// </summary>
+        private static void RevokeRgb24CompletionHandoff(string reason)
+        {
+            if (_rgb24CompletionHandoff == null) return;
+
+            if (!_rgb24HandoffRevoked)
+            {
+                _rgb24HandoffRevoked = true;
+                Log.Warn("DeterministicFrameScheduler: RGB24 completion handoff revoked (" + reason +
+                         "); falling back to the existing cancel path.");
+            }
+
+            TryConvergeRevokedRgb24Handoff(reason);
+        }
+
+        /// <summary>已撤销交接 context 的收敛入口（幂等、非阻塞）。</summary>
+        private static void TryConvergeRevokedRgb24Handoff(string reason)
+        {
+            Rgb24DeliveryContext handoff = _rgb24CompletionHandoff;
+            if (handoff == null || !_rgb24HandoffRevoked) return;
+
+            string error;
+            if (!handoff.TryStopAndDrain(reason ?? "session-stopped", out error)) return;
+
+            _rgb24CompletionHandoff = null;
+            _rgb24HandoffRevoked = false;
+        }
+
+        /// <summary>
+        /// L3-C：cleanup 失败 / 终态不是 Completed / 交接前提不成立时的**立即**回退。
+        ///
+        /// 与 <see cref="RevokeRgb24CompletionHandoff"/> 的区别是关键：那个只处理**已经交接出去**的
+        /// context；而这条路径上交接通常**还没有发生**，context 仍在 <see cref="_rgb24Delivery"/> 里。
+        /// 因此这里必须主动请求取消，绝不等下一次 <see cref="TickResidualOwnership"/> 才第一次发起取消
+        /// （编辑器关闭或 Mod 被禁用时可能根本没有下一次 Tick）。
+        ///
+        /// 收敛语义不变：仍然只经既有 <c>TryStopAndDrain</c>（L2 Cancel + frame Completion +
+        /// CleanupTask 双屏障）；未收敛时保留引用，由既有 residual 泵与重开门禁继续负责。
+        /// </summary>
+        private static void RevokeRgb24CompletionForCleanupFailure(string reason)
+        {
+            RevokeRgb24CompletionHandoff(reason);
+
+            Rgb24DeliveryContext context = _rgb24Delivery;
+            if (context == null) return;
+
+            _rgb24DeliveryArmed = false;
+
+            string error;
+            if (context.TryStopAndDrain(reason ?? "session-stopped", out error))
+                return;
+
+            // 未收敛：**不丢 ownership**，保留在 _rgb24Delivery 由既有 residual 泵继续收敛；
+            // 重开门禁（HasResidualOwnership / HasPendingRgb24Cleanup）在执行期间始终关闭。
+            Log.Warn("DeterministicFrameScheduler: RGB24 context cancel requested after " + reason +
+                     " but cleanup is still pending: " + (error ?? "unknown"));
+        }
+
+        /// <summary>
+        /// L3-C：取走已经交接完成、等待 Finalizing 的 context（**一次性**）。
+        /// 取走后 scheduler 不再持有它；Finalizing 的收敛由取走方负责。
+        /// 已撤销的交接**绝不**可以被取走（它只能被取消）。
+        /// </summary>
+        public static bool TryTakeCompletedRgb24Delivery(out Rgb24DeliveryContext context, out string error)
+        {
+            context = _rgb24CompletionHandoff;
+            error = null;
+            if (context == null || _rgb24HandoffRevoked)
+            {
+                context = null;
+                error = _rgb24HandoffRevoked
+                    ? "rgb24-completion-handoff-revoked"
+                    : "rgb24-completion-handoff-missing";
+                return false;
+            }
+
+            _rgb24CompletionHandoff = null;
+            return true;
+        }
+
+        /// <summary>
+        /// L3-C：放弃一个未被接管的交接 context（调用方必须回原取消路径并 fail-closed）。
+        /// </summary>
+        public static void RevokeCompletedRgb24Delivery(string reason)
+        {
+            RevokeRgb24CompletionHandoff(reason ?? "handoff-abandoned");
+        }
+
+        /// <summary>是否存在**可被取走**的、等待 Finalizing 的交接 context（只读投影）。</summary>
+        public static bool HasCompletedRgb24Handoff =>
+            _rgb24CompletionHandoff != null && !_rgb24HandoffRevoked;
+
+        private static bool RestoreAll(bool allowRgb24CompletionHandoff, out string error)
         {
             error = null;
             if (_cleanupInProgress)
@@ -2847,9 +3017,20 @@ namespace ADOFAI.Renderist.Export
                 }
 
                 // RGB24 资源独立收敛：未完成的 Task 保留为 residual，不能阻塞主线程。
+                //
+                // L3-C 例外：canonical completion 路径（allowRgb24CompletionHandoff）**刻意不**
+                // 在这里取消已成功交付的 context。取消会终止编码进程并删除临时产物，
+                // 使 Finalizing 永远无法成立。交接由 ProcessStop 在本方法**全部成功之后**
+                // 一次性完成；本方法失败或终态不是 Completed 时一律回原取消路径。
                 _rgb24DeliveryArmed = false;
-                if (_rgb24Delivery != null)
-                    _rgb24Delivery.TryStopAndDrain(_terminalStopReason ?? "session-stopped", out _);
+                if (!allowRgb24CompletionHandoff)
+                {
+                    // 非交接路径：撤销（或首次进入时本就不存在）交接槽，再走既有取消路径。
+                    // 撤销后的 context 由 TryConvergeRevokedRgb24Handoff 继续收敛。
+                    RevokeRgb24CompletionHandoff(_terminalStopReason ?? "session-stopped");
+                    if (_rgb24Delivery != null)
+                        _rgb24Delivery.TryStopAndDrain(_terminalStopReason ?? "session-stopped", out _);
+                }
 
                 // 先撤 Hook 与捕获后端，再恢复 RDC.auto 与 Editor 播放状态，最后恢复 Unity 时间。
                 bool captureStopped;

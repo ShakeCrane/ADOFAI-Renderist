@@ -30,7 +30,28 @@ namespace ADOFAI.Renderist.Export
         internal FfmpegVideoPipeline Pipeline { get { return _pipeline; } }
         internal string FailureDiagnostics => _pipeline.DescribeFailureDiagnostics();
         public Task<FfmpegVideoOutcome> CleanupTask => _pipeline.CleanupTask;
+
+        /// <summary>L2 自己的完整写入计数（只读，用于进入 Finalizing 前的计数交叉核对）。</summary>
+        public long DeliveredFrameCount => _pipeline.DeliveredFrameCount;
+
         public void RequestStop(string reason) { _pipeline.Cancel(reason); }
+
+        /// <summary>
+        /// L3-C：转发到既有 L2 <c>FinishAsync</c>（关闭 stdin → 等待退出与双流 EOF → 独立核验 →
+        /// 同卷原子发布）。刻意只是转发：不复制完成协议、不建立第二套终态判定。
+        /// 连"开始"都无法成立时返回 null，由 context fail-closed。
+        /// </summary>
+        public Task<FfmpegVideoOutcome> BeginFinalize()
+        {
+            try
+            {
+                return _pipeline.FinishAsync();
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
 
         public Rgb24TransportAttempt TryBeginWrite(OwnedRgb24Frame frame)
         {

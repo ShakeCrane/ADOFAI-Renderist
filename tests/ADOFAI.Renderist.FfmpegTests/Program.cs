@@ -57,6 +57,7 @@ namespace ADOFAI.Renderist.FfmpegTests
             Rgb24BackpressureTests.Run();
             PipelineBackpressureTests.Run(_workRoot);
             Mp4StartupTests.Run();
+            Mp4FinalizingTests.Run(_workRoot);
             FfmpegReadinessTests.Run();
             FfmpegMigrationTests.Run(_workRoot);
             FfmpegInspectionLifecycleTests.Run(_workRoot);
