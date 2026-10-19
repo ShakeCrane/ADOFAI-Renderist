@@ -35,7 +35,7 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 | --- | --- |
 | 产品版本 | **`0.3.12.0`（前三位变更，已由用户明确批准）**。相对 `0.3.11.0` 新增：Unity-free 的 generation/frame/phase **视觉帧授权合同**（每消费者独立回执 / 一次消费 / 失效 / EOF 前完整性校验）、scheduler 既有流程内的最小接线、以及 **Camera 原生 Update / UpdateSize / custom FPS 的局部时间读取替换**（窄 Transpiler + Prefix/Postfix/Finalizer 作用域）。Camera Tween owner、Shake RNG、Particle owner 与 replay **未实现**。Phase 文案同步为 `Phase 3.10.0 Camera & Particle Visual Time Ownership`。**Gate A 自动化与目标 Unity 功能主路径实机均已通过（§2.2.19），不等于特殊原生异常或整体视觉确定性通过**（§2.2.16）。 |
 | Phase | `Phase 3.10.0 Camera & Particle Visual Time Ownership`（本版本更新；上一版为 `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`） |
-| Git 基线 | `main`；最新源码提交 **`b0ac34e4b03d8efd0799a714b0d1f8a43cb16848`**（F1-A 实验性 No-Go），六步恢复已完成并通过网页版 GPT 复审，身份见 §2.2.31。本次收尾为其后的独立文档提交，不改变源码基线；实际 HEAD 以 `git rev-parse HEAD` 为准。`origin/main` 仍为 `9f9ff34eee4ff1f9a73a260d7d753219297d0950`，尚未同步六个恢复提交及本次文档收尾。 |
+| Git 基线 | Safety Closure 开始时 `main` / HEAD / `origin/main` 均为 **`a784ef1d4eeaaffe84ce9c526309f89775b5ab0e`**，ahead/behind **0/0**、工作区 clean；六步恢复及文档提交已同步远端，不重复恢复调查。F1-A 源码快照为 `b0ac34e4…`（身份见 §2.2.31）；本轮后续本地安全修复尚未 push，实际 HEAD / diff 以 Git 为准。 |
 | 版本定位 | **当前 `0.3.12.0` = Gate A 生命周期修复节点，不是视觉确定性完成节点**：L3-C 封装/发布主路径历史 PASS、视觉 FAIL 不变；当前只实现授权合同与 Camera 原生时间入口（生命周期修复见 §2.2.18），**已通过目标 Unity Gate A 功能主路径实机验收（§2.2.19）**。当前游戏部署 DLL SHA256 `F97722C6624E028640F87E23971E52BA4561E851AF870AF5E64030053854F699`（501248 bytes），FileVersion `0.3.12.0`。 |
 | 稳定实机基线 | **最新实机验收基线提升为 `0.3.10.3`**。新增证据：真实升级场景中，新 Local target 预先移走、旧 LocalLow valid install 保留；首次启动出现 `FFmpeg 旧托管安装已迁移到当前托管目录`，随后同一 initial generation 直接 `Ready/none@gen0`；第二次启动仅 `new-target-present` 且再次直接 `Ready/none@gen0`，证明迁移幂等。目录取证确认新 Local 与旧 LocalLow 的 `ffmpeg.exe` / `ffprobe.exe` SHA256 均与 manifest 一致，旧根原样保留，新/旧 `.staging` / `.downloads` 无残留文件。受测代码提交 `edccf02c9ff33b17d0e1cf3db536826ee3c175e0`，受测 DLL SHA256 `1F25D057194B91E929F5DD7AA327156DA7579A2C4E43377141D8E9CA47B64AC6`。上一稳定实机基线为 `0.3.10.2`。 |
 | L1 实机状态 | **`0.3.8.0`（DLL `AE2326D3…` / `+4d35801862d0828ea248d9934e8ebe74af11f2bb`）已通过用户最小实机验收**：UMM 显示 `0.3.8.0`、FFmpeg `Ready`、`libx264` / `mp4` / `rawvideo`、禁用并重新启用、无新可见异常。**L1 主路径已具备阶段性基线证据**；未覆盖边界（活动下载生命周期、异常网络、真实回调竞态）见 §2.7。 |
@@ -1072,7 +1072,15 @@ claim 先于 Cancel accepted 时，迟到取消不追溯改写这次许可；只
 
 执行报告及逐节点日志位于 ignored `.build-tools/history-review/20261019-095617/execution-20261019-105050/EXECUTION_REPORT.md`，同目录 `commits.json` / `final-audit.json` 记录提交与核验；上级目录保留原始 ZIP、Git bundle、对象库、manifest、SHA256 与补丁。历史失败日志另保留于 `.build-tools/f1a-review/`、`f1-current-regression.log` 和 `local-evidence.zip`。备份与失败证据未清理；游戏 Mods DLL 仍为 `F97722C6…`，未部署本实验。
 
-下一阶段恢复 **F1-A Safety Closure**，先闭合上述源码安全缺口并调查两类失败；本轮只完成文档收尾，不实施修复。尚未 push；远端同步必须由用户明确选择：推送包含 F1-A No-Go 实验的当前 `main`，或将实验保留在独立开发分支，不能自动替用户裁决。
+该次文档收尾后的远端同步已完成：Safety Closure 开始时实际 HEAD / origin/main 均为 `a784ef1d…`，0/0、clean。以下安全修复不自动 push。
+
+### 2.2.32 F1-A Safety Closure：stdin ownership 与回归屏障（2026-10-19）
+
+独立收敛节点，版本保持 `0.3.12.0`，README 未改。`FrameLocalDeliveryStreamGate` 现在拥有 inner：Dispose 恰好一次关闭真实 stdin，打开 managed hold，拒绝后续写入；在途 outer Task 始终等待真实 inner Write/Flush 终态，不能用 token/Dispose 伪造完成。managed hold 改为异步信号，不分配自有 wait handle；释放门不再冒充 write-enter。新增四项生产行为测试覆盖重复 Dispose、等待门中 Dispose、inner 已开始后的取消/Dispose 与独立 flush barrier、真实 IO 失败日志，均 PASS。
+
+F0 历史 `old-generation Post` 失败的可达竞态已确认：严格 teardown 等待 CleanupTask 后立即 TryAbort，但 L2 write / transport mapped Completion 是独立屏障，可能尚未 terminal。teardown 现显式等待该事务的真实 `DeliveryCompletion`，保留 timeout/fault/cancel 观察及原 residual 断言，不将 cleanup 当作帧终态。L2 init-failure 用例现于真实启动时持有**独立 OS process handle**，在 CleanupTask 完成后直接要求该 child `HasExited` 并可 WaitForExit；替代不能归属本次 start 的全进程名计数，既有 ProcessReaped/Disposed/temp/residual 断言全部保留。旧日志无 PID，不能事后证明旧 `1→2` 的第二个进程来源，也未据此修改 L2。
+
+本节点完整 net48：**467 PASS / 0 FAIL / 0 SKIP**（含真实 Gyan 9.0.2 fixture），Release Rebuild 0 error（1 个既有缓存 NU1900 警告），测试编译 6 个既有 stand-in CS0649 警告；`git diff --check` 通过。日志保留于 ignored `.build-tools/f1a-safety/ownership-*`。未部署/未执行 F1-B。Guardian 自动 5/10/30、完整诊断 settlement 与真实证据仍是独立后续工作；本节点**不撤销 F1-A No-Go / 整体视觉 FAIL**。
 
 ### 2.3 FFmpeg 构建、安装与独立进程取证（2026-09-23；未接入产品）
 

@@ -589,55 +589,65 @@ namespace ADOFAI.Renderist.Export
     internal sealed class FrameLocalDeliveryStreamGate : Stream
     {
         private readonly Stream _inner;
-        private readonly ManualResetEventSlim _entered = new ManualResetEventSlim(false);
-        private volatile bool _opened;
+        private readonly TaskCompletionSource<bool> _entered = NewSignal();
+        private readonly TaskCompletionSource<bool> _opened = NewSignal();
+        private readonly object _lifetime = new object();
+        private int _operations;
+        private bool _disposed;
+        private bool _innerDisposed;
+        private string _disposeError;
         private int _firstWrite = 1;
 
         internal FrameLocalDeliveryStreamGate(Stream inner, FrameLocalDeliveryEvidence evidence)
         {
-            _inner = inner;
+            _inner = inner ?? throw new ArgumentNullException(nameof(inner));
             Evidence = evidence;
         }
 
         internal FrameLocalDeliveryEvidence Evidence { get; private set; }
-        internal bool GateEntered { get { return _entered.IsSet; } }
-        internal bool WaitEntered(TimeSpan timeout) { return _entered.Wait(timeout); }
+        private static TaskCompletionSource<bool> NewSignal() =>
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal bool GateEntered => _entered.Task.IsCompleted;
+        internal bool WaitEntered(TimeSpan timeout) => _entered.Task.Wait(timeout);
+        internal bool OwnershipSettled { get { lock (_lifetime) return _disposed && _innerDisposed && _operations == 0 && _disposeError == null; } }
+        internal string DisposeError { get { lock (_lifetime) return _disposeError; } }
 
         /// <summary>打开前置门（正常 Release / cancel / failsafe 共用）。</summary>
         internal void Open(string reason)
         {
-            if (_opened) return;
-            _opened = true;
-            Evidence?.Record("gate-open", reason);
-            _entered.Set();
+            if (_opened.TrySetResult(true)) Evidence?.Record("gate-open", reason);
         }
 
         public override async Task WriteAsync(byte[] buffer, int offset, int count,
             CancellationToken cancellationToken)
         {
-            if (Interlocked.Exchange(ref _firstWrite, 0) == 1)
-            {
-                Evidence?.Record("gate-enter", "count=" + count.ToString(CultureInfo.InvariantCulture));
-                _entered.Set();
-                while (!_opened)
-                {
-                    // 事件驱动等待：由 Release / cancel / failsafe 打开；不轮询 IO。
-                    if (cancellationToken.WaitHandle.WaitOne(25)) break;
-                    if (_opened) break;
-                }
-            }
-
-            Evidence?.Record("inner-write-begin", "count=" + count.ToString(CultureInfo.InvariantCulture));
+            BeginOperation();
             try
             {
+                if (Interlocked.Exchange(ref _firstWrite, 0) == 1)
+                {
+                    Evidence?.Record("gate-enter", "count=" + count.ToString(CultureInfo.InvariantCulture));
+                    _entered.TrySetResult(true);
+                    // Cancel only opens the managed hold. Once inner IO starts, its true terminal
+                    // task (including Flush) owns the buffer; no token races can shorten it.
+                    using (cancellationToken.Register(() => Open("write-cancelled")))
+                        await _opened.Task.ConfigureAwait(false);
+                }
+                cancellationToken.ThrowIfCancellationRequested();
+                lock (_lifetime) if (_disposed) throw new ObjectDisposedException(nameof(FrameLocalDeliveryStreamGate));
+                Evidence?.Record("inner-write-begin", "count=" + count.ToString(CultureInfo.InvariantCulture));
                 await _inner.WriteAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
-                await _inner.FlushAsync(cancellationToken).ConfigureAwait(false);
                 Evidence?.Record("inner-write-end", "ok");
-            }
-            finally
-            {
+                Evidence?.Record("inner-flush-begin", "write");
+                await _inner.FlushAsync(cancellationToken).ConfigureAwait(false);
                 Evidence?.Record("inner-flush-end", "ok");
             }
+            catch (Exception ex)
+            {
+                Evidence?.Record("inner-io-failed", ex.GetType().Name + ":" + ex.Message);
+                throw;
+            }
+            finally { EndOperation(); }
         }
 
         public override void Write(byte[] buffer, int offset, int count)
@@ -645,12 +655,38 @@ namespace ADOFAI.Renderist.Export
             throw new NotSupportedException();
         }
 
-        public override void Flush() { _inner.Flush(); }
-        public override Task FlushAsync(CancellationToken cancellationToken) { return _inner.FlushAsync(cancellationToken); }
+        public override void Flush()
+        {
+            BeginOperation();
+            try { _inner.Flush(); }
+            finally { EndOperation(); }
+        }
+        public override async Task FlushAsync(CancellationToken cancellationToken)
+        {
+            BeginOperation();
+            try
+            {
+                Evidence?.Record("inner-flush-begin", "pipeline");
+                await _inner.FlushAsync(cancellationToken).ConfigureAwait(false);
+                Evidence?.Record("inner-flush-end", "pipeline-ok");
+            }
+            catch (Exception ex) { Evidence?.Record("inner-flush-failed", ex.GetType().Name); throw; }
+            finally { EndOperation(); }
+        }
+
+        private void BeginOperation()
+        {
+            lock (_lifetime)
+            {
+                if (_disposed) throw new ObjectDisposedException(nameof(FrameLocalDeliveryStreamGate));
+                _operations++;
+            }
+        }
+        private void EndOperation() { lock (_lifetime) _operations--; }
 
         public override bool CanRead { get { return false; } }
         public override bool CanSeek { get { return false; } }
-        public override bool CanWrite { get { return true; } }
+        public override bool CanWrite { get { lock (_lifetime) return !_disposed && _inner.CanWrite; } }
         public override long Length { get { throw new NotSupportedException(); } }
         public override long Position
         {
@@ -665,8 +701,17 @@ namespace ADOFAI.Renderist.Export
         {
             if (disposing)
             {
+                lock (_lifetime)
+                {
+                    if (_disposed) return;
+                    _disposed = true;
+                }
                 Open("stream-disposed");
-                _entered.Dispose();
+                // L2 may tear down before the frame task. Close the real pipe exactly once,
+                // without waiting on the writer. The outer async task still awaits inner IO.
+                try { _inner.Dispose(); lock (_lifetime) _innerDisposed = true; }
+                catch (Exception ex) { lock (_lifetime) _disposeError = ex.GetType().Name + ":" + ex.Message; throw; }
+                finally { Evidence?.Record("stdin-disposed", DisposeError ?? "inner-closed"); }
             }
             base.Dispose(disposing);
         }

@@ -1772,7 +1772,7 @@ namespace ADOFAI.Renderist.FfmpegTests
             TestKit.Run("hardening: an initialization failure after a successful start still reaps the process", () =>
             {
                 string directory = TestKit.NewWorkDirectory(workRoot, "initfail");
-                int before = CountProcesses("ADOFAI.Renderist.FfmpegTests");
+                Process encoderWitness = null;
 
                 var launcher = new FakeVideoProcessLauncher
                 {
@@ -1784,7 +1784,17 @@ namespace ADOFAI.Renderist.FfmpegTests
                     Settings = Settings(64, 48, 30),
                     Identity = MakeIdentity(FakeVideoProcess.ExecutablePath),
                     FinalPath = Path.Combine(directory, "video.mp4"),
-                    ProcessStart = launcher.Create(),
+                    ProcessStart = (path, arguments, workingDirectory) =>
+                    {
+                        Process encoder = launcher.Create()(path, arguments, workingDirectory);
+                        // An independent OS handle survives L2's Dispose and identifies precisely
+                        // this start. A process-name count can include another suite's children.
+                        encoderWitness = Process.GetProcessById(encoder.Id);
+                        var handle = encoderWitness.Handle;
+                        Console.WriteLine("      initfail encoder pid=" + encoderWitness.Id +
+                                          " start=" + encoderWitness.StartTime.ToUniversalTime().Ticks);
+                        return encoder;
+                    },
                     // 注入 stdout 初始化异常：进程已经启动，但流初始化失败。
                     StreamWrapper = (stream, role) =>
                     {
@@ -1794,6 +1804,8 @@ namespace ADOFAI.Renderist.FfmpegTests
                     },
                 };
 
+                try
+                {
                 var pipeline = new FfmpegVideoPipeline(options);
                 FfmpegVideoStartResult start = pipeline.Start();
 
@@ -1811,10 +1823,13 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.CheckEqual(0, PartialFiles(directory).Length, "temp file must be removed");
                 TestKit.Check(!File.Exists(Path.Combine(directory, "video.mp4")), "nothing may be published");
 
-                int after = CountProcesses("ADOFAI.Renderist.FfmpegTests");
-                TestKit.Check(after <= before, "no child process may survive an init failure (" + before + " -> " + after + ")");
+                TestKit.Check(encoderWitness != null && encoderWitness.HasExited,
+                    "the exact init-failure child must have exited before CleanupTask completes");
+                TestKit.Check(encoderWitness.WaitForExit(5000), "the exact child exit must be waitable");
 
                 TestKit.TryDeleteDirectory(directory);
+                }
+                finally { encoderWitness?.Dispose(); }
             });
 
             TestKit.Run("hardening: a failed stderr initialization still owns and waits for the running stdout pump", () =>

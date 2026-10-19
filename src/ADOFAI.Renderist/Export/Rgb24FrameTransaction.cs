@@ -451,6 +451,10 @@ namespace ADOFAI.Renderist.Export
             return _write != null && _write.TryTake(out envelope, out bridgeError);
         }
 
+        // Read on the captured thread. Diagnostic/teardown observers must retain this task
+        // before retirement clears _write; CleanupTask is not the frame barrier.
+        internal Task<Rgb24FrameWriteOutcome> DeliveryCompletion => _write?.Completion;
+
         // scheduler phase 是外部 authority；transaction 仅检查本 lease 的 accepted/completion 证据。
         internal Rgb24TransactionOutcome ConsumeEnvelope(bool schedulerAwaitingDelivery,
             Rgb24DeliveryEnvelope envelope, out string errorCode, out string errorDetail)

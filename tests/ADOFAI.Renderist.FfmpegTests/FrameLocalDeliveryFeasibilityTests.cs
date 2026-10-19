@@ -1108,6 +1108,16 @@ namespace ADOFAI.Renderist.FfmpegTests
 
                     if (Stream != null && Stream.IsWritePending) problems.Add("stdin-write-still-pending");
 
+                    // CleanupTask is deliberately independent of the mapped frame completion.
+                    // Faulting/disposing stdin only settles its own task; allow L2 + transport to
+                    // publish their actual terminal task before asserting the frame barrier.
+                    Task frameCompletion = Current.Transaction.DeliveryCompletion;
+                    if (frameCompletion != null)
+                    {
+                        try { if (!frameCompletion.Wait(WatchdogMs)) problems.Add("frame-completion-timeout"); }
+                        catch (AggregateException) { var observed = frameCompletion.Exception; }
+                    }
+
                     if (Current.HasFrameOwnership)
                     {
                         if (!Current.TryStopAndDrain("f0-test-end", out string abortError))
