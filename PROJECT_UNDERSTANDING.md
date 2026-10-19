@@ -43,7 +43,7 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 | L3-A 状态（`0.3.10.0` → `0.3.10.1`） | **单帧 RGB24 ownership / 分段缓冲 / 行序策略 / main-thread 交付桥 + 最小 MP4 session 启动接线 + 像素语义均已通过实机验收（Gamma/D3D11）**（§2.2.7 / §2.2.8 / §2.2.10）：主链 **254/254 连续交付** + pre-entry→gameplay handoff + canonical completion + 12 tail + Cancel→Restart 均有产物级证据；raw row order = **top-first**、byte order = **RGB**、band seam 与 **16 个 segment 边界逐字节一致**、scale=2 输出几何 = frozen output（3072×1920）。`Rgb24FrameLayout` / `Rgb24FrameBufferPool` / `Rgb24FrameTransaction` / `Rgb24MainThreadBridge` / `FfmpegRgb24FrameTransport` / `Rgb24DeliveryContext` / `OutputModePolicy` / `Mp4SessionStartup`；driver 分块读回且**不**调用 `TryWriteFrame`。输出模式由 `Settings.EditorOutputModeValue` 唯一决定（PNG / MP4 / Log-only，旧布尔仅作一次性迁移输入）。**`0.3.10.0`–`0.3.10.3` 无 Finalizing，终态按设计 fail-closed、不产出成品（历史事实，见 §2.2.13 起的变更）**；一次性 `Rgb24ValidationDump` 已删除。**唯一环境覆盖缺口：Linear（未覆盖）**；LocalLow→Local 托管根迁移见 §2.3.0。 |
 | L3-B 状态（`0.3.10.1`） | **Controlled IO Backpressure Acceptance — 已完成（validation-led closure，无新增 production 架构）**（§2.2.11）：在 L2 帧写入 Completion 被可控地保持 pending 时，logical frame freeze、single-in-flight、cancel during pending WriteAsync、cancellation observation 与 write terminal 可分离、frame Completion 与 CleanupTask 双屏障、residual 未清时 restart fail-closed、residual 清除后新 generation restart、lease exactly-once 释放均实机 PASS。长期合同由 `Rgb24BackpressureTests` + `PipelineBackpressureTests`（net48，含测试内专有可控 stdin 流）固定。旧的**同步**取消探针已被证明不忠实于 cancellation contract，已废弃并连同全部 TEMP instrumentation 删除。 |
 | 当前开发方向 | **`0.3.12.0 — Camera & Particle Visual Time Ownership` 已获用户批准**；GPT Work 2026-10-17 静态边界收敛见 §2.2.15 / `docs/CAMERA_PARTICLE_VISUAL_TIME_0.3.12.0.md`。采用两个局部 owner 与 scheduler 共享授权，不建立大型统一管理器。**Gate A（§7 步骤 1–3）已实现、自动化通过且目标 Unity 功能主路径已实机 PASS（§2.2.19）**（§2.2.16），源码与部署均为 `0.3.12.0`；Gate B 及之后（Camera Tween、Particle 门槛 / owner、联合视觉验收、清理）**未开始**。L3-C 发布主路径 PASS / 视觉 FAIL 不变。 |
-| 下一阶段 | **视觉 FAIL；最新帧内交付裁决见 §2.2.24，外部研究见 §2.2.23。** 静态证据支持复用现有 L2/事务做无主线程上下文泵的最小行为验证（F0，test-only，尚未执行）；**直接阻塞现 Post/Tick 路径与无限期生产帧内等待均 No-Go**。生产阻塞是现 Stop/disable/unload 依赖主线程、尚无可在等待期间由用户触发的独立取消源。先证明写入/真实信封消费及取消双屏障可进展，再裁决目标 Unity 单帧 PoC；不全面重构。R0a/R1、Gate B、正式 Particle owner、版本收敛与 NVT 清理继续暂停，严格源图/状态等待不变量不放宽。 |
+| 下一阶段 | **视觉 FAIL；本重组节点已加入严格 F0 测试，尚未加入 F1-A 生产诊断。** 本次隔离完整 net48 为 421/0/0，其中 F0 20 项；不等于 Unity/视觉/生产帧内等待放行。下一步仅审查独立守护的单帧 PoC；R0a/R1、Gate B、正式 Particle owner 与 NVT 清理继续暂停。 |
 
 `0.3.6.2` 相对 `0.3.6.1` 的四个 hardening 点（功能语义不变，只收敛异常路径与输入判定）：
 
@@ -807,6 +807,12 @@ M UMM OnUpdate → EditorExportController.Tick → Scheduler.TickAwaitingDeliver
 **Go 条件分层**：F0=无泵下真实写入/真实性消费与取消双屏障行为全通过；F1=目标 Mono 同帧进展、恢复/通知寿命通过；生产 C=另有用户可触发且不依赖 PlayerLoop 的取消来源、并发/旧 Post/Stop/unload 回归通过、所有既有逻辑/授权/Finalizing 合同不变；视觉放行=上述源图/后续状态合同满足，不能混为一个 PASS。
 
 **No-Go/停止条件**：任何 worker 实际需要主线程后续回调才结束；等待持锁；Cancel 到不了等待器或 raw Task 未完却释放 lease；通知/句柄/旧 generation 残留；必须修改 L2 终态/提前 Commit/省双屏障才能进展；靠固定 IO deadline 或额外 Unity 帧逃离；初态不匹配或任何未授权视觉漂移。失败就停止该层，不扩大 dsh 范围。可回退方式是保留旧 async 路径、在新 session 前冻结选择；同一 accepted write 内不静默 fallback，先按旧 context 取消并保留 residual，干净后才重开旧模式。旧模式仍是视觉 FAIL 基线，不把回退描述成确定性修复。
+
+### 2.2.25 历史重组验证节点：独立严格 F0 测试（2026-10-19；重新验证，不是原始提交）
+
+本节点在已保存的 Gate A/研究文档基础上，合入当前工作区 `FrameLocalDeliveryFeasibilityTests.cs` 的严格夹具与单一 runner 调用；没有加入 FrameLocalDeliveryProbe、guardian、direct route 或新的生产时间控制。原始 18 项 F0 源码另见对象库 tree `819a69ef8f0b1ef6137c44181baf692497ec3000`，本节点选择后续 20 项严格版本，不能把它称为原始 F0 tree。
+
+本次隔离完整 net48 为 **421 passed / 0 failed / 0 skipped**；F0 20 项均通过。覆盖真实 canonical 消费、写入生命周期、无上下文泵等待和严格 frame/cleanup teardown；不代表 Unity Mono/GPU/视觉确定性验收。F1-A 尚未加入，下一节点即使保存为实验快照也必须明确 No-Go；不得把测试提交视为生产方案放行。
 
 ### 2.3 FFmpeg 构建、安装与独立进程取证（2026-09-23；未接入产品）
 

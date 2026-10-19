@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -56,6 +56,7 @@ namespace ADOFAI.Renderist.FfmpegTests
             Rgb24LifecycleTests.Run();
             Rgb24BackpressureTests.Run();
             PipelineBackpressureTests.Run(_workRoot);
+                FrameLocalDeliveryFeasibilityTests.Run(_workRoot);
             Mp4StartupTests.Run();
             Mp4FinalizingTests.Run(_workRoot);
             VisualFrameAuthorizationTests.Run();
