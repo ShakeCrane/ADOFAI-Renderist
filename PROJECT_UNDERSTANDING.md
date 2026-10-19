@@ -35,7 +35,8 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 | --- | --- |
 | 产品版本 | **`0.3.12.0`（前三位变更，已由用户明确批准）**。相对 `0.3.11.0` 新增：Unity-free 的 generation/frame/phase **视觉帧授权合同**（每消费者独立回执 / 一次消费 / 失效 / EOF 前完整性校验）、scheduler 既有流程内的最小接线、以及 **Camera 原生 Update / UpdateSize / custom FPS 的局部时间读取替换**（窄 Transpiler + Prefix/Postfix/Finalizer 作用域）。Camera Tween owner、Shake RNG、Particle owner 与 replay **未实现**。Phase 文案同步为 `Phase 3.10.0 Camera & Particle Visual Time Ownership`。**Gate A 自动化与目标 Unity 功能主路径实机均已通过（§2.2.19），不等于特殊原生异常或整体视觉确定性通过**（§2.2.16）。 |
 | Phase | `Phase 3.10.0 Camera & Particle Visual Time Ownership`（本版本更新；上一版为 `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`） |
-| 版本定位 | **当前 `0.3.12.0` = Gate A 生命周期修复节点，不是视觉确定性完成节点**：L3-C 封装/发布主路径历史 PASS、视觉 FAIL 不变；当前只实现授权合同与 Camera 原生时间入口（生命周期修复见 §2.2.18），**已通过目标 Unity Gate A 功能主路径实机验收（§2.2.19）**。最新构建/部署 DLL SHA256 `F97722C6624E028640F87E23971E52BA4561E851AF870AF5E64030053854F699`（501248 bytes），FileVersion `0.3.12.0`。 |
+| Git 基线 | `main`；最新源码提交 **`b0ac34e4b03d8efd0799a714b0d1f8a43cb16848`**（F1-A 实验性 No-Go），六步恢复已完成并通过网页版 GPT 复审，身份见 §2.2.31。本次收尾为其后的独立文档提交，不改变源码基线；实际 HEAD 以 `git rev-parse HEAD` 为准。`origin/main` 仍为 `9f9ff34eee4ff1f9a73a260d7d753219297d0950`，尚未同步六个恢复提交及本次文档收尾。 |
+| 版本定位 | **当前 `0.3.12.0` = Gate A 生命周期修复节点，不是视觉确定性完成节点**：L3-C 封装/发布主路径历史 PASS、视觉 FAIL 不变；当前只实现授权合同与 Camera 原生时间入口（生命周期修复见 §2.2.18），**已通过目标 Unity Gate A 功能主路径实机验收（§2.2.19）**。当前游戏部署 DLL SHA256 `F97722C6624E028640F87E23971E52BA4561E851AF870AF5E64030053854F699`（501248 bytes），FileVersion `0.3.12.0`。 |
 | 稳定实机基线 | **最新实机验收基线提升为 `0.3.10.3`**。新增证据：真实升级场景中，新 Local target 预先移走、旧 LocalLow valid install 保留；首次启动出现 `FFmpeg 旧托管安装已迁移到当前托管目录`，随后同一 initial generation 直接 `Ready/none@gen0`；第二次启动仅 `new-target-present` 且再次直接 `Ready/none@gen0`，证明迁移幂等。目录取证确认新 Local 与旧 LocalLow 的 `ffmpeg.exe` / `ffprobe.exe` SHA256 均与 manifest 一致，旧根原样保留，新/旧 `.staging` / `.downloads` 无残留文件。受测代码提交 `edccf02c9ff33b17d0e1cf3db536826ee3c175e0`，受测 DLL SHA256 `1F25D057194B91E929F5DD7AA327156DA7579A2C4E43377141D8E9CA47B64AC6`。上一稳定实机基线为 `0.3.10.2`。 |
 | L1 实机状态 | **`0.3.8.0`（DLL `AE2326D3…` / `+4d35801862d0828ea248d9934e8ebe74af11f2bb`）已通过用户最小实机验收**：UMM 显示 `0.3.8.0`、FFmpeg `Ready`、`libx264` / `mp4` / `rawvideo`、禁用并重新启用、无新可见异常。**L1 主路径已具备阶段性基线证据**；未覆盖边界（活动下载生命周期、异常网络、真实回调竞态）见 §2.7。 |
 | L2 实现状态 | **独立 L2 管线已接入 L3-A 编辑器启动路径，并已在目标 Unity Mono 完成连续帧交付**：目标 Unity Mono 正常/写入中取消定向探针 PASS（§2.8.3）；`2026-09-28` 的编辑器 MP4 失败已定位为托管 FFmpeg 位于 `LocalLow` 后无法写普通完整性级别的 `D:\Output`，并非 L2 临时文件句柄自锁（§2.2.9）。L2 写入及终态 API 未变；托管安装根已改用 `LocalApplicationData`，随后实机完成 **254/254 连续 RGB24 交付**（§2.2.10）。历史真实 fixture 结果见 §2.8，当前可选 fixture 的环境失败见 §2.2.9。 |
@@ -43,7 +44,7 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 | L3-A 状态（`0.3.10.0` → `0.3.10.1`） | **单帧 RGB24 ownership / 分段缓冲 / 行序策略 / main-thread 交付桥 + 最小 MP4 session 启动接线 + 像素语义均已通过实机验收（Gamma/D3D11）**（§2.2.7 / §2.2.8 / §2.2.10）：主链 **254/254 连续交付** + pre-entry→gameplay handoff + canonical completion + 12 tail + Cancel→Restart 均有产物级证据；raw row order = **top-first**、byte order = **RGB**、band seam 与 **16 个 segment 边界逐字节一致**、scale=2 输出几何 = frozen output（3072×1920）。`Rgb24FrameLayout` / `Rgb24FrameBufferPool` / `Rgb24FrameTransaction` / `Rgb24MainThreadBridge` / `FfmpegRgb24FrameTransport` / `Rgb24DeliveryContext` / `OutputModePolicy` / `Mp4SessionStartup`；driver 分块读回且**不**调用 `TryWriteFrame`。输出模式由 `Settings.EditorOutputModeValue` 唯一决定（PNG / MP4 / Log-only，旧布尔仅作一次性迁移输入）。**`0.3.10.0`–`0.3.10.3` 无 Finalizing，终态按设计 fail-closed、不产出成品（历史事实，见 §2.2.13 起的变更）**；一次性 `Rgb24ValidationDump` 已删除。**唯一环境覆盖缺口：Linear（未覆盖）**；LocalLow→Local 托管根迁移见 §2.3.0。 |
 | L3-B 状态（`0.3.10.1`） | **Controlled IO Backpressure Acceptance — 已完成（validation-led closure，无新增 production 架构）**（§2.2.11）：在 L2 帧写入 Completion 被可控地保持 pending 时，logical frame freeze、single-in-flight、cancel during pending WriteAsync、cancellation observation 与 write terminal 可分离、frame Completion 与 CleanupTask 双屏障、residual 未清时 restart fail-closed、residual 清除后新 generation restart、lease exactly-once 释放均实机 PASS。长期合同由 `Rgb24BackpressureTests` + `PipelineBackpressureTests`（net48，含测试内专有可控 stdin 流）固定。旧的**同步**取消探针已被证明不忠实于 cancellation contract，已废弃并连同全部 TEMP instrumentation 删除。 |
 | 当前开发方向 | **`0.3.12.0 — Camera & Particle Visual Time Ownership` 已获用户批准**；GPT Work 2026-10-17 静态边界收敛见 §2.2.15 / `docs/CAMERA_PARTICLE_VISUAL_TIME_0.3.12.0.md`。采用两个局部 owner 与 scheduler 共享授权，不建立大型统一管理器。**Gate A（§7 步骤 1–3）已实现、自动化通过且目标 Unity 功能主路径已实机 PASS（§2.2.19）**（§2.2.16），源码与部署均为 `0.3.12.0`；Gate B 及之后（Camera Tween、Particle 门槛 / owner、联合视觉验收、清理）**未开始**。L3-C 发布主路径 PASS / 视觉 FAIL 不变。 |
-| 下一阶段 | **优先 Git 历史收敛审查（§2.2.30），F1-A Safety Closure 暂停；视觉 FAIL、F1-B No-Go 不变。** 已找到并隔离验证 `0.3.10.4` / `0.3.11.0` / `0.3.12.0` 的原始源码 tree；仅形成逻辑提交计划，待审查后由 dsh 提交。本轮 F1-A 完整回归仍 **462/1/0**，但失败是严格 F0 的旧通知用例 teardown，不能与 §2.2.29 的 L2 进程数量失败混称；两种证据均保留。未部署、不进入 Unity P0–P4，生产帧内等待、R0a/R1、Gate B、正式 Particle owner 与 NVT 清理继续暂停。 |
+| 下一阶段 | **Git 历史恢复已完成；下一阶段恢复 F1-A Safety Closure（§2.2.29 / §2.2.31）。** 最新源码节点的隔离完整回归为 **463/0/0**；历史 **462/1/0** 的 F0 旧 generation Post teardown residual 与 L2 init-failure 进程数量断言仍需分别调查，不能据单次未重现认定已解决。**F1-A 仍为实验性 No-Go，F1-B 与视觉确定性未放行**；本轮仅文档收尾，未部署、不进入 Unity P0–P4。生产帧内等待、R0a/R1、Gate B、正式 Particle owner 与 NVT 清理继续暂停。 |
 
 `0.3.6.2` 相对 `0.3.6.1` 的四个 hardening 点（功能语义不变，只收敛异常路径与输入判定）：
 
@@ -1030,7 +1031,9 @@ claim 先于 Cancel accepted 时，迟到取消不追溯改写这次许可；只
 
 **裁决/下一步**：本轮停止在可复审的定向修复候选，**不部署，不进入 F1-B/P0–P4**。交网页版 GPT 复审这六个文件及现有 F1-A 全量 diff；下一任务先单独冻结 guardian 自动预算/身份交付、诊断 context 与资源收尾、可信日志（含 canary/源缓冲 hash）的最小闭环，以及上述回归失败的定向核对范围。若需改白名单外测试应另行明确范围；不扩大到 L2/MasterTimeline/L3-C，不通过增加 Unity frame、重入消息泵或绕过双屏障解围。F1-A/F1-B 均不代表产品视觉确定性 PASS，既有视觉 FAIL 保持。
 
-### 2.2.30 Git 历史收敛审查（2026-10-19；计划验证完成，尚未执行提交）
+### 2.2.30 Git 历史收敛审查（2026-10-19；历史：计划验证完成时，尚未执行提交）
+
+> 以下保留提交前的审查证据；其中 HEAD、工作区、待提交计划与 462/1/0 均属于该次审查时点。六步已执行结果与当前基线见 §2.2.31，不得将本节历史状态当作当前状态。
 
 原仓库仍为 `main` / `9f9ff34eee4ff1f9a73a260d7d753219297d0950`，staged 空。已对全部 86 个 tracked 与 17 个 untracked 建立逐文件 SHA256/ZIP 备份，并验证 Git bundle；额外备份对象库与 reflog，保留未被 refs 引用的 tree。备份与可执行差异计划位于 ignored `.build-tools/history-review/20261019-095617/`，本轮没有 reset/clean、提交、推送、部署或生产代码修改。
 
@@ -1047,6 +1050,29 @@ claim 先于 Cancel accepted 时，迟到取消不追溯改写这次许可；只
 独立严格 F0 节点可由 Gate A 加当前 20 项夹具及单个 runner 调用组成，没有 F1 生产依赖；本轮隔离完整回归 **421/0/0**。它是明确标注的逻辑重组节点，不是对象库中原始 18 项 F0 tree。当前 F1-A 完整源码在隔离副本仍为 **462/1/0**（F1 42 PASS、F0 19 PASS/1 FAIL）；失败为 `frame-local delivery: a late old-generation Post cannot touch the restarted session` 的严格 teardown：`rgb24-abort-delivery-in-flight;frame-ownership-residual`。原 §2.2.29 L2 进程数量断言本轮通过，**不代表其根因已经解决**；没有跳过或放宽任何断言。两类失败继续阻止稳定发布，留给后续 Safety Closure 定向调查。
 
 建议顺序为 Finalizing → NVT → Gate A → 研究文档 → 严格 F0 测试 → 明确 No-Go 的 F1-A 实验快照；跨模块生产合同及配套测试/接口夹具保持原子提交，避免制造不可构建的细碎中间态。在隔离 index 中已验证前四个差异能精确还原对应原始 tree，最终差异按工作区逐文件核对；未在原仓库暂存或创建提交。仅历史来源与拆分可行性得到新证据，F1-A Safety Closure 没有实施，不能报告 PASS。
+
+### 2.2.31 Git 历史恢复完成与当前基线（2026-10-19；六步已提交，F1-A 仍 No-Go）
+
+用户批准后按六份编号补丁仅更新 index，逐步导出对应 tree 隔离验证，再按实际执行时间正常提交；没有伪造旧作者/日期、重写历史或制造稳定发布 tag。六步完成时 `main` / HEAD 为 `b0ac34e4b03d8efd0799a714b0d1f8a43cb16848`，ahead 6 / behind 0，工作区 clean（含 untracked）；HEAD/index 精确等于最终 tree，全部 103 个源码文件与执行前原始字节一致。
+
+以下为已核对实际 Git 对象的固定身份。第一行 parent 为 `9f9ff34eee4ff1f9a73a260d7d753219297d0950`，其后每行 parent 均为上一行 commit，线性历史无 merge。本次文档收尾是其后的独立提交，不改变以下源码节点。
+
+| 顺序 / 版本 | commit | subject | tree | 执行时隔离完整 net48（PASS/FAIL/SKIP） |
+| --- | --- | --- | --- | --- |
+| 1 / `0.3.10.4` | `dc081ac7b92cf377d4af5afe642fb4cd41602deb` | `feat(export): 接入 MP4 Finalizing 与核验收敛` | `236eb73cc8c5476bd5ac3b97ca3fefc3c15fddf8` | **330/0/0** |
+| 2 / `0.3.11.0` | `8f0408d0ce7bdd9bdc8ca3b36dc3e24f4b004cdb` | `chore(diagnostics): 保留 NVT 视觉时间取证` | `522166fd9b45966001978b00baaa28ea5609d173` | **338/0/0** |
+| 3 / `0.3.12.0` | `be1848c32cfc873260e9fe1b03bb5490424e10fb` | `feat(export): 接入 Gate A Camera 原生时间授权` | `8ad283a88c5988c383cbe1311914c76e7a2a919e` | **401/0/0** |
+| 4 / `0.3.12.0` | `af8afad247f611cae6faec8b10182b7e3c1c0d95` | `docs(research): 记录视觉时间与帧内交付研究` | `3ba9a13a632542b3e1dff645d9cd44843edfbea6` | **401/0/0** |
+| 5 / `0.3.12.0` | `34ba1e233fc8f37c55b76411de81061e638339ca` | `test(export): 独立收紧帧内交付可行性回归` | `2b6ce9486422d655c9c174710a12120b92b6642d` | **421/0/0** |
+| 6 / `0.3.12.0` | `b0ac34e4b03d8efd0799a714b0d1f8a43cb16848` | `chore(experiment): 保存 F1-A 单帧诊断 No-Go 快照` | `28aafa14a2f75db1e790b94fabf3ba4436d3b583` | **463/0/0** |
+
+每个节点均独立 Release Rebuild：生产 0 warning / 0 error；测试构建成功，步骤 3–6 各有 6 个既有 stand-in 字段 CS0649 警告。前三个版本节点 package 与独立 strict verify 各 **11/0**；版本载体相互一致，全部 diff 检查通过。这些是历史恢复执行时的重新验证，不是旧版本发布/实机身份，也不是本次文档收尾重新运行的测试。
+
+**463/0/0 不撤销历史失败**：§2.2.30 隔离回归曾为 **462/1/0**，失败是 F0 `a late old-generation Post cannot touch the restarted session` 的 teardown residual（`rgb24-abort-delivery-in-flight;frame-ownership-residual`）；§2.2.29 更早的两次 **462/1/0** 则是 L2 init-failure 全进程数量断言 `1→2`。六步执行时两者均未重现，未跳过、删除或放宽断言，**没有证据证明两类根因已解决**。guardian 自动 5/10/30 秒保命、完整 settlement/residual、stdin wrapper ownership、canary/源缓冲 hash 等安全合同仍待 Safety Closure；**F1-A 不声明 PASS，F1-B/P0–P4 与视觉确定性仍未放行**。
+
+执行报告及逐节点日志位于 ignored `.build-tools/history-review/20261019-095617/execution-20261019-105050/EXECUTION_REPORT.md`，同目录 `commits.json` / `final-audit.json` 记录提交与核验；上级目录保留原始 ZIP、Git bundle、对象库、manifest、SHA256 与补丁。历史失败日志另保留于 `.build-tools/f1a-review/`、`f1-current-regression.log` 和 `local-evidence.zip`。备份与失败证据未清理；游戏 Mods DLL 仍为 `F97722C6…`，未部署本实验。
+
+下一阶段恢复 **F1-A Safety Closure**，先闭合上述源码安全缺口并调查两类失败；本轮只完成文档收尾，不实施修复。尚未 push；远端同步必须由用户明确选择：推送包含 F1-A No-Go 实验的当前 `main`，或将实验保留在独立开发分支，不能自动替用户裁决。
 
 ### 2.3 FFmpeg 构建、安装与独立进程取证（2026-09-23；未接入产品）
 
@@ -1914,7 +1940,7 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 
 > 此处只列**当前未收敛事项**；已完成的 End Tail、pre-entry、Log-only、Custom Resolution 和 Supersampling 不再重复充当待办。历史验收数据见 §9，实施不变量见 §3–§8，当前 ADOFAI 内部事实见 §10。
 
-1. **`0.3.11.0` 视频导出（L3-C Finalizing 沿用 `0.3.10.4`，源码未改）**：L1、L3 第一闭环、L3-A、L3-B、`0.3.10.2` startup readiness 与 `0.3.10.3` LocalLow→Local 迁移均有既有实机基线；`0.3.10.4` 的 L3-C MP4 Finalizing **封装与发布主路径已实机 PASS**（§2.2.13），**视觉验收 FAIL**。`0.3.11.0` 相对它**没有任何功能性改动**，只把只读探针的行星 / ParticleSystem 发现修正为当前 DLL 的真实链路并补齐 Camera 相位观测点（§2.2.14）。该增量证据为独立 net48 回归（带真实 Gyan 9.0.2 fixture **338/0/0**）+ 源码契约；**`0.3.11.0` 第二轮诊断取证已复核**（§2.2.14），同样完成 254 帧封装与发布，但 Camera/活动 Tail 仍额外推进。整体视觉确定性未通过；下一步为局部 ownership 实现及验证，旧行星/孤儿覆盖仍待独立取证。
+1. **视频导出视觉确定性**：L3-C Finalizing 封装与发布主路径历史实机 PASS，视觉 FAIL；`0.3.11.0` NVT 与 `0.3.12.0` Gate A 实机证据见 §2.2.14 / §2.2.19–20。Camera 原生时间授权主路径已通过，但 AwaitingDelivery 中 Particle 无授权推进已有实证。下一阶段先完成 F1-A Safety Closure（§2.2.31），生产帧内等待与正式视觉 owner 实施继续暂停；旧行星/孤儿覆盖仍待独立取证。
 9. **L3-A 像素语义验收（已完成，全部 PASS）**：Gamma/D3D11 下 raw row orientation = **top-first**、`Rgb24RowOrderPolicy` **runtime verified 正确**、RGB byte order **PASS**、band seam **PASS**、segment stitching **PASS**、scale=2 downsample/output geometry **PASS**；主链（254/254 连续交付、pre-entry→gameplay handoff、canonical completion + 12 tail、Cancel→Restart）此前已由产物级证据确认。一次性 raw dump **已完全删除**。**唯一环境覆盖缺口是 Linear**（未切换、不阻塞）。详见 §2.2.10。
 10. **FFmpeg 托管根迁移（`0.3.10.3` 核心 runtime acceptance 已完成）**：见 §2.3.0。真实游戏内 A（首次升级迁移）+ B（幂等重启）均 PASS；最新稳定实机基线已提升到 `0.3.10.3`。仍未实机覆盖冲突 fail-closed、受控 FFmpeg 不 Ready 下 PNG/Log-only gate、timing-sensitive disable cancellation；这些是边界覆盖缺口，不再阻塞核心升级兼容闭环。
 2. **Linear 与极端 GPU 资源失败**：Supersampling 已在 Gamma / Direct3D11 的所述范围实机通过，**Linear 色彩空间从未实机覆盖**；接近硬件极限的 RT 分配与 GPU 状态恢复故障仍只有 stub / 静态证据。详见 §9.7.3。
@@ -1926,13 +1952,13 @@ harness 发现并已修复的实现缺陷（**1 项**）：
 8. **工具债务**：`set-version.ps1` 自 `0.3.9.0` 起已原子同步全部**权威**版本 / Phase 字符串（含 `EditorExportSession.PhaseLabel` 与 `ModEntry` 标识性 `/// Phase` 注释），因此常规版本 / Phase 切换**不再需要**人工核查这两处。但它是**权威载体同步器，不是全仓库 phase 同步器**：功能溯源注释（如 `// ---- Phase 3.8.0: FFmpeg 组件管理 …`）与其它类的历史 phase 注释刻意不改。`0.3.10.3` 修复了该脚本残留断言的一处误报：行首 `// <四位版本>：` 形式的功能溯源注释（`0.3.10.2` 周期引入，例如 `// 0.3.10.2：readiness 是唯一 authority`）此前会被当成权威残留，使此后任何一次递增都**永久失败**；现在残留扫描按同一意图忽略这类行，而每个权威载体的新值仍逐个正向核对。该模式刻意只用 ASCII（`\uFF1A` 表示全角冒号），因为在未安装 PowerShell 7 的机器上脚本由 Windows PowerShell 5.1 运行，BOM-less UTF-8 脚本里的非 ASCII **正则字面量**会被按系统代码页误读。仅当后续新增权威版本 / Phase 载体（例如新的版本常量或启动横幅）时才需要扩展该脚本；不阻塞当前稳定基线。
    **`0.3.10.4` 周期新增的一条边界事实（供后续版本递增参考）**：该残留扫描只覆盖脚本实际写入的四个载体（`Info.json` / csproj / `ModEntry.cs` / `EditorExportSession.cs`），**不是**全仓库扫描；但任一被写入文件里出现裸的旧四位版本号（含 XML doc 注释中的 `` `0.3.10.3` ``）仍会让整次递增**回滚并失败**。写版本区间说明时应改用"Finalizing 实现之前的构建/之后的构建"这类措辞，或使用行首 `// <四位版本>：` 溯源注释形式。
 11. **L3-C 实机验收（`0.3.10.4`）— 封装与发布主路径 PASS / 视觉 FAIL**：①–③（不再停在 validation boundary、产出已被核验的 `video.mp4`、metadata 终态）**已实机 PASS**。**Camera 与行星拖尾的视觉验收 FAIL**：成品 MP4 可用，但画面中的原生视觉时间未与 `MasterTimeline` 统一 ownership（§2.2.13）。**未完成**：④ Finalizing 期间 GUI / Stop / restart 门禁的实机确认；⑤ Finalizing 中取消的实机确认；⑥ Finalizing 完成后再次 Start 的实机确认；⑦ PNG / Log-only 回归 smoke；⑧ **视觉修复后的视觉验收矩阵**（Camera 平滑跟随、行星拖尾、Hit 事件 Tween 等）。
-12. **`0.3.12.0` 局部视觉时间 ownership**：Gate A 授权/Camera 原生入口及生命周期修复已实现并部署（§2.2.18，401/0/0），下一步仅做 Gate A 目标 Unity 实机验收。通过前不进入 Gate B。后续仍按完整计划实现 Camera Tween、验证 Particle 语义并接入 owner、联合视觉验收后清理 NVT。旧池/coop/orphan、初态/seed、Mono 异常恢复与视觉确定性均未由本轮 managed 行为测试证明；不重复已有 NVT、不改 L3-C 合同。
+12. **`0.3.12.0` / F1-A 安全闭环**：Gate A 功能主路径已通过目标 Unity 实机验收（§2.2.19），整体视觉 FAIL。六步 Git 恢复已完成，最新源码为 F1-A No-Go 实验快照；下一阶段恢复 Safety Closure，最新 463/0/0 不等于历史两类失败已解决（§2.2.31）。F1-B、生产帧内等待、Camera Tween Gate B、正式 Particle owner 与 NVT 清理继续暂停；旧池/coop/orphan、初态/seed、Mono 异常恢复与视觉确定性均未获完整证明。不重复已有 NVT，不改 L3-C 合同。
 
 ---
 
 ## 12. 发布与部署
 
-- 当前产品/部署版本 **`0.3.12.0`** / Phase **`Phase 3.10.0 Camera & Particle Visual Time Ownership`**，DLL SHA256 **`F97722C6…`** / 501248 bytes（完整身份见 §2.2.18），为 Gate A 生命周期修复构建，**待目标 Unity 验收**。`0.3.10.4` 的 L3-C 封装/发布主路径历史 PASS 与视觉 FAIL 不变；`0.3.11.0` 的 NVT 是历史诊断证据，不是当前部署。保留 NVT 到计划清理阶段；引用构建必须同时给出 DLL SHA256，不能只凭相同的版本号或 +HEAD 区分未提交工作区。
+- 当前游戏部署版本 **`0.3.12.0`** / Phase **`Phase 3.10.0 Camera & Particle Visual Time Ownership`**，DLL SHA256 **`F97722C6…`** / 501248 bytes（完整身份见 §2.2.18），为 Gate A 生命周期修复构建，**功能主路径已通过目标 Unity 验收（§2.2.19），视觉 FAIL**。最新源码已含 F1-A No-Go 实验（§2.2.31），未部署；Git 恢复与本次文档收尾不改变游戏 DLL、原本地构建或原发布包。`0.3.10.4` 的 L3-C 封装/发布主路径历史 PASS 与视觉 FAIL 不变；`0.3.11.0` 的 NVT 是历史诊断证据，不是当前部署。保留 NVT；引用构建必须同时给出 DLL SHA256，不能只凭版本号或 +HEAD 推断受测源码。
 - `0.3.10.3` **实机验收构建身份**：受测代码提交 `edccf02c9ff33b17d0e1cf3db536826ee3c175e0`；`FileVersion = 0.3.10.3`；`ProductVersion = 0.3.10.3+edccf02c9ff33b17d0e1cf3db536826ee3c175e0`；受测 DLL SHA256 `1F25D057194B91E929F5DD7AA327156DA7579A2C4E43377141D8E9CA47B64AC6`。该构建在用户真实 LocalLow→Local 升级场景与幂等重启中 PASS。Release Rebuild 0 warning / 0 error；发布包仍严格只有 `Info.json` / `ADOFAI.Renderist.dll` / `LICENSE`；部署 DLL 与 `bin\Release` 逐字节一致。
 - §12 固化的是**实际受测代码构建**而不是后续文档提交自身：runtime evidence 绑定 `edccf02…` / DLL `1F25D057…`。后续仅文档提交会使仓库 HEAD 前移，但不得把该 docs-only HEAD 冒充受测 DLL 的 `ProductVersion`。
 - 本轮（`0.3.10.3`）改动文件：新增 `src/ADOFAI.Renderist/Ffmpeg/FfmpegLegacyRootMigration.cs`（迁移）、`src/ADOFAI.Renderist/Ffmpeg/FfmpegInspectionSequence.cs`（**唯一的**检查序列 + 每代 `FfmpegInspectionCancellation`）、`tests/.../FfmpegMigrationTests.cs`、`tests/.../FfmpegInspectionLifecycleTests.cs`；修改 `ModEntry.cs`（主线程解析旧根、冻结本代 token、shutdown 取消在途检查、取消结果先失效再走既有发布、**disabled 兜底取消先于任何 download-controller 早退**，并以 `_ffmpegEverEnabled` 区分“尚未启用”与 disabled）、`UiText.cs`、`Ffmpeg/FfmpegComponentReport.cs`（报告新增迁移结论 + 资产注入点）、`Ffmpeg/FfmpegInstaller.cs`（`CleanupOrphanStaging` 可见性改为 internal 以便迁移复用同一 ownership 规则）、`tests/.../Fixtures.cs`、`tests/.../Program.cs`、`tests/.../FakeFfmpeg.cs`（探测调用记录钩子）、`tests/.../FfmpegReadinessTests.cs`（失效触发点集合新增 `ffmpeg-inspection-cancelled`）、`scripts/set-version.ps1`（residual 误报修复，见 §11.8）、版本载体 `mod/Info.json` / csproj / `ModEntry.ModVersion` / 启动日志。**未**修改 README、Settings 的 managed root、MP4 Finalizing、L3-A / L3-B 帧事务、downloader 与正常 installer 的写入根，**未**新增 Harmony Patch。
