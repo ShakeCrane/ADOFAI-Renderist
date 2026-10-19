@@ -64,6 +64,9 @@
     <!-- 0.3.12.0 Gate A：generation/frame/phase 视觉授权合同（刻意 Unity-free）。 -->
     <Compile Include="..\..\src\ADOFAI.Renderist\Export\VisualFrameAuthorizer.cs" LinkBase="Production" />
     <Compile Include="..\..\src\ADOFAI.Renderist\Export\CameraNativeTimeOwnership.cs" LinkBase="Production" />
+
+    <!-- F1-A：受限诊断的 claim/notification 与 probe 槽（纯托管，无 Unity 依赖）。 -->
+    <Compile Include="..\..\src\ADOFAI.Renderist\Export\FrameLocalDeliveryProbe.cs" LinkBase="Production" />
   </ItemGroup>
 
 </Project>

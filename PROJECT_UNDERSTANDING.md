@@ -43,7 +43,7 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 | L3-A 状态（`0.3.10.0` → `0.3.10.1`） | **单帧 RGB24 ownership / 分段缓冲 / 行序策略 / main-thread 交付桥 + 最小 MP4 session 启动接线 + 像素语义均已通过实机验收（Gamma/D3D11）**（§2.2.7 / §2.2.8 / §2.2.10）：主链 **254/254 连续交付** + pre-entry→gameplay handoff + canonical completion + 12 tail + Cancel→Restart 均有产物级证据；raw row order = **top-first**、byte order = **RGB**、band seam 与 **16 个 segment 边界逐字节一致**、scale=2 输出几何 = frozen output（3072×1920）。`Rgb24FrameLayout` / `Rgb24FrameBufferPool` / `Rgb24FrameTransaction` / `Rgb24MainThreadBridge` / `FfmpegRgb24FrameTransport` / `Rgb24DeliveryContext` / `OutputModePolicy` / `Mp4SessionStartup`；driver 分块读回且**不**调用 `TryWriteFrame`。输出模式由 `Settings.EditorOutputModeValue` 唯一决定（PNG / MP4 / Log-only，旧布尔仅作一次性迁移输入）。**`0.3.10.0`–`0.3.10.3` 无 Finalizing，终态按设计 fail-closed、不产出成品（历史事实，见 §2.2.13 起的变更）**；一次性 `Rgb24ValidationDump` 已删除。**唯一环境覆盖缺口：Linear（未覆盖）**；LocalLow→Local 托管根迁移见 §2.3.0。 |
 | L3-B 状态（`0.3.10.1`） | **Controlled IO Backpressure Acceptance — 已完成（validation-led closure，无新增 production 架构）**（§2.2.11）：在 L2 帧写入 Completion 被可控地保持 pending 时，logical frame freeze、single-in-flight、cancel during pending WriteAsync、cancellation observation 与 write terminal 可分离、frame Completion 与 CleanupTask 双屏障、residual 未清时 restart fail-closed、residual 清除后新 generation restart、lease exactly-once 释放均实机 PASS。长期合同由 `Rgb24BackpressureTests` + `PipelineBackpressureTests`（net48，含测试内专有可控 stdin 流）固定。旧的**同步**取消探针已被证明不忠实于 cancellation contract，已废弃并连同全部 TEMP instrumentation 删除。 |
 | 当前开发方向 | **`0.3.12.0 — Camera & Particle Visual Time Ownership` 已获用户批准**；GPT Work 2026-10-17 静态边界收敛见 §2.2.15 / `docs/CAMERA_PARTICLE_VISUAL_TIME_0.3.12.0.md`。采用两个局部 owner 与 scheduler 共享授权，不建立大型统一管理器。**Gate A（§7 步骤 1–3）已实现、自动化通过且目标 Unity 功能主路径已实机 PASS（§2.2.19）**（§2.2.16），源码与部署均为 `0.3.12.0`；Gate B 及之后（Camera Tween、Particle 门槛 / owner、联合视觉验收、清理）**未开始**。L3-C 发布主路径 PASS / 视觉 FAIL 不变。 |
-| 下一阶段 | **视觉 FAIL；本重组节点已加入严格 F0 测试，尚未加入 F1-A 生产诊断。** 本次隔离完整 net48 为 421/0/0，其中 F0 20 项；不等于 Unity/视觉/生产帧内等待放行。下一步仅审查独立守护的单帧 PoC；R0a/R1、Gate B、正式 Particle owner 与 NVT 清理继续暂停。 |
+| 下一阶段 | **优先 Git 历史收敛审查（§2.2.30），F1-A Safety Closure 暂停；视觉 FAIL、F1-B No-Go 不变。** 已找到并隔离验证 `0.3.10.4` / `0.3.11.0` / `0.3.12.0` 的原始源码 tree；仅形成逻辑提交计划，待审查后由 dsh 提交。本轮 F1-A 完整回归仍 **462/1/0**，但失败是严格 F0 的旧通知用例 teardown，不能与 §2.2.29 的 L2 进程数量失败混称；两种证据均保留。未部署、不进入 Unity P0–P4，生产帧内等待、R0a/R1、Gate B、正式 Particle owner 与 NVT 清理继续暂停。 |
 
 `0.3.6.2` 相对 `0.3.6.1` 的四个 hardening 点（功能语义不变，只收敛异常路径与输入判定）：
 
@@ -675,7 +675,7 @@ controller 随后按 L3-A 验证边界把 MP4 终态强制记为 `Failed(l3a-val
 - **最小下一步**：GPT Work 先审查现交付/取消/残留清理可进展性和 hidden/partial 模拟预算，给出可回退、可审查的具体范围；dsh 此时不实现新设施或正式 Patch。通过后才安排限定验证：同初态、同逻辑时间分别改变墙钟交付等待和额外 native 帧数，比较无损源图、内部状态及 f+1。保留额外 native 控制帧或仍需手动粒子时，才恢复 §8.7/S1–S6 隔离测试；不默认直接进入 Particle owner。
 - **停止条件及不变项**：控制/取消停摆、依赖主线程后续帧才能结束却尝试阻塞、残留不可恢复、初态不同、无授权状态/像素漂移或消费者未覆盖即停止相应方案并交 GPT Work。Gate B、正式 Particle Patch、版本收敛与 NVT 清理继续暂停。版本 `0.3.12.0`、Release/部署 DLL `F97722C6…` 未变；视觉 FAIL 不变。未改生产/测试代码、构建、README、部署，未新增实机验证；只新增研究报告并同步文档状态入口，不提交、不推送。
 
-### 2.2.24 Frame-local Delivery 可行性审查（2026-10-19；静态审查完成，F0/Unity PoC 均未执行）
+### 2.2.24 Frame-local Delivery 可行性审查（2026-10-19；静态审查完成；F0 已执行并通过，见 §2.2.25；Unity PoC 未执行）
 
 **裁决**：帧写入到 canonical envelope 发布的后台依赖闭包，不要求改写 L2、MasterTimeline 或 L3-C；可以用现有代码做 **F0 test-only 行为验证**。但当前代码不具备直接生产切换条件：成功消费仍被 Post/后续 Tick 门控，GUI Stop/disable/unload 又依赖被阻塞的主线程。**Go 仅限下一轮 F0；现路径直接 `.Wait()`、无限期生产帧内等待、通过额外 Unity 帧或重入消息泵解围均 No-Go。** 静态可行不等于 Mono 管道/取消/视觉实机已通过。
 
@@ -808,11 +808,245 @@ M UMM OnUpdate → EditorExportController.Tick → Scheduler.TickAwaitingDeliver
 
 **No-Go/停止条件**：任何 worker 实际需要主线程后续回调才结束；等待持锁；Cancel 到不了等待器或 raw Task 未完却释放 lease；通知/句柄/旧 generation 残留；必须修改 L2 终态/提前 Commit/省双屏障才能进展；靠固定 IO deadline 或额外 Unity 帧逃离；初态不匹配或任何未授权视觉漂移。失败就停止该层，不扩大 dsh 范围。可回退方式是保留旧 async 路径、在新 session 前冻结选择；同一 accepted write 内不静默 fallback，先按旧 context 取消并保留 residual，干净后才重开旧模式。旧模式仍是视觉 FAIL 基线，不把回退描述成确定性修复。
 
-### 2.2.25 历史重组验证节点：独立严格 F0 测试（2026-10-19；重新验证，不是原始提交）
+### 2.2.25 F0 Frame-local Delivery 可行性验证（2026-10-19；Unity-free 行为验证 PASS，**不是** F1/生产/视觉放行）
 
-本节点在已保存的 Gate A/研究文档基础上，合入当前工作区 `FrameLocalDeliveryFeasibilityTests.cs` 的严格夹具与单一 runner 调用；没有加入 FrameLocalDeliveryProbe、guardian、direct route 或新的生产时间控制。原始 18 项 F0 源码另见对象库 tree `819a69ef8f0b1ef6137c44181baf692497ec3000`，本节点选择后续 20 项严格版本，不能把它称为原始 F0 tree。
+按 §2.2.24「dsh 下一轮最小任务」执行的 **F0**：只新增测试，**未修改任何生产代码**、未升版（仍 `0.3.12.0`）、未重新打包或部署、未提交/推送。新增 `tests/ADOFAI.Renderist.FfmpegTests/FrameLocalDeliveryFeasibilityTests.cs`（18 个用例），并在测试 `Program.cs` 注册。**fake context / fake 子进程不等于真实 Unity 上下文、真实 FFmpeg、Mono 或 GPU 验证。**
 
-本次隔离完整 net48 为 **421 passed / 0 failed / 0 skipped**；F0 20 项均通过。覆盖真实 canonical 消费、写入生命周期、无上下文泵等待和严格 frame/cleanup teardown；不代表 Unity Mono/GPU/视觉确定性验收。F1-A 尚未加入，下一节点即使保存为实验快照也必须明确 No-Go；不得把测试提交视为生产方案放行。
+#### 结论（F0 = Go，仅限"现有底座足以支撑帧内取结果"这一层）
+
+- **核心前提成立**：在**完全不执行 Post delegate、不 Pump、不推进任何 Unity 帧**的情况下，主线程可以从真实 `FfmpegVideoPipeline → FfmpegRgb24FrameTransport → Rgb24FrameTransaction` 取得**真实 canonical envelope**，并在捕获该桥的同一条线程上调用现有 `ConsumeEnvelope` 得到 `Committed`，lease exactly-once 释放，随后可正常开始下一帧（新 token）。
+- **可直接复用现有消费路径的源码依据已被行为验证**：`ConsumeEnvelope` 的真实性校验只依赖 `_completed` 引用与原 mapped Task，**不要求 `Store` 已运行、也不要求 `_pending` 已被取走**。测试在 Post 被扣留时断言 `TryTakePendingEnvelope` 仍为 false，而同一 canonical 引用提交成功。
+- **一次消费严格成立**：重复消费同一 envelope → `rgb24-envelope-duplicate-completion`；值相同但对象不同的克隆/伪造 envelope → `rgb24-envelope-completion-identity`（`IsAuthentic` 是引用身份，不能靠字段重建绕过）；迟到 Post 之后仍只有一次 release、阶段不复活。
+
+#### 本轮确认的、持续有效的实现事实
+
+1. **`TryStopAndDrain` 会取消 L2 管道**：一旦请求停止，同一 `FfmpegVideoPipeline` 后续写入被拒（`RejectedTransportRejected`，底层 `state=Cancelled`）。因此真正的 "restart" 必须是**新 pipeline + 新 context + 新 generation**，只替换 `Rgb24DeliveryContext` 不够。旧 generation 的迟到 Post 无法污染新 session（新 pipeline 有独立通知槽）：新 `_pending` 为空、新 lease/token 不变、旧 envelope 被判 `RejectedStaleGeneration`。
+2. **abort 收敛需要两个独立屏障，且写入终态不等于 `TryStopAndDrain` 成功**：即使写入已终结，只要 `CleanupTask` 未完成，`TryStopAndDrain` 仍返回 false、`TryReplace` 仍拒绝 restart。两种顺序（cleanup 先 / frame 先）都必须等双方结束才允许 replace。
+3. **被取消的 delivery 仍会发布一个失败信封**：`Observe` 的 continuation 无条件构造 envelope 并 Post，其 outcome 为失败。因此"等待 envelope 到达"可以作为**写入终态已到达**的可观测信号（不需要轮询 `IsCompleted`）。这既给出了取消路径的确定性唤醒点，也说明不能把"收到信封"当成成功。
+4. **覆盖了 cancel-first 顺序**：写入 pending 时先请求停止，再触发 stdin `ReleaseSuccess`；迟到成功可被已拆除管道拒绝，或因 `_aborting` 不能提交。该用例**不是同时竞态，也未覆盖成功 claim 先于取消的顺序**；新 claim/取消优先级须按 §2.2.26 单独实现和测试。
+5. **pending 期间资源不提前释放**：`DeliveryPinned` 保持、`ReleaseCount == 0`、缓冲字节不变、第二帧 `TryBeginFrame` 被 `RejectedWrongPhase` 拒绝。
+6. **通知 exactly-once**：每个 accepted write 一个 Post；同 session 两帧各有独立 envelope/token/槽位，旧帧 envelope 被拒。
+7. **身份/线程边界**：错误 generation / frame / token 分别得到 `RejectedStaleGeneration` / `RejectedWrongFrame` / `RejectedTokenMismatch`；工作线程消费与取信封均 `RejectedWrongThread`（`rgb24-wrong-main-thread`）；Post 抛错会被上报为通知失败，即使拿到 canonical 引用也只能得到 `Failed`。
+8. **时序**：真实 IO 的即时完成与延后完成都只产生一个 envelope；"mapped Task 已完成但 envelope 未发布"这一瞬时窗口无法用真实 IO 确定性复现，改为断言**身份不变式**（Task 已完成也不能接受未携带真实身份的 envelope），并在测试用可控 completion 下验证同步 continuation 的内联投递同样成立。
+
+#### F0 未证明 / 生产仍缺的接口与取消机制
+
+- **私有 canonical 通知入口仍不存在**：生产代码没有取得 `_completed` 的 accessor，`TryTakePendingEnvelope` 只读 `_pending`。F0 是靠测试上下文扣留 Post 并读取其 `state` 拿到 canonical 引用的——这证明了"底座可支持"，**不等于**生产已有该入口。§2.2.24 候选 C 第 1 条（原对象私有通知 + 真正一次性 claim）**仍未实现**。
+- **没有独立于 PlayerLoop 的用户取消来源**：F0 的取消由测试线程直接调用 `TryStopAndDrain`（测试专用唤醒）；真实 GUI Stop/disable/unload 仍需主线程运行。§2.2.24 候选 C 第 3 条**仍未选型/实现**。
+- **fake 边界**：fake `SynchronizationContext`、fake 子进程（`FakeVideoProcess`）、`ControllableStdinStream` 都不是目标 Unity Mono / 真实 FFmpeg / GPU readback；EOF 相位、`WaitForEndOfFrame`、真实 stdin 进展、线程与句柄寿命均未验证。**F1 未执行。**
+- **后续源码复审限定（§2.2.26）**：`RealChain.Dispose:841–860` 忽略 `cleanup.Wait(WatchdogMs)` 返回值并吞异常，没有核对 outcome/residual，也没有确认当前 frame lease 退休；419/0/0 不构成每个夹具最终 clean 的证明。独立信号用例 `:427–435` 在 `RunOnWorker` 已 Join 后才 WaitAny，因此是预置信号选择，不是主线程已阻塞时被后台唤醒。reverse barrier 用例 `:507–532` 没有扣留 stdout EOF 的独立门闩，CleanupTask pending 断言依赖调度窗口。上述缺口不推翻真实 canonical 身份消费证明，但不得外推为 F1 安全结论。
+- 视觉确定性、f0 / B−1 / hidden→G / End Tail 的源图对照均未涉及；**F0 通过不得写成视觉确定性或整场景观察通过**。
+
+#### 本轮验证与修改范围
+
+- 只新增 1 个测试文件并注册；**生产代码零改动**（`src/**` 本轮无任何写入，文件 mtime 早于本轮）。
+- 完整 net48 回归：**419 passed / 0 failed / 0 skipped**（原有 401 + F0 18）。测试工程重建 0 error；`SyntheticIlContractTests` 的 `CS0649` 是上一轮既有的测试替身字段告警，非本轮引入。`git diff --check` 通过。
+- 顺带修复：上一轮 PowerShell 文本重写把测试 `Program.cs` 的中文注释与**测试横幅字符串**写成了乱码（`ADOFAI Renderist 鈥?FFmpeg ...`）。本轮从 HEAD 字节重建该文件并只重新施加 7 行注册，横幅恢复为 `ADOFAI Renderist — FFmpeg component (L1) regression tests`，功能 diff 净为 `+7/-0`。已全仓扫描确认无其它 mojibake 残留。
+- 文档只同步本节与 §2.2.24 标题状态；版本、README、NVT、部署 DLL `F97722C6…` 均未变。
+
+### 2.2.26 F1 目标 Unity 最小单帧 PoC 方案冻结（2026-10-19；设计裁决，无生产实现/实机放行）
+
+**裁决与范围**：接受 F0 对原始 canonical envelope/主线程合法消费的证明，保持上一轮报告 `419 passed / 0 failed / 0 skipped` 的原证据层级；本轮核对到 18 个 RunTest 与 Program 注册，**未重跑该回归，也未取得新的 F1 结果**。仅允许后续 dsh 准备可审查的测试修紧与限定 PoC；运行前还须回归和守护预检。F1 不是生产帧内交付开关，更不是视觉通过。R0a/R1、PlayerLoop 修改、Camera Tween、Particle owner、replay、完整生产导出均不在范围。
+
+**本轮身份**：`main` / HEAD `9f9ff34eee4ff1f9a73a260d7d753219297d0950`，staged 为空，原有 21 个 tracked 修改及 untracked 工作保留。Info/csproj/ModEntry 仍 `0.3.12.0`；Release 与 Mods DLL 均 501248 bytes / SHA256 `F97722C6624E028640F87E23971E52BA4561E851AF870AF5E64030053854F699`。只同步本文件的新事实和冻结方案；不创建/修改生产代码、测试、NVT、README、版本、构建、部署，不提交/推送。
+
+#### A. F0 审查：可继承的证明与必须补齐的缺口
+
+- `FrameLocalDeliveryFeasibilityTests:82–100` 取 HoldingContext 中实际 Post state，交真实 ConsumeEnvelope；`:295–323` 拒绝值相同的克隆；`:326–350` 验证重复消费/迟到 Post；这确实运行事务行为，不是源码字符串检查。private accessor/生产 claim 尚不存在。
+- `RealChain.Dispose:841–860` 的吞异常与未检查 timeout/outcome/frame ownership 必须先修紧。测试主体成功不能覆盖 teardown 失败；原异常与 cleanup 异常均须保留。F1 不复用这个 Dispose 当作 cleanup authority。
+- F0 的 `RunOnWorker:706` 会 Join；独立取消用例在 Join 后才 WaitAny；因此不能声称已验证“主线程阻塞期间后台取消可到达”。F1 必须有 WaitingArmed/WriteGateEntered 与后台实际唤醒顺序证据，不能预先 Set 取消/完成信号冒充。
+- reverse barrier 未使用 DeferredEofStream 门闩，需改成真正扣住 stdout EOF，先释放 frame terminal、断言 cleanup 仍 pending，再释放 EOF。cancel-first 用例不是并发仲裁验证；补 controlled interleaving，不靠 sleep 赢竞态。部分辅助方法没有统一 watchdog、信号对象也未全部 Dispose，后续修紧须覆盖其生命周期，保命 deadline 仅限测试。
+- `RealChain.BeginOn:798–820` 返回原 SegmentBuffer，而用例把它当 `expected` 再与 FrameBuffer 比较；两者是同一数组引用，不能证明字节未变。修紧为写入前的独立快照。F0 文件也没有构造 faulted/canceled mapped Task 的测试，不能把普通失败 outcome 当作 Task fault/cancel 传播覆盖；新通知 ready 的异常路径须补真正 Task 终态用例。
+
+#### B. 冻结的单帧运行边界
+
+1. 默认关闭、无持久 Settings/GUI 选项。只有外部 guardian 为**指定游戏 PID/启动时间 + 一次性 run nonce**建立有效 descriptor/信号并握手，才允许本次诊断 session 启用。无 descriptor 正常导出不改变；descriptor 存在但失效/过期/握手失败时拒绝本次诊断，不能悄悄回退成完整普通导出。descriptor 原子领取，只用于一次 session，日志/残留证据不自动清理。
+2. 固定 MP4 的 **absolute output frame 0**，复用原编辑器启动、真实 capture RT/EOF/分块 RGB24/真实 FFmpeg。只允许一个 accepted write 和最多一个真实 CommitFrame。使用已保存的安全测试关卡，f0 不得已有 canonical completion/Won，safety limit 不启用；几何/FPS 由原合法设置冻结，不静默修改或降级。F1 不支持任意目标帧、多个帧或批量导出。
+3. 成功取得 permit 后，仍调用唯一 ConsumeEnvelope→原 ResumeAfterRgb24Delivery→CommitFrame。随后**在返回本次 EOF callback 前**登记 `RequestStop("cancelled", "f1-single-frame-complete")`，禁止 f1 Prepare。不得标成 canonical completion，不调用 FinishAsync/verification/publish；session 按诊断取消清理，PoC 是否通过单独记录。若提交前检测到已有 stop、完成状态、错 phase/身份，则不提交并停止。原 CommitFrame 的 completion 分支不改。
+4. cancel/失败路径 Commit=0；成功路径 Commit=1、L2 delivered=1。Cancel 与成功交叠时 delivered 可能已为 1 而逻辑 Commit=0，这是取消的合法结果，不拿 Finalizing 的计数相等条件强行发布。
+5. f0 ZeroStep/嵌套消费/EOF seal 不变；不在等待中重发授权或 Prepare。hidden、G partial/G+1 的原分支与 B−1/G 的 timeScale 转换保持。本轮 target=f0，**不声称已验收 hidden/G/G+1**，也不删掉初始化中有意 native 帧。下一次成功帧不靠额外 Unity 帧“解围”；返回 PlayerLoop 只用于已决定停止后的原清理，不继续交付/提交这个 pending 帧。
+
+#### C. 原始发布、模式与真正一次 claim
+
+`DeliveryNotification` 当前在 `Rgb24FrameTransaction.cs:592–595` 创建 envelope，先写 `_completed` 再 Post。F1 在**这里**接出私有原对象通知，不从 Unity context 偷取 state、不包装全局 SynchronizationContext、不反射取字段、不另建 envelope。绑定参数为 run nonce、context/notification 引用、generation、index、token、原 frame identity 与 mapped Task。
+
+- 对这一笔 write 在 Observe 前冻结 **CanonicalDirectProbe** 路由；默认 **AsyncPosted** 原样保留。`TryBeginDelivery` 仍先发布 `_write`，再 Observe；同步已完成 Task 不能抢跑。只读“结果已完成”与“结果已发布”仍分开。
+- CanonicalDirectProbe 的正常完成**不执行常规结果 Post/Store**，而是在原通知槽锁内发布 `_completed` 或明确的 publication fault，锁外 Set 私有 ready。ready 只表示可以重新检查通知，不是成功/claim，不受 Post callback/Tick 进度门控。所有退出/异常必须发布故障并唤醒，不能留下 Task 已完而 waiter 永久等 ready 的分支。
+- 只允许捕获的 M 取原引用；取引用不等于取得消费许可。实际 ConsumeEnvelope 通过全部现有身份/阶段检查后，与取消 latch/故障发布共用一个短锁，取得**一次性消费 claim**。AsyncPosted 的消费也经过同一 claim；错误线程/伪造引用不获得 claim、不释放 lease。opaque claim 归属通知槽，不只按 frame index 置 bool。
+- claim 从 Open 单向关闭为 ConsumeSuccess / ConsumeFailure / Abort。已关闭永不重新开放，失败不重试当前帧；不得以新对象重新包装许可。先保留 permit，再按原主线程方法释放 lease；若消费/释放失败，permit 不能转成实际 Commit，原 context 继续 abort/residual，不重新领取。
+- Store 只能给仍 Open 且属于 AsyncPosted 的槽设置 `_pending`；已领取/关闭的迟到 Store 不再投递正常消费。旧 notification 的回调只接触旧槽，不能查看全局“当前 context”后改新 lease。新 run 必须新 pipeline/context/generation。
+- **保留取消退休唤醒**：CanonicalDirectProbe 不投递正常结果，但 TryAbort 在 raw/mapped Task 未完成时，必须在同一通知锁内先登记 abort-retirement-wake 请求，再检查 Task 完成性。若 Task 已完，M 原样退休；若未完，Observe 在终态发布后按该标志通过原 Bridge/OnPostedCompletion 请求一次退休。这样不漏掉“检查未完→完成发布→才登记唤醒”的竞态。该 Post 只用于停止后的 lease 退休，不进入正常提交。Post 失败/错误线程如实记录，不能假装 clean；无后续 M 时保留 residual。
+- Observer continuation 本身要可观察 settled；不能因为 mapped Task 已完或 ready 已置位就 Dispose 其尚可能 Set 的句柄。独立 probe 还要持有 notification/control 资源，直到 producer settled、waiter exited、monitor exited、所有退休回调可判定；不修改原 frame/cleanup 两个 barrier 的定义。
+
+#### D. 成功、失败与取消的线性化
+
+同一 probe slot 的发布、RequestCancel、claim 使用同一个短锁；等待、IO、日志、L2 Cancel、Unity cleanup 均在锁外。外部 Set event 是**请求发出**，专用线程把请求写入 slot 并返回 ACK 才是 **RequestCancel accepted**，两者分别记录，不混为同一时刻。
+
+| claim 时锁内状态 | 决定 | 后续 |
+| --- | --- | --- |
+| 错线程/身份/协议破坏/publication infrastructure fault | Fault/No-Go | 不发成功许可，保留 ownership 并停止；同时记录 Cancel/IO 错误，不能隐藏故障 |
+| claim 前 Cancel 已 accepted（含 guardian soft abort） | Abort，优先于可用的普通 IO 成功或失败 | Commit=0；M 请求原 L2 取消/登记停止，raw Task 未完保留 pin；同时保留 IO 失败信息 |
+| 未取消，真实已发布 envelope.Success=false | ConsumeFailure | 原失败消费/退休语义，Commit=0，停止 |
+| 未取消，真实已发布成功且所有校验通过 | ConsumeSuccess permit | 此点是成功许可的线性化点；原消费成功才可 Commit 一次 |
+| envelope 未发布且无故障/取消 | NotReady | 锁外继续等待信号，不轮询 FFmpeg，不跑 PlayerLoop |
+| claim 已关闭 | AlreadyClaimed | 不再消费/提交/重试；仅允许既有 abort 退休操作 |
+
+claim 先于 Cancel accepted 时，迟到取消不追溯改写这次许可；只触发本诊断 run 的停止。claim 之后的真实协议/清理故障会使 **PoC 最终 verdict FAIL**，不能撤销已经发生的 Commit、也不伪造 Commit=0。WaitAny 的句柄索引/唤醒顺序不是仲裁依据。L2 的 Cancel/Failed/发布仲裁仍由 L2 自己拥有，slot 只决定本帧消费许可，不新增管道终态 authority。
+
+#### E. 独立取消与保命：先证明控制通道，再进入 EOF 等待
+
+**选定 Windows 本机诊断通道**：外部 PowerShell guardian + 本进程一个专用 background Thread + nonce 命名 EventWaitHandle。不同进程可以用命名事件通信是 API 选型依据，[官方 API](https://learn.microsoft.com/en-us/dotnet/api/system.threading.eventwaithandle) 不代表目标 Unity Mono 已兼容；必须现场 preflight。不可用则 No-Go，不临时改用文件轮询/Unity GUI/私有 native detour。
+
+- guardian 脚本提供 `Arm / Release / Cancel / Status` 操作，人工 Cancel 可从游戏外调用；运行 guardian 隐藏窗口，保留可查看的独立日志。不可把 UMM Stop 当唯一退出源。命名对象使用 `Local` 会话范围和不可复用 nonce，显式区分 Release、Cancel、Shutdown/ACK；不依赖同名旧信号的默认状态。
+- runtime monitor 为**专用 Thread**，不使用 Unity coroutine/ThreadPool timer/Unity Post；它阻塞等待外部事件和诊断 deadline，向纯托管 slot 登记请求并唤醒 waiter，不接触 Unity、scheduler、lease 或 context 的可变状态。Release 只处理一次，随后从等待集合移除，避免 ManualResetEvent 常置位造成忙循环。线程异常也必须变成 slot fault+wake。
+- 外部 guardian 与 runtime 先做双向 event ping/ACK，核对游戏 PID/启动时间、run nonce，再核对 encoder PID/启动时间/可执行路径/hash；ready、取消、observer/monitor 各句柄都未提前 Dispose。进入 Play/阻塞之前任一预检失败就拒绝诊断 session，并按启动 context 路径取消已有 L2。
+- M 的等待集合除私有 ready 外，必须包含 guardian 可直接 Set 的**独立命名 EmergencyAbort event**。普通 Cancel 经专用线程写 slot/ACK；monitor 未响应时，外部 guardian 仍能直接唤醒 M，由 M 在 claim 前把 emergency 写入同一 slot 并仲裁。不能让所有退出都依赖同一个 monitor 线程。该 emergency event 的打开/身份/唤醒也须预检；紧急路径优先于读取成功许可，若在成功 claim 后到达则按迟到取消处理且本次诊断判失败。
+- 外部日志取得 encoder 身份使用现有 `FfmpegVideoPipelineOptions.ProcessStart` 缝：签名是 **`(string executablePath, string arguments, string workingDirectory) → Process`**（`FfmpegVideoCommand.cs:15`）。诊断 delegate 按现 StartDefaultProcess 的重定向/无窗口参数启动**唯一那个真实 FFmpeg**，记录身份后把 Process 交回 L2；不改编码参数、不接管 Dispose、不创建第二个 encoder。核验器也使用该 delegate 的事实须考虑：F1 禁止 Finish，因此正常不会启动 ffprobe；出现第二次进程启动/Finalize 尝试即诊断失败，不悄悄多开进程。
+- **仅 PoC 的保命预算**：WaitingArmed 后 5s 无正常返回则本地 monitor 和外部 guardian 分别请求 soft abort；10s 仍未恢复，guardian 先 Set EmergencyAbort，再在该 encoder 仍活着时终止经身份复核的本 run encoder；30s 未取得完整 settlement 记 FAIL/RESIDUAL，停止后续用例。均不是产品 IO 合法性期限。所有 deadline 都是失败退出，不超时后异步 fallback；WaitExited 后停用该 wait deadline，另按 settlement 预算记录恢复。
+- guardian 不按进程名 kill、不杀游戏、不杀其它 FFmpeg、不丢原 context。正常取消由醒来的 M 调既有 L2 停止入口；hard kill 只是本诊断 child 的紧急保险，不是 cleanup 完成证据。guard 不在/提前退出、命名事件互通失败、无法可靠定位 child 均 No-Go。若主线程/Mono 已严重失效，杀 child 也未必恢复宿主；报告不可恢复状态，保留外部证据，不能承诺无损救活游戏。
+
+#### F. 最小真实 IO 控制及运行用例
+
+只通过现有 `Options.StreamWrapper` 注入 stdin 包装；stdout/stderr 保持原 L2 pump。首次写入先登记 WriteGateEntered，等待独立 Release；门打开后必须实际 await 内层 **真实 Mono stdin.WriteAsync 和 FlushAsync**，使用 ConfigureAwait(false)，并让外层 Task 覆盖内层整个寿命。不可以 token/timeout 提前结束外层 Task 而让 native 写入仍读取数组。取消在 inner 尚未调用时可直接终结；一旦 inner 已调用，必须等其真实终态。Cancel/failsafe 同时打开前置门并登记取消，不能让 gate 自身留下悬空 Task。
+
+**该门是受控 managed hold，不是已经制造出真实 FFmpeg pipe 饱和。** F1 可以证明真实 IO 在 M 等待期间执行/结束，以及目标等待器可退出；真实 native WriteAsync 长期堵塞下的取消仍单列未覆盖，不能把 wrapper 的 Cancel 误当 native pipe cancel 已通过。不暂停进程、不调用未经核实的线程挂起 API。
+
+每次 run 都新 nonce、pipeline/context/generation，只允许 f0；下面是分开运行的有限用例，不是同一 session 捕获多帧：
+
+1. **P0 控制通道预检**：不进入帧等待前验证 guardian/monitor/事件互通、child 身份、正常退出 ACK；失败不进入 P1。
+2. **P1 成功**：M 在 EOF 得到完整 CPU frame、GPU 恢复，绑定 direct route 后接受写入。等待 `WriteGateEntered + WaitingArmed`；guardian 延后约 1s Release，runtime monitor 在此期间记录捕获线程处于 WaitSleepJoin 的观测。真实 Write/Flush 在后台终结，原 canonical 直接发布唤醒 M，同一 native frame 消费/Commit 一次，立即诊断取消。需要 WaitEnter→独立 Release→InnerIO→Publish→Claim→Commit 的顺序证据，不能先 Release 再开始等待。
+3. **P2 取消**：先确认相同的等待状态，在门未开时从外部发 Cancel，得到 slot accepted ACK；M 醒来必须 Commit=0，原取消生效。随后观察真实 write Task 与 CleanupTask 分别收敛；写入可能从未进入 inner，必须如实标记，不能称 native 堵塞取消验收。
+4. **P3 子进程失败**：等待门保持关闭且 M 已进入 wait；guardian 终止已核对身份的该 encoder，确认退出，再 Release。真实 stdin 调用/Flush 失败经原 L2→map→canonical 传播，M 无 Post/Pump 依赖地退出；Commit=0。若破管状态/句柄尚未关闭，等待原 L2 清理，不补帧、不重试写入。
+5. **P4 保命演练**：guardian 不发正常 Release，5s soft abort 应唤醒退出并使 run 判 FAILSAFE-TRIGGERED（不是成功用例）。hard child kill/残留报告路径至少用可控子进程在宿主外预演；不为证明 hard kill 在用户游戏中制造不可恢复故障。任一保命路径失效立即停测。
+
+不额外安排“同时到达”的目标 Unity 随机撞时序；其优先级先由新单锁 claim 的 net48 controlled-interleaving 测试固定，再由上述 Mono 用例核对同一合同。P1/P2/P3 的 PASS 都是特定预期路径通过，最终还必须资源 clean；P4 是保命机制验证，不能计作成功交付。
+
+#### G. 证据、cleanup 与句柄寿命
+
+- M 记录：run nonce、DLL SHA/版本、Unity/Mono/图形环境、真实 FFmpeg 路径/hash/版本/PID/启动时间、context 类型、捕获 M thread id/apartment、generation/index/token、phase/授权零步、EOF 前后 native frameCount。W/monitor 记录各自 thread id、事件序号及 Stopwatch tick；不同进程按 nonce/ACK 顺序关联，不假设其 Stopwatch 原点相同。
+- 每个 run 必有 `waiting-armed / wait-enter / gate-enter / control-accepted / inner-write-begin/end / inner-flush-begin/end / canonical-published / claim / consume-result / actual-commit / wait-exit / stop-requested / frame-terminal / cleanup-terminal / residual-snapshot / probe-resources-closed`（未经过的步骤明确 not-entered）。禁止只打印一个 PASS；先做写入结果、消费/Commit、清理、诊断资源四个分项判定。
+- `Time.frameCount` 在 wait-enter / wait-exit / claim / commit 必须相同，提交线程必须等于捕获 M；P1 的 publication/inner IO 在线程上与 M 分离。增加一个**仅诊断 canary Post**：进入等待前确认它尚未执行，等待中执行数必须 0；它不携带结果、不唤醒 waiter、不用于进展。callback 可在取消后恢复 PlayerLoop 时自然执行一次。若上下文 inline 执行、等待期间派发 canary 或出现 M 重入，则 No-Go，不把 WaitAny 的参数误当“绝不泵消息”的证明。
+- 从已形成的 owned CPU 分段缓冲计算一次独立源字节 SHA256，等待退出、消费/回池前复算全部分段；不得用同一 byte[] 自比较。它只验证这一帧交付缓冲完整性，不额外渲染/模拟，不覆盖场景内部状态或 f+1 图像，因而不能升级为视觉 PASS。
+- F1 使用明确 `TryObserveSettlement`，不能依赖无断言 Dispose：M 在 callback 栈退出后由原 Tick/退休 Post 观察**自己的旧 context**。同时要求 frame Completion 真正 terminal（观察 fault/cancel）、Transaction/Pool 无 frame ownership、CleanupTask 非 null 且成功返回非 null outcome、outcome.ResidualOwnership=false、Context.HasResidualOwnership=false。记录 ProcessDisposed/进程退出/临时文件 ownership 释放及所有异常。只看到 HasExited 或 CleanupTask.IsCompleted 不够。
+- probe 自身还要求 observer continuation settled、waiter exited、专用 monitor 退出、外部 guardian 结束 ACK、信号/回调均可退休后才 Dispose handles。等待器退出早于这些条件时保留引用；Controller 的诊断 busy/re-arm gate 保持关闭。late abort Post 只退休旧对象；无后续 Tick/卸载后未能证明退休则保持 residual 并标 FAIL，不能假设“游戏迟早会清”。
+- 本轮 F0 的 using teardown 不可信，后续先修为 bounded、可断言的 cleanup；返回 bool=false、fault/cancel/null/residual 都使测试失败。结束 next frame pending 的夹具也要等其真实终态并 TryAbort；保留主体与 cleanup 双异常，不让后者覆盖前者。逆序屏障用独立 stdout EOF gate，所有测试 signals 在 producer/consumer 结束后释放。不要清掉失败目录来掩盖残留证据。
+- 正常 P1 清理调用 Cancel，L2 outcome 应为诊断取消而非 Completed；session 没有成品 MP4，PoC 的 success flag 与 session terminal 分类分离。Finalizing 的两阶段判定、计数交叉核对、原子发布及其取消逻辑不改；F1 任一调用 Finish/发布成品均是越界失败。
+
+#### H. 精确修改白名单（后续实施，非本轮已修改）
+
+| 文件 | 允许的限定变更 |
+| --- | --- |
+| `src/ADOFAI.Renderist/Export/FrameLocalDeliveryProbe.cs`（新增） | 单 run 的纯托管 slot/claim 控制、事件/专用线程、受控 StreamWrapper、进程启动诊断 delegate、有限日志/资源 ledger；不创建统一时间 owner |
+| `src/ADOFAI.Renderist/Export/Rgb24FrameTransaction.cs` | 该帧 Observe 前 direct route 绑定、原始 canonical 发布、共同一次 claim、迟到 Store 隔离、取消退休 wake/producer settled；保留默认 async 与全部身份/abort 检查 |
+| `src/ADOFAI.Renderist/Export/DeterministicFrameScheduler.cs` | f0 EOF Accepted 后唯一等待入口、复用原消费/Commit、立即诊断 stop、原 residual 泵中的 probe evidence；不改 Prepare/authorizer/边界时间公式 |
+| `src/ADOFAI.Renderist/Export/EditorExportController.cs` | 一次 descriptor/preflight、Bind 前配置现有 Options 缝、诊断资源 busy/re-arm gate 与生命周期接线；不改 Finalizing 协议/GUI/Settings |
+| `scripts/f1-frame-local-guardian.ps1`（新增） | 独立 Arm/Release/Cancel/Status、身份校验、有限 deadline、只 kill 自身诊断 encoder、独立日志与退出 ACK；不进入发布 ZIP |
+| `tests/ADOFAI.Renderist.FfmpegTests/FrameLocalDeliveryFeasibilityTests.cs` | 修紧 RealChain.Dispose、expected 独立快照、逆序屏障、非预置信号/真正的 interleaving 证据 |
+| `tests/ADOFAI.Renderist.FfmpegTests/FrameLocalDeliveryProbeTests.cs`（新增）、测试 csproj / Program | 对同一新 slot/claim/通知源码做真正行为测试并注册，含 Task fault/cancel、发布失败必唤醒、取消先/成功先/失败与取消/late Post/句柄关闭竞态、默认关闭/单 run 单帧/禁止 Finalizing；不添加程序集或游戏依赖 |
+| `PROJECT_UNDERSTANDING.md` | 同步实际实施、测试与 DLL/实机身份及仍未覆盖项 |
+
+不改 `FfmpegVideoPipeline.cs`、verifier/publisher、MasterTimeline、VisualFrameAuthorizer、FrameCaptureDriver 的读回协议、现 Harmony Patch、NVT、README、版本和正式包结构。SDK 自动纳入新增 production 文件；不为 PoC 改 production csproj/依赖。若白名单内无法实现取消/retirement 安全闭包，停止交 GPT Work，不自行扩成全局架构。
+
+#### I. Go / No-Go 与交接
+
+**实施 Go（仅诊断 diff）**：按白名单先修紧 F0 夹具、实现私有通知/共同 claim 与 guardian，并提交可审查 diff/新 net48 结果；不能把旧 419/0/0 当新 claim 已验证。**实机运行 Go**：GPT Work 审过并发/句柄/单帧 gate；默认关闭回归、守护宿主外演练和目标 Mono preflight 全通过；当前工作区成功 Release Rebuild/package/strict verify 后仅部署自身并核对新 DLL SHA。现 `F977…` DLL 无法运行这些尚未实现的设施。
+
+**F1 用例通过**：符合预期分支/线程/同 native frame/最多一个 Commit、独立控制有效、真实 inner IO/失败来源如实、双屏障和 probe 资源全部 clean；异常路径不能靠隐藏失败得到通过。**生产与视觉仍 No-Go**：尚无正常 GUI 可用的生产取消方案、真正 native pipe 长期堵塞取消、任意长等待和全场景像素/初态/后续帧证明。F1 不执行 F2 视觉工作，不声称解决 Tail，也不恢复 owner 开发。
+
+**立即停止**：guard 失联/错 PID、命名事件不互通、worker 仍需 Post/Tick 才结束、等待期间 canary/Unity 帧推进、双 claim/错身份、取消先仍 Commit、第二帧、提前回池、发布 MP4、cleanup fault/timeout/null/residual、句柄在 Set 前被关、无法证明恢复。取消并保留旧 context/证据；只有原双屏障和诊断资源都 clean 才能用新 pipeline/context/generation 重开。不得同一 accepted write 内切回 async，不开消息泵、不 Abort 线程、不拿额外 Unity 帧完成该帧、不清空用户粒子。
+
+**交给 dsh 的限定任务**：严格实现本节 H 白名单；先修紧 F0 teardown/门闩，再实现默认关闭的 one-shot f0 direct publication/claim、专用 monitor 与外部 guardian，保留完整 async 回退。新增行为回归覆盖 D 的所有线性化顺序和取消退休竞态，报告真实通过数、残留与 guardian 演练。交回 diff 审查后再安排 P0–P4 目标 Unity 验收；不擅自扩大为生产导出/新 owner/全局时间 Patch。版本 `0.3.12.0`、README/NVT 不变，不 commit/push；所有未实机验证项保持未验证。
+
+### 2.2.27 F1-A 受限诊断实现（2026-10-19；代码与 net48 行为测试落地；**guardian 演练未通过，实机门禁未开**）
+
+按 §2.2.26 H 白名单实施，**未部署、未启动 ADOFAI、未运行 P0–P4**。版本仍 `0.3.12.0`；README/NVT/正式包结构未变；不 commit/push。
+
+#### 实际改动（严格白名单内）
+
+- 新增 `src/ADOFAI.Renderist/Export/FrameLocalDeliveryProbe.cs`：`FrameLocalDeliveryClaimGate`（发布/取消/claim 共用**同一短锁**的单向状态机，锁内无 IO/等待/Unity/日志/释放）、`FrameLocalDeliveryProbeSlot`（run nonce + f0 身份绑定）、专用 `FrameLocalDeliveryProbeMonitor` 线程（命名事件 + 保命预算）、`FrameLocalDeliveryStreamGate`（受控 stdin 门）、`FrameLocalDeliveryProbe`（descriptor 加载/进程身份校验/握手/encoder 定向终止/settlement）、证据台账。
+- `Rgb24FrameTransaction.cs`：`DeliveryNotification` 的状态下沉到 gate；`TryBeginDelivery` 在 **Observe 之前**绑定 direct 路由与 slot；direct 发布**不执行**常规 Post/Store；`ConsumeEnvelope` 在**任何副作用之前**先 `TryClaim`；迟到 Store 只对仍 Open 的槽生效；`TryAbort` 在 Task 未完成时先登记 abort-retirement-wake，`Observe` 终态后补一次退休 Post（不进入正常提交）。
+- `DeterministicFrameScheduler.cs`：新增唯一帧内等待入口 `TryRunFrameLocalProbeDelivery`，只在 probe 已接管且 `frame==0` 时执行；等待 ready/emergency（不 Pump、不 Tick、不 Prepare），成功后仍走原 `ConsumeEnvelope → ResumeAfterRgb24Delivery → 唯一 CommitFrame`，随即 `RequestStop("cancelled","f1-single-frame-complete")`。
+- `EditorExportController.cs`：唯一一次 descriptor/preflight；只在 descriptor 存在时安装现有 `StreamWrapper` / `ProcessStart` 缝并 `TryActivate`；descriptor 存在但无效即 fail-closed（不悄悄回退）；`Cancel` 时关机 probe。
+- 新增 `scripts/f1-frame-local-guardian.ps1`（Arm/Release/Cancel/Emergency/Shutdown/Status/WriteDescriptor/Terminate/Rehearsal；禁止按名 kill、禁止杀游戏）。
+- `FrameLocalDeliveryFeasibilityTests.cs` 按 §2.2.26 A/G 修紧：`DisposeStrict` 不再吞异常（timeout/fault/cancel/null-outcome/residual 均失败，主体与 cleanup 双异常并存）、`BeginOn` 返回**独立快照**、独立信号只在主线程被观测到 `WaitSleepJoin` 后才发、逆序屏障改用独立 stdout EOF 门闩、三种 controlled interleaving、真实 mapped Task fault/cancel。
+
+#### 验证结果
+
+- 完整 net48 回归：**440 passed / 0 failed / 0 skipped**（既有 401 + F0 20 + F1 probe 19）。生产与测试工程均 0 error。
+- claim 线性化（gate 行为测试固定）：成功许可**一次性**，第二次 claim → `AlreadyClaimed`，克隆/伪造 → `WrongIdentity`；取消先于 claim → `Aborted`（无 permit）；claim 先于取消 → 迟取消 `f1-late-cancel-after-claim` 且不改写；发布故障 / 桥接失败 → `NoGo`/`Fault`（永不出 permit）；迟到 Store/取信封在 claim 关闭后被拒。
+- Cancel/成功实际顺序（真实 L2 链路）：① claim 先 → Commit 1 次、release 恰好 1 次、迟取消不改写；② publication 先但 claim 前 abort → abort 退休该交付、release 1 次、后续 claim 被拒（**不产生 Commit**）；③ cancel 先 → 后续 publication 仍不可提交。
+- F0 修紧后的关键证据：cleanup timeout/fault/cancel/null/residual 会使测试失败；`expected` 与 lease 段不是同一数组（`!ReferenceEquals`）。
+
+#### 未通过 / 阻塞项（实机门禁仍未开）
+
+- **guardian 宿主外演练：未通过**。`-Action Rehearsal` 在两进程握手阶段失败（guardian 侧未打开 Ready）。**已单独证明命名事件跨进程可用**（受控 runtime 子进程 Set Ready，guardian 在约 1s 内 `OpenExisting` 成功并回 Set Ack），因此这是**脚本流程缺陷**，不是生产 probe 缺陷；但按 §2.2.26 I「命名事件互通/演练未通过 → 实机 No-Go」，**不得据此进入 P0–P4**。
+- 未验证：目标 Unity Mono 的 `EventWaitHandle` 命名对象/`Local\` 前缀可用性、monitor 线程在 Mono 下的行为、真实 FFmpeg pipe 与 stdin 门交互、P1–P4 全部用例、Release Rebuild 与新 DLL SHA（当前部署 DLL 不是本次改动产物）。
+- 生产仍缺（不变）：正常 GUI 可用的取消来源、真实 native pipe 长期堵塞取消、任意长等待与全场景视觉证明。
+
+### 2.2.28 F1-A 网页版 GPT 跨模块静态复审（2026-10-19；修复前历史，后续接管见 §2.2.29；F1-B 仍 No-Go）
+
+本轮只读核对当前未提交 worktree、`AGENTS.md`、§2.2.26–27 及具体 C# 源码；**未改实现、未重新构建/运行测试或部署**。dsh 报告的 440/0/0 属上一轮测试结果，不能覆盖以下跨模块接线缺口。
+
+- **首次 direct 路由无法绑定（明确控制流缺陷）**：`Rgb24FrameTransaction.BindProbeRouteIfArmed()`（约 407 行）先要求 `slot.IsArmedForFrame(generation,frameIndex)`，然后才调用 `slot.TryBind()`；然而 `IsArmedForFrame()`（`FrameLocalDeliveryProbe.cs` 约 759 行）以 `_bound=true` 为前提，初始 slot 尚未 bound。源码内未找到其它 slot.TryBind 入口，因此首次直连绑定无法发生；scheduler `TryRunFrameLocalProbeDelivery()` 也用同一 IsArmedForFrame 作入口门槛，可能静默沿用普通 async 继续导出，违反单帧 PoC 边界。
+- **double-publish 导致 ready 不置位（明确控制流缺陷）**：`DeliveryNotification.Observe()`（`Rgb24FrameTransaction.cs` 约 672–679 行）先调用 `Gate.PublishCanonical(envelope)`，之后 direct 分支调用 `TryPublishDirect(envelope, ..., out signalReady)`；前者已设置 `_published`，而 `TryPublishDirect`（`FrameLocalDeliveryProbe.cs` 约 200 行）在 `_published != null` 时直接返回 false，`SignalReady()` 不会被执行。即使修复绑定，也必须统一真实原始发布点与一次唤醒，并做真正的 Observe→direct→ready→consume 集成回归。
+- **monitor Release 常亮信号导致潜在忙循环/饥饿**：`FrameLocalDeliveryProbeMonitor.Loop()` 的 WaitAny 观察 `_release`（ManualResetEvent），命中 index 0 后只是 Open/ACK/continue，没有 `Reset()`、移除该事件或一次性标记；Release 仍置位时后续循环反复命中 index 0，Cancel/Shutdown/紧急分支与 soft deadline 不能保证处理。必须以明确定义的一次性 Release 方式修复并增加多事件顺序验证。
+- **普通 Cancel 与 soft-abort 没有直接唤醒 EOF waiter**：主线程 `BuildWaitHandles()`（约 1302 行）只返回 direct ready 与 guardian Emergency；`slot.TryAcceptCancel()`（约 768 行）及 monitor 的普通 Cancel/soft timeout 分支只改取消 latch，不 SignalReady，也没有专用 cancel wake。IO 仍 pending 时不能保证 P2 正常 Cancel 或 5s soft-abort 令 waiter 及时返回；不应依赖之后的 10s emergency 来伪装软取消 PASS。
+- **门禁**：上述四项加上 §2.2.27 的 guardian `-Action Rehearsal` FAIL，均阻止 F1-B。先由 GPT Work 审查并定向修复跨文件交互，再增加**执行真实交付 Observe / scheduler 入口 / monitor 等待**的集成测试，要求首次绑定成功且只有 f0、单次 ready、真实 Cancel 唤醒、一次性 Release、默认 async 不变，随后 net48 回归、guardian 宿主外演练全部通过并重新审查；此前不得构建部署实机 PoC，不升级版本、不提交推送。F1-A 仍为未获安全闭环的诊断候选，产品视觉 FAIL 不变。
+
+### 2.2.29 F1-A 跨模块 Correctness 接管（2026-10-19；四项修复已验证，完整 PoC 安全闭环仍 No-Go）
+
+**真实基线与范围**：`main` / HEAD `9f9ff34eee4ff1f9a73a260d7d753219297d0950`，staged 空，保留原有全部 tracked/untracked 工作区。只触及 §2.2.26 H 内六个文件：`FrameLocalDeliveryProbe.cs`、`Rgb24FrameTransaction.cs`、`DeterministicFrameScheduler.cs`、`FrameLocalDeliveryProbeTests.cs`、guardian 脚本和本文件。版本 `0.3.12.0`、README、NVT、L2、MasterTimeline、FrameCaptureDriver、L3-C 未改；未部署、未运行目标 Unity、未 commit/push。
+
+**修复前的可重复证据**：在修改生产源码前构建加入四项回归的测试程序集；其后用独立进程调用该程序集的 probe 测试，得到原 19 项 PASS、新 4 项 FAIL。四项失败分别是首次未绑定、真实 Observe 不唤醒 direct ready、pending 普通取消不唤醒、sticky Release 饿死 Cancel。不是仅检查源码文本。日志位于 ignored `.build-tools/f1a-review/f1a-probe-before.log`。
+
+| 缺陷 | 本轮修复与真实路径结果 |
+| --- | --- |
+| 首次绑定悖论 / 静默 fallback | 授权未绑定与已绑定帧明确区分；不再用 `IsArmedForFrame` 作为首次绑定前提。诊断 bind 失败向原 EOF 调用方返回拒绝，同时仍 Observe 已接受的真实 write，防止悬空 lease。active slot 的 EOF 入口不匹配也显式 stop，不回普通导出；pre-bind Cancel 保留为 sticky 状态。 |
+| canonical 重复发布 | Observe 先选 direct/async 分支，再在对应分支发布唯一原对象；direct 不先调用 `PublishCanonical`，正常结果不 Post/Store。失败、fault/cancel Task 及注入的 publication fault 都使真实 EOF 入口退出；direct 拒绝正常 Store。实际 permit 保留 slot run nonce。 |
+| Release 常置位 | Release 首次处理后永久移出 monitor WaitAny 集合；控制事件排列在其前。连续 100 次 Set 后，Cancel、Shutdown、Emergency、soft-abort 均可唤醒真实 EOF 等待；Release 只处理一次，Shutdown 同样登记取消。 |
+| 普通取消不唤醒 | Cancel 在 gate 同一短锁内与 claim 仲裁，接受后锁外唤醒同一 ready。ready 仅表示有状态可处理，不表示 raw write terminal。测试由 worker 观测到真实 EOF waiter 已进入后才普通 Cancel，原捕获线程在 raw write 仍 pending 时退出，Commit=0 且 lease 不释放。 |
+
+`RunSingleFrame` 是 scheduler 实际调用的 Unity-free EOF 控制体，测试执行同一控制体及生产 Transaction/Observe/Bridge/Consume；commit/stop callback 仍由 scheduler 持有，不改变时间或计数 authority。测试夹具只安装 authorized slot、控制 transport 与 context，**绕过 OS descriptor 激活**；不能称目标 Unity/真实 Mono pipe 验证。覆盖真实迟到 bridge Post、旧 generation、默认 AsyncPosted、成功先/取消先、失败/fault/Task cancel、绑定失败、一次性 claim/Consume、callback 异常和 frame/cleanup 两个独立屏障。`ConsumeEnvelope` 仍先通过身份/线程/phase/真实 completion 检查，再 claim，之后才释放 lease；拒绝不得额外 Commit。
+
+同一路径复审还修正了 abort retirement 的登记顺序：先登记 wake，再检查 completion，避免 observer 已越过 wake 点后才登记。ready 释放新增 observer Task、waiter、正在 Set 与 claim 已关闭的检查；这些仅加强局部句柄寿命，**不等于完整诊断 settlement 已接线**。
+
+**Guardian 完整演练**：原脚本 UTF-8 无 BOM + LF，在本机 Windows PowerShell 5.1（GB2312）解析时，中文注释吞掉下一行，包含 `$deadline` 赋值；`-TimeoutSeconds 8` 在启动 runtime 后约 20ms 就误报 Ready 不出现，Parser token/执行 trace 已确认。另修正只读 `$PID` 形参、子进程 ExitCode 取值前保留 Handle、Ready 对象存在早于 Ready Set 的创建竞争。脚本采用 UTF-8 BOM/CRLF，等待 Ready Set 后再打开其它句柄。定向 Terminate 必须核对 PID、启动 ticks 和可执行路径；拒绝路径检查真实错误原因，不能只看非零退出码。
+
+最终 `-Action Rehearsal` 在 Windows PowerShell 5.1 **完整 PASS**（`.build-tools/f1a-review/f1a-guardian-final-pass.log`）：独立 runtime 和独立 action 子进程；descriptor PID/启动时间保留；Ready→Ack→Live；Release/Cancel/Emergency/Shutdown 逐条由 runtime 确认；保护 PID、错路径、错启动时间均真实拒绝且 child 仍活；仅正确身份的受控 child 被定向终止，受保护 runtime 仍活；runtime 随 Shutdown 退出，七个命名对象全部无法再次打开。演练未涉及游戏或真实 FFmpeg，不等于下述自动 deadline 合同已经实现。
+
+**实际验证结果，不能以中间结果代替最终结果**：
+
+- 中间源码全量 net48 曾为 **460/0/0**；之后增加 3 项回归并保留 run nonce、callback 异常修正，最终两个全量运行均为 **462 passed / 1 failed / 0 skipped**，总数 463。两次均为 **F1 42/0、F0 20/0**，本轮新增 F1 共 23 项。
+- 最终失败相同：既有 `hardening: an initialization failure after a successful start still reaps the process`，`FfmpegVideoPipelineTests.cs:1815` 全进程名数量断言 `1 -> 2`。该用例先前的 ProcessReaped/ProcessDisposed/无 residual 断言未报错；全量结束后的进程检查未发现测试进程，但**不能据此抹掉失败或断言是假阳性**。测试文件与 L2 不在本轮白名单，没有修改；需要定向取得该次启动 PID 的证据后裁决。最终日志 `f1a-full-tests-final.log`、`f1a-full-tests-rerun.log` 均保留。未成功执行的反射隔离尝试不计测试通过。
+- 使用本机已安装的真实 Gyan 9.0.2 fixture；测试启动器仅在本次进程内设置 Windows error mode，避免故意非可执行 fixture 触发系统模态错误窗口；没有改生产行为。
+- net48 测试编译 0 error（6 个既有 stand-in 字段 warning）；生产 Release Rebuild 0 error，1 个 NU1900（NuGet 漏洞数据源不可达）。当前 DLL SHA256 `B1F8D0B6B50A9AE2AE14E1BE6F98F64A82F5B5ABEAC3A097A9A945FCF0D7C208`。游戏 Mods DLL 仍为 `F97722C6624E028640F87E23971E52BA4561E851AF870AF5E64030053854F699`，未部署；没有 package/发布本诊断候选。
+
+**仍阻止 F1-B 的已确认源码缺口，不交给 Unity 试错**：
+
+1. §2.2.26 E 的独立 guardian deadline 未实现：`Arm` 只握手后退出；没有从 WaitingArmed 起外部 5s soft / 10s Emergency+已核身份 encoder kill / 30s settlement 观察。monitor 的 soft 计时从线程 Start（Play/bind 之前）开始，`_emergencyMs` 未参与控制；M 的 30s WaitAny 不能替代外部 guardian。本轮 Rehearsal 证明命令互通及定向终止，**没有证明自动保命闭环**。
+2. §2.2.26 G 的诊断终态未完整接线：正常 EOF 的诊断 RequestStop→scheduler terminal→`FinalizeFromScheduler` 不调用 probe Shutdown/settlement；Shutdown 目前仅在 Controller.Cancel 有调用，`TryObserveSettlement`、`DumpEvidence` 在生产中无调用者。现 observer/gate 检查不能证明原 context 的 Completion/CleanupTask、命名事件、外部 guardian 结束 ACK 全部回收；Controller.IsBusy 也未纳入诊断 residual。Shutdown 的 Join 失败仍可能丢 monitor 引用，不能声称句柄安全闭环。
+3. 独立执行当前生产 `FrameLocalDeliveryStreamGate.Dispose()` 后，内层 MemoryStream `CanWrite=True`（`.build-tools/f1a-review/f1a-cleanup-evidence.log`）；源码只释放自己的 entered event，没有释放 inner。L2 替换 `_stdin` 后会 Dispose wrapper，因此不能把 wrapper 已 Dispose 当作真实 stdin 已关闭。该行为尚未修复，须在明确的诊断 wrapper/收尾子范围内处理并验证完整 IO 寿命。
+4. 全量回归当前不是全绿，见上；不能以 F1 子集通过覆盖该失败。
+
+**裁决/下一步**：本轮停止在可复审的定向修复候选，**不部署，不进入 F1-B/P0–P4**。交网页版 GPT 复审这六个文件及现有 F1-A 全量 diff；下一任务先单独冻结 guardian 自动预算/身份交付、诊断 context 与资源收尾、可信日志（含 canary/源缓冲 hash）的最小闭环，以及上述回归失败的定向核对范围。若需改白名单外测试应另行明确范围；不扩大到 L2/MasterTimeline/L3-C，不通过增加 Unity frame、重入消息泵或绕过双屏障解围。F1-A/F1-B 均不代表产品视觉确定性 PASS，既有视觉 FAIL 保持。
+
+### 2.2.30 Git 历史收敛审查（2026-10-19；计划验证完成，尚未执行提交）
+
+原仓库仍为 `main` / `9f9ff34eee4ff1f9a73a260d7d753219297d0950`，staged 空。已对全部 86 个 tracked 与 17 个 untracked 建立逐文件 SHA256/ZIP 备份，并验证 Git bundle；额外备份对象库与 reflog，保留未被 refs 引用的 tree。备份与可执行差异计划位于 ignored `.build-tools/history-review/20261019-095617/`，本轮没有 reset/clean、提交、推送、部署或生产代码修改。
+
+对象库中找到三个原始完整源码 tree，版本载体相互一致；它们**不是历史 commit**，没有可继承的提交日期/作者或发布身份。若方案获批，应按当前时间建立恢复提交，不能回填旧日期或虚构旧测试：
+
+| 源码节点 | 原始 tree | 本轮隔离完整 net48 |
+| --- | --- | --- |
+| `0.3.10.4` Finalizing，无 NVT | `236eb73cc8c5476bd5ac3b97ca3fefc3c15fddf8` | **330/0/0** |
+| `0.3.11.0` NVT，无 Gate A | `522166fd9b45966001978b00baaa28ea5609d173` | **338/0/0** |
+| `0.3.12.0` Gate A 生命周期修复，无 F0/F1 | `8ad283a88c5988c383cbe1311914c76e7a2a919e` | **401/0/0** |
+
+以上三个节点均重新 Release Rebuild 0 warning / 0 error，隔离候选包及独立 strict verify 均 11/0；这是本次重新验证，不能替换既往 Unity/DLL 证据。打包脚本原样从 Info.json 读取版本并交叉检查 csproj/ModEntry，没有另一个硬编码版本配置需要改动。原工作区版本保持 `0.3.12.0`，历史前三位版本载体的提交恢复仍须本次方案审查确认。
+
+独立严格 F0 节点可由 Gate A 加当前 20 项夹具及单个 runner 调用组成，没有 F1 生产依赖；本轮隔离完整回归 **421/0/0**。它是明确标注的逻辑重组节点，不是对象库中原始 18 项 F0 tree。当前 F1-A 完整源码在隔离副本仍为 **462/1/0**（F1 42 PASS、F0 19 PASS/1 FAIL）；失败为 `frame-local delivery: a late old-generation Post cannot touch the restarted session` 的严格 teardown：`rgb24-abort-delivery-in-flight;frame-ownership-residual`。原 §2.2.29 L2 进程数量断言本轮通过，**不代表其根因已经解决**；没有跳过或放宽任何断言。两类失败继续阻止稳定发布，留给后续 Safety Closure 定向调查。
+
+建议顺序为 Finalizing → NVT → Gate A → 研究文档 → 严格 F0 测试 → 明确 No-Go 的 F1-A 实验快照；跨模块生产合同及配套测试/接口夹具保持原子提交，避免制造不可构建的细碎中间态。在隔离 index 中已验证前四个差异能精确还原对应原始 tree，最终差异按工作区逐文件核对；未在原仓库暂存或创建提交。仅历史来源与拆分可行性得到新证据，F1-A Safety Closure 没有实施，不能报告 PASS。
 
 ### 2.3 FFmpeg 构建、安装与独立进程取证（2026-09-23；未接入产品）
 

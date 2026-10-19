@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -389,9 +390,46 @@ namespace ADOFAI.Renderist.Export
             }
 
             // 接受身份先发布，最后才注册 continuation；已完成 Task 也不能抢跑。
-            _write = new DeliveryNotification(_lease.Frame, _frameIdentity, attempt.Completion, _bridge, OnPostedCompletion);
+            _write = new DeliveryNotification(_lease.Frame, _frameIdentity, attempt.Completion, _bridge, OnPostedCompletion,
+                FrameLocalDeliveryProbe.Slot?.RunNonce);
+            // F1-A：本帧被 probe 接管时，在 Observe 之前切到 CanonicalDirectProbe 路由并绑定槽。
+            bool routeBound = BindProbeRouteIfArmed(_generation, _frameIndex, out error);
+            // Even a failed diagnostic bind owns an accepted write: always observe its terminal task.
             _write.Observe();
+            if (!routeBound) return Rgb24TransactionOutcome.RejectedTransportRejected;
             return Rgb24TransactionOutcome.Accepted;
+        }
+
+        /// <summary>
+        /// 只在 probe 已激活且本帧正是它绑定的 f0 时切换路由。失败即 fail-closed：
+        /// 该帧不允许 normal Post 消费，也不允许 Commit。
+        /// </summary>
+        private bool BindProbeRouteIfArmed(long generation, long frameIndex, out string error)
+        {
+            error = null;
+            FrameLocalDeliveryProbeSlot slot = FrameLocalDeliveryProbe.Slot;
+            if (slot == null) return true;
+
+            string routeError;
+            if (!_write.Gate.TryEnableDirectRoute(out routeError))
+            {
+                error = "f1-direct-route-enable-failed:" + routeError;
+                _write.Gate.MarkPublicationFault(error);
+                return false;
+            }
+
+            string bindError;
+            if (!slot.TryBind(_write.Gate, generation, frameIndex, _lease.Frame.TokenId, out bindError))
+            {
+                error = "f1-slot-bind-failed:" + bindError;
+                _write.Gate.MarkPublicationFault(error);
+                return false;
+            }
+
+            FrameLocalDeliveryProbe.Evidence?.Record("direct-route-bound",
+                "gen=" + generation.ToString(CultureInfo.InvariantCulture) +
+                " frame=" + frameIndex.ToString(CultureInfo.InvariantCulture));
+            return true;
         }
 
         private void OnPostedCompletion(DeliveryNotification notification)
@@ -473,6 +511,41 @@ namespace ADOFAI.Renderist.Export
                 errorCode = notificationError;
                 return Rgb24TransactionOutcome.Failed;
             }
+
+            // F1-A：**claim 必须先于具有副作用的 ConsumeEnvelope**。
+            // 这一次 TryClaim 与发布 / RequestCancel 共用同一个通知槽短锁，因此是本帧唯一的
+            // 线性化点；失败、取消、已关闭或身份不符都不得提交，也不得释放 lease。
+            FrameLocalDeliveryClaimResult claim = _write.Gate.TryClaim(envelope);
+            switch (claim.Status)
+            {
+                case FrameLocalDeliveryClaimStatus.ClaimedSuccess:
+                    break;
+                case FrameLocalDeliveryClaimStatus.ClaimedFailure:
+                    // 真实失败的已发布结果：保留既有"失败也退休"的语义，但绝不 Commit。
+                    break;
+                case FrameLocalDeliveryClaimStatus.Aborted:
+                    errorCode = "f1-consume-aborted";
+                    errorDetail = claim.Detail;
+                    return Rgb24TransactionOutcome.Failed;
+                case FrameLocalDeliveryClaimStatus.AlreadyClaimed:
+                    errorCode = "rgb24-envelope-duplicate-completion";
+                    errorDetail = claim.Detail;
+                    return Rgb24TransactionOutcome.RejectedDuplicateCompletion;
+                case FrameLocalDeliveryClaimStatus.NotReady:
+                    errorCode = "f1-consume-not-ready";
+                    errorDetail = claim.Detail;
+                    return Rgb24TransactionOutcome.RejectedWrongPhase;
+                case FrameLocalDeliveryClaimStatus.Fault:
+                case FrameLocalDeliveryClaimStatus.NoGo:
+                    errorCode = "f1-publication-fault";
+                    errorDetail = claim.Detail;
+                    return Rgb24TransactionOutcome.Failed;
+                default:
+                    errorCode = "rgb24-envelope-completion-identity";
+                    errorDetail = claim.Detail;
+                    return Rgb24TransactionOutcome.RejectedCompletionIdentity;
+            }
+
             if (!ReleaseCompletedLease(out errorCode)) return Rgb24TransactionOutcome.Failed;
             if (!envelope.Success)
             {
@@ -501,8 +574,15 @@ namespace ADOFAI.Renderist.Export
             }
             if (_write != null)
             {
+                _write.Gate.TryAcceptCancel("rgb24-transaction-abort", false, out _);
+                _write.Gate.TryGetPublished(out var abortedEnvelope);
+                _write.Gate.TryClaim(abortedEnvelope); // close abort even if no result has been published yet
+                // Register before testing completion, so Observe cannot pass the wake point unnoticed.
+                _write.RegisterRetirementWake();
                 if (!_write.Completion.IsCompleted)
                 {
+                    // F1-A：先在同一通知短锁内登记"abort 退休唤醒"，再检查完成性 ——
+                    // 这样不漏掉「检查未完 → 完成发布 → 才登记唤醒」的竞态。
                     error = "rgb24-abort-delivery-in-flight";
                     return false;
                 }
@@ -559,79 +639,122 @@ namespace ADOFAI.Renderist.Export
 
         // 每次 accepted write 独占一个通知槽。迟到 Post 只接触旧槽，不能覆盖下一帧或新 session。
         // 后台只写锁保护的通知数据；只有验证线程后的 Post 回调允许退休局部 lease。
+        //
+        // F1-A：发布 / 取消 / 一次性 claim 全部下沉到 FrameLocalDeliveryClaimGate 的**单一短锁**。
+        // 默认 AsyncPosted 路径行为不变（canonical 发布 + Post/Store）；只有 probe 在 Observe
+        // 之前显式切到 CanonicalDirectProbe 时才省略 Post，由原发布点直接唤醒等待者。
         private sealed class DeliveryNotification
         {
-            private readonly object _sync = new object();
-            private readonly long _generation, _index, _token;
-            private readonly object _identity;
             private readonly Rgb24MainThreadBridge _bridge;
             private readonly Action<DeliveryNotification> _onMainThread;
-            private Rgb24DeliveryEnvelope _completed, _pending;
-            private string _failure;
-            private int _stallTicks;
-            internal Task<Rgb24FrameWriteOutcome> Completion { get; }
-            internal string Failure { get { lock (_sync) return _failure; } }
+            internal readonly FrameLocalDeliveryClaimGate Gate;
+
+            internal Task<Rgb24FrameWriteOutcome> Completion { get { return Gate.Completion; } }
+            internal string Failure { get { return Gate.Failure; } }
 
             internal DeliveryNotification(OwnedRgb24Frame frame, object identity,
                 Task<Rgb24FrameWriteOutcome> completion, Rgb24MainThreadBridge bridge,
-                Action<DeliveryNotification> onMainThread)
+                Action<DeliveryNotification> onMainThread, string runNonce)
             {
-                _generation = frame.Generation;
-                _index = frame.AbsoluteFrameIndex;
-                _token = frame.TokenId;
-                _identity = identity;
-                Completion = completion;
                 _bridge = bridge;
                 _onMainThread = onMainThread;
+                Gate = new FrameLocalDeliveryClaimGate(runNonce, frame.Generation, frame.AbsoluteFrameIndex,
+                    frame.TokenId, identity, completion, this);
             }
 
             internal void Observe()
             {
-                Completion.ContinueWith(task =>
+                Task observer = Completion.ContinueWith(task =>
                 {
-                    var envelope = new Rgb24DeliveryEnvelope(_generation, _index, _token,
-                        ReadOutcome(task), _identity, task);
-                    lock (_sync) _completed = envelope;
+                    Rgb24DeliveryEnvelope envelope;
+                    try
+                    {
+                        envelope = new Rgb24DeliveryEnvelope(Gate.Generation, Gate.AbsoluteFrameIndex,
+                            Gate.TokenId, ReadOutcome(task), Gate.FrameIdentity, task);
+                    }
+                    catch (Exception ex)
+                    {
+                        // 发布基础设施故障：绝不留下"Task 已完而 waiter 永久等 ready"的分支。
+                        Gate.MarkPublicationFault("f1-envelope-build-failed:" + ex.GetType().Name);
+                        Gate.MarkProducerSettled();
+                        return;
+                    }
+
+                    if (Gate.DirectRoute)
+                    {
+                        // direct：不投递常规结果 Post/Store；发布在 gate 短锁内完成，锁外才 signal。
+                        bool signalReady;
+                        Gate.TryPublishDirect(envelope, null, out signalReady);
+                        if (signalReady) Gate.SignalReady();
+                        WakeRetirementIfRequested(envelope);
+                        return;
+                    }
+
+                    Gate.PublishCanonical(envelope);
                     if (!_bridge.TryPost(envelope, Store, out string error, Fail))
                         Fail(error ?? "rgb24-bridge-post-failed");
+                    WakeRetirementIfRequested(envelope);
                 }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                Gate.AttachObserver(observer);
             }
+
+            // 只有 gate 短锁负责发布/取消/claim 的排序；这里不再引入第二把锁。
 
             private void Store(Rgb24DeliveryEnvelope envelope)
             {
-                lock (_sync) _pending = envelope;
+                string reason;
+                if (!Gate.TryStorePending(envelope, out reason))
+                {
+                    // 迟到/重复/已 claim 的 Store 不再投递正常消费。
+                    Gate.RecordIgnoredStore(reason);
+                    return;
+                }
                 _onMainThread(this);
             }
 
             private void Fail(string error)
             {
-                lock (_sync) _failure = error;
+                Gate.MarkFailure(error);
             }
 
             internal bool IsAuthentic(Rgb24DeliveryEnvelope envelope)
             {
-                lock (_sync) return ReferenceEquals(envelope, _completed);
+                return Gate.IsAuthentic(envelope);
             }
 
             internal bool TryTake(out Rgb24DeliveryEnvelope envelope, out string error)
             {
-                lock (_sync)
+                return Gate.TryTakePending(out envelope, out error);
+            }
+
+            /// <summary>
+            /// 取消退休唤醒：只有在 abort 于 Task 未完成时登记过，才在终态发布之后补一次 Post。
+            /// 该 Post 只用于停止后的 lease 退休，不进入正常提交。
+            /// </summary>
+            private void WakeRetirementIfRequested(Rgb24DeliveryEnvelope envelope)
+            {
+                if (!Gate.TakeRetirementWake()) return;
+                try
                 {
-                    envelope = null;
-                    error = _failure;
-                    if (error != null) return false;
-                    if (_pending != null)
-                    {
-                        envelope = _pending;
-                        _pending = null;
-                        _stallTicks = 0;
-                        return true;
-                    }
-                    // IO 未结束时不计数。低 FPS/暂停不会增加墙钟 deadline。
-                    if (Completion.IsCompleted && ++_stallTicks > BridgeStallTickLimit)
-                        error = "rgb24-bridge-notification-stalled";
-                    return false;
+                    if (!_bridge.TryPost(envelope, RetirementOnly, out string error, Fail))
+                        Fail(error ?? "rgb24-bridge-retirement-post-failed");
                 }
+                catch (Exception ex)
+                {
+                    Fail("rgb24-bridge-retirement-exception:" + ex.GetType().Name);
+                }
+            }
+
+            private void RetirementOnly(Rgb24DeliveryEnvelope envelope)
+            {
+                // 刻意不做 Store：退休唤醒绝不产生第二个消费源。
+                Gate.RecordIgnoredStore("retirement-wake");
+                _onMainThread(this);
+            }
+
+            internal bool RegisterRetirementWake()
+            {
+                return Gate.RequestRetirementWake();
             }
         }
     }

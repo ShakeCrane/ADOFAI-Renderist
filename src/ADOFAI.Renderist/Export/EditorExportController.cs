@@ -233,6 +233,52 @@ namespace ADOFAI.Renderist.Export
         }
 
         // 失败路径统一先尝试收敛；未能收敛时保留引用，由 Tick 继续 + IsBusy 门禁。
+        /// <summary>
+        /// F1-A 诊断配置：只在外部 descriptor 存在时启用，且只配置**现有** Options 缝
+        /// （StreamWrapper / ProcessStart）。不新建 pipeline、不改编码参数、不改 Finalizing 协议。
+        ///
+        /// 返回 false 表示本次**诊断**必须 fail-closed：descriptor 存在但无效/过期/握手失败，
+        /// 或 probe 已激活却又要开第二个 session。绝不在此回退成普通导出。
+        /// </summary>
+        private static bool TryConfigureFrameLocalDeliveryProbe(FfmpegVideoPipelineOptions options, out string error)
+        {
+            error = null;
+            if (options == null) { error = "f1-options-missing"; return false; }
+
+            string descriptorPath = FrameLocalDeliveryProbe.DescriptorPath;
+            if (string.IsNullOrEmpty(descriptorPath))
+            {
+                // 默认关闭：不安装任何缝，产品行为与既有完全一致。
+                return true;
+            }
+
+            if (FrameLocalDeliveryProbe.IsActive)
+            {
+                error = "f1-probe-already-active:one-run-per-process";
+                return false;
+            }
+
+            if (!FrameLocalDeliveryProbe.TryActivate(out error)) return false;
+
+            Func<Stream, string, Stream> existing = options.StreamWrapper;
+            options.StreamWrapper = (inner, role) =>
+            {
+                Stream wrapped = existing != null ? existing(inner, role) : inner;
+                if (!string.Equals(role, "stdin", StringComparison.Ordinal)) return wrapped;
+                return FrameLocalDeliveryProbe.WrapStandardInput(wrapped);
+            };
+
+            FfmpegVideoProcessStart start = options.ProcessStart ??
+                                            FrameLocalDeliveryProbe.StartObservedDefaultProcess;
+            options.ProcessStart = FrameLocalDeliveryProbe.WrapProcessStart(start);
+
+            Log.Warn("F1 DIAGNOSTIC PROBE ACTIVE: runNonce=" +
+                     (FrameLocalDeliveryProbe.Slot == null ? "?" : FrameLocalDeliveryProbe.Slot.RunNonce) +
+                     " descriptor=" + descriptorPath +
+                     " (single run, absolute frame 0 only, no Finalizing).");
+            return true;
+        }
+
         private static void RetireStartupContext(Rgb24DeliveryContext context)
         {
             if (context == null) return;
@@ -377,10 +423,17 @@ namespace ADOFAI.Renderist.Export
             session.Mp4InputPixelFormat = "rgb24";
             session.Mp4OutputPixelFormatPolicy = "auto-by-geometry";
 
+            // F1-A：唯一一次 descriptor/preflight。没有 descriptor 时完全走原产品路径；
+            // descriptor 存在但失效/过期/握手失败时**拒绝本次诊断**（绝不悄悄回退成普通导出）。
+            if (!TryConfigureFrameLocalDeliveryProbe(frozen.Options, out string probeError))
+            {
+                error = "f1-probe-preflight-failed:" + probeError;
+                return false;
+            }
+
             Mp4SessionBinding binding = Mp4SessionStartup.Bind(
                 frozen, geometry.Width, geometry.Height,
-                FfmpegPipelineFactory.Instance, DefaultMp4DeliveryFactory.Instance);
-            if (!binding.Succeeded)
+                FfmpegPipelineFactory.Instance, DefaultMp4DeliveryFactory.Instance);            if (!binding.Succeeded)
             {
                 _startupContext = binding.PendingConvergence;
                 error = binding.ErrorCode +
@@ -757,6 +810,14 @@ namespace ADOFAI.Renderist.Export
         /// </summary>
         public static void Cancel(string reason)
         {
+            // F1-A：诊断 session 的收尾（停 monitor、放行 stdin 门、关命名事件）与产品取消
+            // 解耦；只在 probe 激活时生效，普通导出完全不受影响。
+            if (FrameLocalDeliveryProbe.IsActive)
+            {
+                try { FrameLocalDeliveryProbe.Shutdown(); }
+                catch (Exception ex) { Log.Exception("EditorExportController: F1 probe shutdown 异常", ex); }
+            }
+
             if (_terminalRearmPending)
             {
                 CancelTerminalControllerRearm(reason);

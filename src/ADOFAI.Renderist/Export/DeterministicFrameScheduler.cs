@@ -2758,6 +2758,11 @@ namespace ADOFAI.Renderist.Export
                           frameIndex.ToString(CultureInfo.InvariantCulture) +
                           " token=" + transaction.LeaseTokenId.ToString(CultureInfo.InvariantCulture) +
                           " awaiting main-thread completion");
+
+                // F1-A：仅当 probe 已接管本帧（generation + f0 匹配）时，在**同一 EOF 回调内**
+                // 等待原始 canonical 通知并复用原 ConsumeEnvelope → Resume/Commit；
+                // 随后立即登记诊断取消，绝不 Prepare f1、绝不 FinishAsync/发布 MP4。
+                if (TryRunFrameLocalProbeDelivery(transaction, generation, frameIndex)) return;
                 return;
             }
 
@@ -2777,9 +2782,42 @@ namespace ADOFAI.Renderist.Export
             CommitFrame(frameIndex, imageWritten, filePath);
         }
 
-        private static void CommitFrame(long frameIndex, bool imageWritten, string filePath)
+        /// <summary>
+        /// F1-A：唯一的帧内等待入口。只在 probe 已接管本帧（generation 匹配且 frame==0）时执行。
+        ///
+        /// 边界（§2.2.26 B/C/D）：
+        ///   * 不 Pump、不跑 Tick、不 Prepare 下一帧、不调用 Camera.Render、不改视觉授权；
+        ///   * 成功后仍走**原** ConsumeEnvelope → ResumeAfterRgb24Delivery → 唯一 CommitFrame；
+        ///   * 随后立即 RequestStop("cancelled","f1-single-frame-complete")，绝不 FinishAsync/发布 MP4；
+        ///   * 任何失败/取消/紧急路径都 Commit=0 并停止。
+        /// 返回 true 表示本帧已由该入口处理（调用方不得再走普通 return 路径）。
+        /// </summary>
+        private static bool TryRunFrameLocalProbeDelivery(Rgb24FrameTransaction transaction, long generation,
+            long frameIndex)
         {
-            if (frameIndex != _outputFrameIndex)
+            FrameLocalDeliveryProbeSlot slot = FrameLocalDeliveryProbe.Slot;
+            if (slot == null) return false;
+
+            FrameLocalDeliveryEvidence evidence = FrameLocalDeliveryProbe.Evidence;
+            evidence?.Record("wait-enter",
+                "tid=" + System.Threading.Thread.CurrentThread.ManagedThreadId.ToString(CultureInfo.InvariantCulture) +
+                " frameCount=" + Time.frameCount.ToString(CultureInfo.InvariantCulture));
+
+            slot.RunSingleFrame(transaction, generation, frameIndex,
+                _status == SchedulerStatus.AwaitingDelivery, FrameLocalDeliveryProbe.EmergencyHandle,
+                FrameLocalDeliveryProbe.EmergencyMs + 20000,
+                () =>
+                {
+                    _status = ResumeAfterRgb24Delivery(_preEntryCapturing);
+                    CommitFrame(frameIndex, false, null);
+                    evidence?.Record("actual-commit", "frame=" + frameIndex.ToString(CultureInfo.InvariantCulture));
+                }, RequestStop);
+            evidence?.Record("eof-probe-return", "frameCount=" + Time.frameCount.ToString(CultureInfo.InvariantCulture));
+            return true;
+        }
+
+        private static void CommitFrame(long frameIndex, bool imageWritten, string filePath)
+        {            if (frameIndex != _outputFrameIndex)
             {
                 RequestStop("capture-failed", "frame-index-mismatch");
                 return;
