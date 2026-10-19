@@ -12,7 +12,7 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 当前**已实现**路线：编辑器内原生 Camera → Renderist-owned RenderTexture → PNG 序列 / Log-only；`MasterTimeline` 控制逻辑帧。L1 FFmpeg 组件管理已完成主路径实机验收；L2 独立 FFmpeg 视频管线已通过 net48 回归及目标 Unity Mono 定向探针，并由 L3-A 启动接线接入编辑器；L3 第一闭环 Planet 视觉时间 ownership 已正式实机验收。L3-A 已在 Gamma/D3D11 下完成连续 RGB24 交付与像素语义验收，L3-B Controlled IO Backpressure Acceptance 已取得完整 runtime PASS（§2.2.10 / §2.2.11）。**L3-C MP4 Finalizing 已在 `0.3.10.4` 实现并经实机验收其封装与发布主路径**（ownership 一次性交接 → FFmpeg FinishAsync → 独立核验 → 同卷原子发布 → `Completed`，§2.2.13）：**封装与发布主路径 RUNTIME PASS（可产出可用 MP4）**；但同一次验收中 **Camera 与行星拖尾的视觉验收 FAIL** —— 原生视觉时间尚未与 `MasterTimeline` 统一 ownership（§2.2.14 起用只读探针取证）。因此 `0.3.10.4` **不是**视觉确定性的完成节点。当前产品版本 **`0.3.12.0`**（前三位变更，用户已明确批准）落地 **Gate A — Visual Frame Authorization & Native Camera Ownership**：Unity-free 的 generation/frame/phase 视觉授权合同（每消费者独立回执 / 一次消费 / 失效 / EOF 前完整性校验）、scheduler 既有流程内的最小接线，以及 **Camera 原生 `Update` / `UpdateSize` / custom FPS 的局部时间读取替换**（窄 Transpiler + Prefix/Postfix/Finalizer 作用域）。Camera Tween owner、Shake RNG、Particle owner 与 replay **未实现**；视觉确定性**仍未通过**（§2.2.14 的历史 FAIL 与 §2.2.16 的 Gate A 状态）。
 
-**Gate A 的执行状态**：源码、Release 复建与游戏 `Mods` 部署均为 `0.3.12.0`；GPT Work 生命周期接管修复后 net48 回归 **401/0/0**、Release Rebuild **0 error / 0 compiler warning**（1 个离线 NuGet 源 `NU1900` 警告）、发布包内置 verify / 独立 `-Strict` 均 **11 checks / 0 failures**、`git diff --check` 0。**目标 Unity 实机验证仍未执行**。Waiting 无消费完成、Sealed 跨 hidden 调用配对、主 Update 独占回执、frame 0 快照/嵌套一致零步，以及异常/迟到回调隔离已通过执行生产代码的行为测试（§2.2.18），不能误读为 Mono Patch 安装与 PlayerLoop 相位实测。分阶段计划仍停在 Gate A，步骤 4–8 未开始，见 [当前完整实施计划](docs/CAMERA_PARTICLE_VISUAL_TIME_0.3.12.0.md)。
+**Gate A 的执行状态**：源码、Release 复建与游戏 `Mods` 部署均为 `0.3.12.0`；GPT Work 生命周期接管修复后 net48 回归 **401/0/0**、Release Rebuild **0 error / 0 compiler warning**（1 个离线 NuGet 源 `NU1900` 警告）、发布包内置 verify / 独立 `-Strict` 均 **11 checks / 0 failures**、`git diff --check` 0。**目标 Unity Gate A 功能主路径已于 2026-10-17 实机验收 PASS**（generation 1–4，Log-only / PNG 取消重启 / MP4；§2.2.19）。Waiting 无消费完成、Sealed 跨 hidden 调用配对、主 Update 独占回执、frame 0 快照/嵌套一致零步，以及异常/迟到回调隔离已通过执行生产代码的行为测试（§2.2.18），不能误读为 Mono Patch 安装与 PlayerLoop 相位实测。分阶段计划仍停在 Gate A，步骤 4–8 未开始，见 [当前完整实施计划](docs/CAMERA_PARTICLE_VISUAL_TIME_0.3.12.0.md)。
 
 硬边界：
 
@@ -33,17 +33,17 @@ ADOFAI Renderist 是基于 **Unity Mod Manager（UMM）** 的 ADOFAI 编辑器�
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 产品版本 | **`0.3.12.0`（前三位变更，已由用户明确批准）**。相对 `0.3.11.0` 新增：Unity-free 的 generation/frame/phase **视觉帧授权合同**（每消费者独立回执 / 一次消费 / 失效 / EOF 前完整性校验）、scheduler 既有流程内的最小接线、以及 **Camera 原生 Update / UpdateSize / custom FPS 的局部时间读取替换**（窄 Transpiler + Prefix/Postfix/Finalizer 作用域）。Camera Tween owner、Shake RNG、Particle owner 与 replay **未实现**。Phase 文案同步为 `Phase 3.10.0 Camera & Particle Visual Time Ownership`。**Gate A 只有自动化通过，目标 Unity 实机验证未执行**（§2.2.16）。 |
+| 产品版本 | **`0.3.12.0`（前三位变更，已由用户明确批准）**。相对 `0.3.11.0` 新增：Unity-free 的 generation/frame/phase **视觉帧授权合同**（每消费者独立回执 / 一次消费 / 失效 / EOF 前完整性校验）、scheduler 既有流程内的最小接线、以及 **Camera 原生 Update / UpdateSize / custom FPS 的局部时间读取替换**（窄 Transpiler + Prefix/Postfix/Finalizer 作用域）。Camera Tween owner、Shake RNG、Particle owner 与 replay **未实现**。Phase 文案同步为 `Phase 3.10.0 Camera & Particle Visual Time Ownership`。**Gate A 自动化与目标 Unity 功能主路径实机均已通过（§2.2.19），不等于特殊原生异常或整体视觉确定性通过**（§2.2.16）。 |
 | Phase | `Phase 3.10.0 Camera & Particle Visual Time Ownership`（本版本更新；上一版为 `Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions`） |
-| 版本定位 | **当前 `0.3.12.0` = Gate A 生命周期修复节点，不是视觉确定性完成节点**：L3-C 封装/发布主路径历史 PASS、视觉 FAIL 不变；当前只实现授权合同与 Camera 原生时间入口（生命周期修复见 §2.2.18），**尚未在目标 Unity 验证**。最新构建/部署 DLL SHA256 `F97722C6624E028640F87E23971E52BA4561E851AF870AF5E64030053854F699`（501248 bytes），FileVersion `0.3.12.0`。 |
+| 版本定位 | **当前 `0.3.12.0` = Gate A 生命周期修复节点，不是视觉确定性完成节点**：L3-C 封装/发布主路径历史 PASS、视觉 FAIL 不变；当前只实现授权合同与 Camera 原生时间入口（生命周期修复见 §2.2.18），**已通过目标 Unity Gate A 功能主路径实机验收（§2.2.19）**。最新构建/部署 DLL SHA256 `F97722C6624E028640F87E23971E52BA4561E851AF870AF5E64030053854F699`（501248 bytes），FileVersion `0.3.12.0`。 |
 | 稳定实机基线 | **最新实机验收基线提升为 `0.3.10.3`**。新增证据：真实升级场景中，新 Local target 预先移走、旧 LocalLow valid install 保留；首次启动出现 `FFmpeg 旧托管安装已迁移到当前托管目录`，随后同一 initial generation 直接 `Ready/none@gen0`；第二次启动仅 `new-target-present` 且再次直接 `Ready/none@gen0`，证明迁移幂等。目录取证确认新 Local 与旧 LocalLow 的 `ffmpeg.exe` / `ffprobe.exe` SHA256 均与 manifest 一致，旧根原样保留，新/旧 `.staging` / `.downloads` 无残留文件。受测代码提交 `edccf02c9ff33b17d0e1cf3db536826ee3c175e0`，受测 DLL SHA256 `1F25D057194B91E929F5DD7AA327156DA7579A2C4E43377141D8E9CA47B64AC6`。上一稳定实机基线为 `0.3.10.2`。 |
 | L1 实机状态 | **`0.3.8.0`（DLL `AE2326D3…` / `+4d35801862d0828ea248d9934e8ebe74af11f2bb`）已通过用户最小实机验收**：UMM 显示 `0.3.8.0`、FFmpeg `Ready`、`libx264` / `mp4` / `rawvideo`、禁用并重新启用、无新可见异常。**L1 主路径已具备阶段性基线证据**；未覆盖边界（活动下载生命周期、异常网络、真实回调竞态）见 §2.7。 |
 | L2 实现状态 | **独立 L2 管线已接入 L3-A 编辑器启动路径，并已在目标 Unity Mono 完成连续帧交付**：目标 Unity Mono 正常/写入中取消定向探针 PASS（§2.8.3）；`2026-09-28` 的编辑器 MP4 失败已定位为托管 FFmpeg 位于 `LocalLow` 后无法写普通完整性级别的 `D:\Output`，并非 L2 临时文件句柄自锁（§2.2.9）。L2 写入及终态 API 未变；托管安装根已改用 `LocalApplicationData`，随后实机完成 **254/254 连续 RGB24 交付**（§2.2.10）。历史真实 fixture 结果见 §2.8，当前可选 fixture 的环境失败见 §2.2.9。 |
-| L3 视觉时间 ownership 状态 | **`0.3.9.0` 已正式实现 `PlanetVisualTimeOwnership` 并完成正式 runtime 验收（`0.3.9.1` 仅第四位收敛、实现未变；§2.2.4 / §2.2.6）**：30 FPS 与 60 FPS 均 strict acquisition 唯一命中（`before=5 / after=6 / new=1 / accepted=1`）、`creationLeadSteps=4` 成立、terminal 于 30 FPS `N=11` / 60 FPS `N=26` 一次性定位、terminal-hold 连续跨 pre-entry → gameplay、normal completion cleanup 成功、Cancel→Restart generation `3→4` 无 residual / stale 污染。**MP4 / RGB24 delivery 已由 L3-A 接入并通过实机验收（§2.2.7 / §2.2.10）**；Trail / Particle / Animator / Camera / Shader 等其它视觉系统**未纳入** ownership。pre-terminal cancel 的 `restore-original-playing` 分支仍只有静态覆盖（§2.2.6）。 |
+| L3 视觉时间 ownership 状态 | **`0.3.9.0` 已正式实现 `PlanetVisualTimeOwnership` 并完成正式 runtime 验收（`0.3.9.1` 仅第四位收敛、实现未变；§2.2.4 / §2.2.6）**：30 FPS 与 60 FPS 均 strict acquisition 唯一命中（`before=5 / after=6 / new=1 / accepted=1`）、`creationLeadSteps=4` 成立、terminal 于 30 FPS `N=11` / 60 FPS `N=26` 一次性定位、terminal-hold 连续跨 pre-entry → gameplay、normal completion cleanup 成功、Cancel→Restart generation `3→4` 无 residual / stale 污染。**Camera 原生时间已在 `0.3.12.0` Gate A 接入并通过功能主路径实机验收（§2.2.19）；Camera 外部 Tween、Particle、Animator、Shader/后处理等仍未覆盖，整场景视觉 FAIL。** MP4 / RGB24 delivery 已由 L3-A 接入并通过实机验收（§2.2.7 / §2.2.10）；Planet pre-terminal cancel 的 `restore-original-playing` 分支仍只有静态覆盖（§2.2.6）。 |
 | L3-A 状态（`0.3.10.0` → `0.3.10.1`） | **单帧 RGB24 ownership / 分段缓冲 / 行序策略 / main-thread 交付桥 + 最小 MP4 session 启动接线 + 像素语义均已通过实机验收（Gamma/D3D11）**（§2.2.7 / §2.2.8 / §2.2.10）：主链 **254/254 连续交付** + pre-entry→gameplay handoff + canonical completion + 12 tail + Cancel→Restart 均有产物级证据；raw row order = **top-first**、byte order = **RGB**、band seam 与 **16 个 segment 边界逐字节一致**、scale=2 输出几何 = frozen output（3072×1920）。`Rgb24FrameLayout` / `Rgb24FrameBufferPool` / `Rgb24FrameTransaction` / `Rgb24MainThreadBridge` / `FfmpegRgb24FrameTransport` / `Rgb24DeliveryContext` / `OutputModePolicy` / `Mp4SessionStartup`；driver 分块读回且**不**调用 `TryWriteFrame`。输出模式由 `Settings.EditorOutputModeValue` 唯一决定（PNG / MP4 / Log-only，旧布尔仅作一次性迁移输入）。**`0.3.10.0`–`0.3.10.3` 无 Finalizing，终态按设计 fail-closed、不产出成品（历史事实，见 §2.2.13 起的变更）**；一次性 `Rgb24ValidationDump` 已删除。**唯一环境覆盖缺口：Linear（未覆盖）**；LocalLow→Local 托管根迁移见 §2.3.0。 |
 | L3-B 状态（`0.3.10.1`） | **Controlled IO Backpressure Acceptance — 已完成（validation-led closure，无新增 production 架构）**（§2.2.11）：在 L2 帧写入 Completion 被可控地保持 pending 时，logical frame freeze、single-in-flight、cancel during pending WriteAsync、cancellation observation 与 write terminal 可分离、frame Completion 与 CleanupTask 双屏障、residual 未清时 restart fail-closed、residual 清除后新 generation restart、lease exactly-once 释放均实机 PASS。长期合同由 `Rgb24BackpressureTests` + `PipelineBackpressureTests`（net48，含测试内专有可控 stdin 流）固定。旧的**同步**取消探针已被证明不忠实于 cancellation contract，已废弃并连同全部 TEMP instrumentation 删除。 |
-| 当前开发方向 | **`0.3.12.0 — Camera & Particle Visual Time Ownership` 已获用户批准**；GPT Work 2026-10-17 静态边界收敛见 §2.2.15 / `docs/CAMERA_PARTICLE_VISUAL_TIME_0.3.12.0.md`。采用两个局部 owner 与 scheduler 共享授权，不建立大型统一管理器。**Gate A（§7 步骤 1–3：升版 / 授权合同 / Camera 原生时间入口）已实现并自动化通过**（§2.2.16），源码与部署均为 `0.3.12.0`；Gate B 及之后（Camera Tween、Particle 门槛 / owner、联合视觉验收、清理）**未开始**。L3-C 发布主路径 PASS / 视觉 FAIL 不变。 |
-| 下一阶段 | 先请在目标 Unity 做一次 Gate A 实机验证（UMM 显示 `0.3.12.0`、4 个 Patch 安装成功、Transpiler applied 日志、无 `camera-delta-consume-*` / `visual-frame-authorization-failed`、PNG 或 Log-only smoke），确认消费相位后再进入后续步骤。其余分阶段顺序不变：Camera Tween 因果组 → **目标 Unity Particle 新 API 语义门槛** → Particle 正式 owner → 联合视觉验收 → 清理 NVT/正式构建验证。既有第二轮 NVT 不重复取证；未验证相位/排空/Play/随机性失败时交 GPT Work，不以静态检查代替实机。 |
+| 当前开发方向 | **`0.3.12.0 — Camera & Particle Visual Time Ownership` 已获用户批准**；GPT Work 2026-10-17 静态边界收敛见 §2.2.15 / `docs/CAMERA_PARTICLE_VISUAL_TIME_0.3.12.0.md`。采用两个局部 owner 与 scheduler 共享授权，不建立大型统一管理器。**Gate A（§7 步骤 1–3）已实现、自动化通过且目标 Unity 功能主路径已实机 PASS（§2.2.19）**（§2.2.16），源码与部署均为 `0.3.12.0`；Gate B 及之后（Camera Tween、Particle 门槛 / owner、联合视觉验收、清理）**未开始**。L3-C 发布主路径 PASS / 视觉 FAIL 不变。 |
+| 下一阶段 | **视觉 FAIL；最新帧内交付裁决见 §2.2.24，外部研究见 §2.2.23。** 静态证据支持复用现有 L2/事务做无主线程上下文泵的最小行为验证（F0，test-only，尚未执行）；**直接阻塞现 Post/Tick 路径与无限期生产帧内等待均 No-Go**。生产阻塞是现 Stop/disable/unload 依赖主线程、尚无可在等待期间由用户触发的独立取消源。先证明写入/真实信封消费及取消双屏障可进展，再裁决目标 Unity 单帧 PoC；不全面重构。R0a/R1、Gate B、正式 Particle owner、版本收敛与 NVT 清理继续暂停，严格源图/状态等待不变量不放宽。 |
 
 `0.3.6.2` 相对 `0.3.6.1` 的四个 hardening 点（功能语义不变，只收敛异常路径与输入判定）：
 
@@ -547,7 +547,7 @@ controller 随后按 L3-A 验证边界把 MP4 终态强制记为 `Failed(l3a-val
 - **Transpiler 对真实 DLL 的端到端核对**（一次性 net48 工具，只读、已删除）：反射确认 4 个签名（见第 1 条）；对 `scrCamera.Update` / `UpdateSize` / `CheckUpdateFrameRateScreen` / `UpdateCustomFrameRateScreen` 实际运行生产 Transpiler，结果 `helperCalls = 3/1/1/1`、`leftoverGetterCalls = 0`、`ldarg.0` 增量恰为 `+1/站点`、**每个 helper 调用都紧邻 `ldarg.0`**，且**未抛形态审计异常**。
 - **仍需实机验证（不变）**：Harmony 在目标 Mono 的实际安装与 `applied` 日志、**原生调用相位**（`scrConductor.Update` Prefix 与 `scrCamera.Update` 是否同一 Unity frame 且顺序正确；不符时得到 `consume-out-of-phase` fail-closed，不是静默漂移）、**`editor.Play()` 返回后到首次 Arm 之间的窗口**（该窗口内 Camera 读原生 `Time.deltaTime`；Arm 之后由 `Waiting` 给 0 —— 静态证据无法裁决真实时序，必须实机确认，**不擅自修改游戏生命周期**）、异常 Finalizer、嵌套 `UpdateSize`、custom FPS 同钟语义、UMM 显示 `0.3.12.0`。
 
-### 2.2.18 `0.3.12.0` Gate A 生命周期正确性接管（GPT Work，2026-10-17；行为验证通过，待目标 Unity）
+### 2.2.18 `0.3.12.0` Gate A 生命周期正确性接管（GPT Work，2026-10-17；行为验证通过；后续实机证据见 §2.2.19）
 
 - **本轮前置核对**：本地 `main` / HEAD `9f9ff34eee4ff1f9a73a260d7d753219297d0950`，无 staged；21 个 tracked 文件已有 unstaged 修改，10 个 untracked 文件（含方案），全部保留。版本已为 `0.3.12.0`。游戏 Assembly-CSharp SHA256 仍 `0D1524DA…40CD` / FileVersion `0.4.3.0`；UnityPlayer `6000.3.10.14901004`、DOTween `8E90FC43…`、UMM `0.33.0` / Harmony `2.3.6.0` 未变。接管前构建/部署 DLL 均为 `CD95DFA3…` / 500224 bytes。最新 Player.log 仍为 2026-10-13，未包含新实机证据。
 - **先失败再修复的证据**：新增实际调用生产 Camera Prefix→delta helper→Postfix/Finalizer、以及 authorizer 消费→完成的方法测试；修复前完整运行 **384 passed / 13 failed / 0 skipped**。失败覆盖 Waiting Postfix、Sealed 完成 key、独立 UpdateSize 偷领、frame 0 snapshot/nested 非零，以及异常未请求停止、重复消费错误未使 EOF 失败、旧回调污染 restart、旧 generation 完成 key 碰撞。现有源码字符串扫描不能证明这些调用生命周期正确。
@@ -559,7 +559,254 @@ controller 随后按 L3-A 验证边界把 MP4 终态强制记为 `Failed(l3a-val
 - **自动化层级**：新增 19 项生命周期行为测试，直接编译生产 owner 与 authorizer，使用真实本地 Harmony 类型和仅替代 native 边界的 managed Time/Object/日志 stand-in；没有复制 scope/消费算法，也没有执行真实 Unity 引擎。故能证明本轮调用/回执状态逻辑，**不能证明 Mono 安装、PlayerLoop 顺序或实际 Camera 画面**。测试项目的 Harmony 为 test-only 本地引用，不进入 Mod 发布包。
 - **最终检查**：固定本地 Gyan 9.0.2 fixture 的 net48 回归 **401/0/0**；测试工程 6 个既有 SyntheticIl StandIn `CS0649` 警告，无编译错误。Release Rebuild **0 error / 0 compiler warning**，1 个 cached `NU1900` 源警告。package 内置 verify / 独立 strict verify 均 **11/0**；`git diff --check` clean。运行测试沿用父进程设置并最终恢复 Windows ErrorMode，避免非法 EXE 用例弹系统错误框，未改生产进程启动策略。
 - **最终构建/部署身份**：DLL SHA256 **`F97722C6624E028640F87E23971E52BA4561E851AF870AF5E64030053854F699`**，501248 bytes，FileVersion `0.3.12.0`，ProductVersion `0.3.12.0+9f9ff34eee4ff1f9a73a260d7d753219297d0950`（仍为未提交工作区，+hash 不代表这些修复已提交）。ZIP SHA256 **`082698F3AE98431DAD4DDCE453EE9301BDD99740DE375335900BF5CE5B704BD5`**。构建成功且回归通过后，已通过现有 copy-to-mods 脚本仅部署 Renderist DLL + Info.json 到 `D:\Program Files (x86)\Steam\steamapps\common\A Dance of Fire and Ice\Mods\ADOFAI.Renderist\`，脚本核验源/目标哈希相同。
-- **当前门槛**：具备 Gate A 目标 Unity 实机验收的部署条件，**尚未实机通过**。最小步骤见方案 §8.4：重启确认版本与四个 installed/applied Patch；30 FPS Log-only 跨 frame 0/hidden/G；PNG 取消重开；短 MP4 覆盖 AwaitingDelivery 与 Finalizing。保留 Play→Arm、Mono Finalizer、custom FPS 的实机覆盖缺口；不加未经验证的替代方案。Gate B 未开始，版本/README 未改，不提交、不推送。
+- **当时的门槛（历史）**：具备 Gate A 目标 Unity 实机验收部署条件，在该实施时点**尚未实机通过**；后续真实主路径已验收，见 §2.2.19。最小步骤见方案 §8.4：重启确认版本与四个 installed/applied Patch；30 FPS Log-only 跨 frame 0/hidden/G；PNG 取消重开；短 MP4 覆盖 AwaitingDelivery 与 Finalizing。保留 Play→Arm、Mono Finalizer、custom FPS 的实机覆盖缺口；不加未经验证的替代方案。Gate B 未开始，版本/README 未改，不提交、不推送。
+
+### 2.2.19 `0.3.12.0` Gate A — 目标 Unity 功能主路径实机验收 PASS（2026-10-17）
+
+- **部署与证据身份**：在当前开发仓库所在设备上核对游戏 `Mods/ADOFAI.Renderist/ADOFAI.Renderist.dll` 为 **501248 bytes**，SHA256 **`F97722C6624E028640F87E23971E52BA4561E851AF870AF5E64030053854F699`**，与 Release DLL 一致。新 `Player.log`（2026-10-17 20:27 更新）、四个 session 的 `metadata.json` 和实际产物均直接读取；全部 session 为 `0.3.12.0`、`scnEditor`、30 FPS、Gamma/D3D11。
+- **真实 Mono Patch PASS**：capture generation **1 / 2 / 3 / 4** 均记录 Camera 四个 `transpiler applied`（Update / UpdateSize / CheckUpdateFrameRateScreen / UpdateCustomFrameRateScreen 替换计数 **3/1/1/1**）、`installed=patched`、`armed` 与 `disposed: failureReason=null`；四轮均无 `camera-scope-*`、`camera-delta-consume-*`、`visual-frame-authorization-failed`。这是正常运行时消费/EOF 主路径证据，不等于定向注入验证 Mono Finalizer。
+- **四次 session 的日志、metadata 与文件相互印证**：generation 1 `editor_20261017_202612`，Log-only `Completed`，254/254 逻辑帧、0 PNG；generation 2 `editor_20261017_202632`，PNG 中途 `Cancelled / native-playback-stopped`，已提交 52 帧，实际 52 张 PNG（0–51 连续；请求数 53）；generation 3 `editor_20261017_202643`，Cancel→Restart 后 `Completed`，254 张 PNG（0–253 连续），metadata 的 request/logical/written 均为 254；generation 4 `editor_20261017_202720`，MP4 `Completed / mp4-published-verified`，实际 `video.mp4` **4326676 bytes**，交付/独立核验解码/packet 均 **254**，H.264/yuv420p、encoder exit 0、residual=false、临时文件已清理。
+- **count-in 边界 PASS**：generation 1/3/4 均记录 `boundaryOutputFrameIndex=60`、Sealed 过渡、G=60（`partialFraction=0.1`）、G+1=61；canonical completion `completionFrameIndex=241`、End Tail 提交 12 帧，未出现相位拒绝、漏帧或回执失败。日志未输出 Camera 每个时间读取的数值轨迹，不能据此推断所有视觉时间质量已通过。
+- **后续边界**：**Gate A 导出/Camera 授权功能主路径 RUNTIME PASS，但用户随后明确报告视觉 FAIL；不得据此直接进入 Gate B 的常规开发（§2.2.20）**；未专门验收 Mono Finalizer 异常注入、原生 custom FPS 特例和同步 `editor.Play()`→`Arm` 窗口，未实现 Camera Tween/Shake/Particle，也没有新的视觉画面对比。`diagnosticProbe=true` / NVT 仍是按 §7 留待后续清理的临时诊断，不等于正式发布基线。本轮记录不改生产代码、版本 `0.3.12.0`、README，不提交、不推送。
+
+### 2.2.20 `0.3.12.0` 用户视觉验收 FAIL 与当前 Particle 漂移实证（2026-10-17）
+
+- **用户实机结果**：在 §2.2.19 四轮导出主路径成功之后，用户明确指出「画面完全不对，拖尾问题很大」。因此 **0.3.12.0 只有导出与 Camera 授权主路径的 PASS，不是视觉验收 PASS，也不是稳定渲染基线**。这一反馈不抹去已验证的帧事务/发布事实，但优先阻止把它归档为可接受的画面成果。
+- **当前版本的直接运行证据**：在 `Player.log` 的 generation 4、MP4 的逻辑输出帧 `f=3` 的 `NVT|ph=await-delivery` 连续采样中（日志行 5287–5289），Unity native frame **16488→16489→16490**，Camera `timer` 恒定 **0.100000**，但同一受测 Tail `sy0 id=169332` 的粒子时间 **0.733333→0.766666→0.800000**、粒子数 **367→384→401**，`pause=0, play=1, emit=1`。此时没有新的逻辑输出帧授权；Particle 自动积分及持续发射正在按 Unity Update 前进。`NativeVisualTimeProbe` 是只读；此结果不依赖旧 0.3.10.4 的观察。
+- **边界与方向**：当前仅有 Camera owner，尚无 Planet Particle owner，Tween/Shake owner 也未完成。MP4 编码帧数正常不等于源图视觉时间正确；Tail 提前老化/多次发射是已实证缺陷，不能归咎于编码器。用户报告的其它画面错误尚未经过图像与基线逐帧核对，不能全部归因于粒子。此前建议直接进入 Gate B 的常规 Tween 开发暂停；先由 GPT Work 针对当前 NVT 的相同逻辑帧/多个 Unity 帧证据，做拖尾和 Camera/Tween/初始化的差异定位，明确最小必要的 Unity Particle Pause/Simulate、排空和 Play/Revive 语义验收后再实施。不得未经验证直接加 Particle Patch、改变整体架构、删除 NVT 或重跑已完成的静态调查。
+
+### 2.2.21 `0.3.12.0` Planet Tail 定向复核与语义门槛（GPT Work，2026-10-18；调查完成，Particle 正式实施未放行）
+
+- **身份及范围**：直接复核 `main` / HEAD `9f9ff34eee4ff1f9a73a260d7d753219297d0950` 的未提交工作区（无 staged；保留原修改），Release 与游戏 Mods DLL 同为 501248 bytes / `0.3.12.0` / SHA256 `F97722C6624E028640F87E23971E52BA4561E851AF870AF5E64030053854F699`。当前 `Player.log` 12388995 bytes、最后写入 2026-10-17 20:27:51；Assembly-CSharp SHA256 仍为 `0D1524DA…`，复用已有 Atlas/IL，不重做静态扫描。本轮未改生产/测试代码、构建、部署或清理 NVT。
+- **故障范围扩大到已观测的活动系统，不只是 Tail**：日志 5287–5289（gen4/f3）Tail 169332 `t=.733333→.800000,count=367→401`，Core 169330 同样 `t=.733333→.800000,count=367→400`，Sparks 169328 `t=.733333→.800000,count=5→5`，另一行星 Tail 169406 同样推进并增加 34 粒子。Camera timer 恒为 .100000，无新逻辑帧提交。Sparks 数量不变不能排除衰老/替换。Tail 样本 remainingLifetime `.222374→.189040→.155707` 与额外步长一致，但探针没有粒子 seed/稳定身份，不能称为已追踪同一个粒子。
+- **普通/hidden/G 与等待必须分开判定**：gen3 PNG 的 254 对 EOF→commit 都在同一 native frame，所测 Tail/Core/Sparks/第二 Tail 在 f59 EOF→两次 hidden→G Prepare 保持时间；G=60 仅推进约 .003333，G commit→G+1 Prepare 不变，G+1 才推进约 .033333（日志 3346–3384）。f80 Core `play=1,emit=0` 仍随原生步从 437 排空到 420（3556→3560），证明不能以 `isEmitting=false` 跳过积分，也不能覆盖 `scrPlanet.Update` 的发射开关。此轮 PNG 边界未复现旧 0.3.11.0 的入口/出口残差，不能照搬旧数值为当前结果。
+- **MP4 仍有实际无授权推进，包括 frame 0**：gen4 f0 EOF→commit（5249→5257）Tail `t=.266666→.366666,count=133→183,totalTime=1.6067→1.7067`，Camera timer 为 0；f0 Prepare 时 Tail 已 `t=.233333,count=117`，EOF 又增加一原生步。首次消费为零的 Camera 合同没有覆盖 Particle 的 bootstrap/首帧。原生自动粒子时钟未受控是确定根因，等待越多造成的历史采样失配可解释拖尾异常；尚不能据此认定其它所有像素差异均已定位。
+- **关键证据缺口**：NVT 在日志 **5304** 达全进程 2500 条预算并停采，gen4 只有 f0–4 的粒子轨迹；MP4 hidden/G/G+1/末帧/Finalizing 的 Particle 不变量没有本轮记录。`MaxSystems=6`、详细配置/年龄仅前两个系统；`hier` 是首次成功发现时缓存的 active/count，不能当实时计数；不能宣称全池/coop/old/孤立系统已覆盖。补测应只采所缺边界并为该次诊断单独预算，不重复已证实的 f3 漂移。
+- **配置与初态限制**：Tail 169332 详细记录为 World、simulationSpeed=1、useUnscaledTime=0、life=.94、rateOverTime=501.2/s、rateOverDistance=0、loop=1、duration=1.34、prewarm=1、**trails.enabled=0**；每原生步约 16–17 个额外粒子与该 rate 一致，不能把当前“拖尾”直接等同于 Unity trails module。上述完整配置不应推广为 Core/Sparks 的配置。gen3/gen4 frame0 EOF 的 pulseT 分别为 2.199999/.466667；gen1/3/4 Tail frame0 time 为 .273790/.266666/.266666。seed、真实预热起点、完整渲染矩阵未记录，因此现有跨轮次图像不能充当相同初态对照，pulse 差异的实际画面影响也未证实。已查看 gen3 f0/f80 PNG，只确认磁盘源图，未形成匹配实时基线的视觉 PASS。
+- **当前唯一下一步**：按技术方案 **§8.7** 准备并运行隔离的目标 Unity Particle 语义矩阵（连续 Simulate、排空、Clear、Play/Revive/prewarm、seed、simulationSpeed、真实 loop/render 相位、恢复）。dsh 只可先实现可撤销的验证设施，不加正式 Particle Patch、不接 Gate B Tween。通过后再由 GPT Work 审查正式 owner 的接入范围；失败停在具体 native 语义，不用每步 Play、restart=true、清空用户粒子等替代。联合验收必须同初态/seed、同逻辑帧、不同交付等待，并同时检查时间/粒子状态和图像。
+
+### 2.2.22 非实时整场景视觉确定性架构复核（2026-10-18；静态/合同审查完成，统一门禁实机未验证）
+
+**本节定位及计划优先级**：用户要求整场景视觉与等待长度无关，不能将 Camera + Planet Particle 两个 owner 的范围当作完整覆盖。本节保留消费者审计、等待不变量及上一轮 R0/R1 计划；**用户随后要求暂停 R0a/R1 自研观测设施设计，最新调度以 §2.2.23 为准**。没有证据支持直接实现统一 PlayerLoop 暂停，也不直接开始 §8.7 的完整 Particle owner。已有 Camera/Planet owner 保留，常规 Gate B、正式 Particle Patch、版本收敛和 NVT 清理仍暂停。
+
+**本轮身份与证据**：`main` / HEAD `9f9ff34eee4ff1f9a73a260d7d753219297d0950`，无 staged，原有工作区保留；Release/Mods DLL 均 SHA256 `F97722C6624E028640F87E23971E52BA4561E851AF870AF5E64030053854F699`。Assembly-CSharp SHA256 `0D1524DA…` 与 Atlas 相同；当前 firstpass SHA256 为 `4080ED90585059A9A2D71DD05BF18DA2F4F0DED1771C7092377EDC0A56C0E29B`，既有 firstpass 转储未提供可核对的来源哈希，相关全族结论只作待补齐来源身份的辅助资料，不升级为新的实机事实。直接复核当前 `Player.log` 5287–5289、5304 及已匹配 AC# 转储中的代表性调用/IL，未重做静态全库调查。本轮只更新项目理解，未改生产/测试代码、构建、部署、版本、README 或 NVT。
+
+#### 推进关系与根因
+
+1. Renderist 的 output frame 只有在既有 Prepare→原生消费→render→EOF/读回→交付完成→Commit 合同内推进；MP4 在同一 output frame 的 AwaitingDelivery 可能经历多个完整 Unity native frame。Prepare/Commit 去重与不可变 CPU RGB24 buffer 保证帧事务，不保证后续场景状态不变。
+2. Unity native frame 内有 TimeUpdate、固定步/物理、脚本 Update/协程、动画/粒子调度、LateUpdate、jobs 收敛、cull/render/后处理、EOF 等不同边界。**这是待映射的阶段集合，不是已取得目标游戏实际 loop 顺序**。现有日志没有 GetCurrentPlayerLoop/原生 jobs/render 的完整 trace；不同系统可在不同位置消费同一次 native frame 的时间。
+3. scheduler 在 AwaitingDelivery 不发布新逻辑步，但没有阻断其它 Unity/ADOFAI 消费者。当前 NVT 的 Tail/Core/Sparks 无授权积分是实机事实；`captureFramerate=30` 下额外 native frame 仍有 `dt≈1/30`，`udt` 随墙钟变化。Camera helper 仅替换已识别调用点，不改变引擎时间、其它脚本或 jobs。
+4. **渲染也可能写状态**：已匹配 AC# 的 `CameraFilterPack_3D_Anomaly.OnRenderImage` IL 明确累加实例 TimeX 并写 `_TimeX`；`scrVisualDecoration.UpdateShader(bool)` 还可反射调用 OnRenderImage。故冻结脚本 Update/粒子仍可能漏掉相机或装饰物滤镜。此为可达代码路径证据，未证实当前测试谱面启用了该具体滤镜，不将其写成当前画面的实机根因。
+5. **零 delta 也不是完整门禁**：已匹配 AC# 的 `PlanetRenderer.get_rainbowHue()` 为 `(Time.unscaledTime/5)%1`；`ffxJerkCam` 与 `scrSamurai` 有 frameCount 消费；既有 Atlas 还记录背景/hold/scroll 等 Transform/material writer。暂停调用后再恢复时，这些绝对时钟/帧号也可能已跳变。省掉等待渲染或阻塞主线程只能减少一类推进，不能自动保证下一授权帧不受墙钟影响。
+6. 当前 MP4 **正常消费/提交**依赖 `Rgb24MainThreadBridge` 捕获的 SynchronizationContext.Post、UMM OnUpdate→EditorExportController.Tick→TickAwaitingDelivery；EOF driver 依赖 WaitForEndOfFrame。§2.2.24 进一步确认：L2 写入 Task、transport 映射与 canonical envelope 的发布在 Default TaskScheduler 上，不需要这些主线程回调；阻塞主线程会阻断的是现有通知 Store/消费/Commit 和 GUI 取消，**不能写成后台写入本身必然等 Unity 下一帧**。具体 Unity/UMM 泵所在 native 节点仍须实测，不从类型名猜测。像素尚未变化的 timer、RNG、回调/销毁队列、隐藏或池内对象也属于未来视觉的因果状态。
+
+#### 消费者覆盖矩阵
+
+“IL 有证据”不代表该测试谱面实例启用；“无 chart 调用边”也不代表序列化场景没有组件。运行时清单必须包含 inactive/池内及以后激活的对象，按场景关联限定范围，并检查其它 Mod 注入。
+
+| 消费者 | 证据/入口 | 当前控制与缺口 | 下一步观测 |
+| --- | --- | --- | --- |
+| MasterTimeline/Conductor/Hit | 已有逻辑 authority、授权与 autoplay helper | 逻辑事务已覆盖；不能外推为全部视觉 writer | 相位、逻辑事件序列/重复、Hit 后目标与生命周期 |
+| Camera 原生 | Gate A Update/UpdateSize/custom FPS helper；正常实机 PASS | 仅已知局部时间读；异常/custom FPS 特例及全部非时间写未穷尽实机 | timer/目标/父链矩阵/size、每相位写入、render 次数 |
+| Camera Tween/Shake/Hold/Flash | §2.2.14–15 的 exact producer/实例/闭包 | 未接管，保留原替换/callback/AutoKill 语义门槛 | position/fullPosition、delay/loop/active、setter/回调和创建顺序 |
+| Planet Tween | OnMusicScheduled 的 cosmeticRadius 那一条已验收 | 非全场景 DOTween；其它装饰物/事件 Tween 未覆盖 | 原生实例身份、进度/回调，不能扩大 Planet owner 范围 |
+| Planet Particle | NVT 已实证 Tail/Core/Sparks/另一 Tail 等待推进 | 正式 owner 无；bootstrap/排空/Play/prewarm/恢复仍待验 | 全实例配置/seed/年龄/位置/发射、Begin/End 与 render |
+| 装饰物/portal 粒子、children | Atlas 有 scrParticleDecoration、Set/EmitParticle、portal 等路径 | 不在 Planet 局部方案；运行时清单未取全 | 发现/激活、unscaled/simulationSpeed、child/sub-emitter 图 |
+| Animator/legacy Animation/Playable | Atlas 的 chart Animator 调用边不足，已有字段/UI 引用；未有场景扫描 | **未覆盖，不能判不存在**；root motion/events/jobs 未验 | 实例/controller、层/transition/参数、updateMode、root motion/events |
+| Transform/mesh/material writers | PlanetRenderer 彩虹、scrMove、hold、ScreenScroll、背景等已识别 IL | 还有绝对 scaled/unscaled/frameCount 及非 delta 平滑/一次性字段 | Transform、颜色/网格/材质、私有累加器和全部相关输入 |
+| 后处理/渲染回调 | AC# TimeX 累加与装饰物反射路径已直接复核 | 未授权；额外渲染可再消费，RT 历史未审计 | callback 次数、TimeX、材质值、历史 RT、custom FPS 旁路 |
+| Shader 内置/自定义时间 | 官方合同有 _Time/_SinTime/_CosTime/unity_DeltaTime；本机实际 shader 使用未扫描 | CPU getter Patch 不覆盖 GPU 输入；Unity 可能在 draw 前设置值 | 实际 draw 使用的 uniform/渲染结果；GetGlobalVector 不能替代 GPU 证据 |
+| 随机性 | DOTween Shake 创建用 Unity Random；Particle seed API/配置路径已知 | 共享 Random、autoSeed、其它随机源及 UI/其它 Mod 干扰未闭环 | 不消费随机数的 state/seed 观测、创建/出生序列；不能把 InstanceID/gen/墙钟混入 seed |
+| Unity 原生 jobs/物理/约束/蒙皮 | 本地 CoreModule 有相关 loop 类型；Particle native 实际推进 | 类型存在不等于依赖图/安全移除；其它原生系统运行时未覆盖 | 调度/完成边界、Transform 写回与 render 依赖、暂停后有无补步 |
+| 生命周期/协程/延迟任务 | Play/Revive/Explode/Stop/Clear 与现有初始化/取消链已识别 | OnEnable/Start、coroutine、延迟 Destroy/事件在等待仍可能到达 | 入队/执行次数、对象增删/激活、排空与恢复意图；不得以“生命周期”豁免漂移 |
+| 视频/异步媒体/资源 | Atlas 有 scnGame.videoBG 与异步路径，当前谱面启用情况未知 | 不受两局部 owner 覆盖；未准备好的资源可能影响下一幅图 | 视频帧/解码完成、资源就绪与加载回调；未知状态不能标 PASS |
+
+#### 统一门禁与局部方案比较
+
+| 方案 | 实际覆盖 | 改动/恢复/维护判断 |
+| --- | --- | --- |
+| captureFramerate/captureDeltaTime | 固定 scaled 游戏步，不使每步与 output frame 一一对应；不控制 unscaledTime | 已有用途保留，不能单独满足等待不变量 |
+| 等待 timeScale=0 | 部分 scaled 消费者；不阻止 Update/渲染调用、unscaled/frameCount/即时状态写 | 变更到后续帧才生效，已有 hidden/partial ownership 可能冲突；不是整场景方案 |
+| OnDemandRendering/只停相机 | 减少 render，不停止 simulation；装饰物手动滤镜/Camera.Render 还需审计 | 可能影响 EOF 触发；适合验证渲染消费预算，不能作为总开关 |
+| 整体 loop 暂停/主线程等 worker | 减少 native 迭代；不能证明 real/unscaled、外部异步输入与恢复正确 | 现桥接/取消/EOF 可能停摆；不采用为默认实现，不以消息泵重入作为绕过 |
+| 选择性 PlayerLoop 相位门禁 | 有机会按脚本/动画/粒子等阶段统一减少重复消费 | **候选未验证**。覆盖闭包跨 native nodes/jobs、render 与时钟；全场景影响大。SetPlayerLoop 整树替换、次轮生效、其它 Mod 变更和半安装恢复成本高；不能仅包住一个 managed Update |
+| 共同授权 + 系统族局部 owner + 渲染时间/次数约束 | 复用现有授权，可按确切因果路径逐步闭合 | 当前较小且可回退的候选；完整范围远超两个 owner，漏消费者即失败。局部 Hook 数量/维护成本随实际系统增长，不能提前声称完整可行 |
+
+**官方资料与本机证据的边界**：本地 CoreModule 确有 GetCurrentPlayerLoop/SetPlayerLoop、native updateFunction/loopConditionFunction；Time 的 time/frameCount/unscaled 等为只读 API。Unity 6.3 官方规定 SetPlayerLoop 的执行变化到下一次完整迭代生效，native 节点参数不应随意修改。不能把 updateFunction IntPtr 强转成任意托管委托，或把替换 managed Time getter 宣称为改写引擎时间。公开 API 中**未找到已获证实、适用于该 UMM Player 的单一整场景确定性暂停/单步开关**；不是已经证明一切选择性门禁都不可行。游戏的 scnEditor 是发布 Player 内编辑器，不是 UnityEditor Play Mode，不能直接套用 Editor Pause/Recorder。
+
+#### 严格等待不变量与比较合同（待实现/待实机）
+
+- 固定同一 generation、逻辑帧 f、授权时间及所有会影响视觉的输入；在本帧实际 render/EOF 读回完成、相关 jobs 已收敛的同一观测边界取状态 S(f,0)。让交付 completion 保持 pending，经历 **0、3、100 个完整额外 native frame**，并另加真实 FFmpeg 背压和不同墙钟等待。控制通道可处理 IO/取消/诊断，但未授权的视觉因果状态投影必须满足 `S(f,k)=S(f,0)`。仅 frameCount/墙钟/IO 计数等诊断状态可变，前提是不会被后续视觉消费。
+- 正常逻辑步、G partial、零步、hidden 生命周期各有明确许可；不能因等待触发多次 Play/初始化/回调。初始化必须在固定基线和规定相位发生一次；Cancel/场景切换使 generation 失效，单独验收恢复，不能当作正常等待漂移的豁免。100 帧测试是反例搜寻，任意等待的保证还需要门禁及恢复的结构证据。
+- 各运行使用同一 DLL/环境/谱面/设置/FPS/pitch/事件输入、相同初始化及 seeds；**先验证初态指纹一致**，不假定重复 editor.Play 自动重置所有状态。跨运行按稳定对象路径/角色/创建序号匹配，不能用 Unity InstanceID 或 generation 作为随机/对照身份。
+- 比较实际最终源图的规范 RGB24 像素或解码后的无损 PNG 像素，固定几何、row order、颜色空间、抗锯齿、降采样及渲染历史。记录 SHA256、不同像素/通道数、最大误差和差分图。用户合同要求细微差异也不能忽略，**通过标准为像素一致**；误差指标只定位，不以 MAE 阈值放行。MP4 有损字节/解码差异不作视觉 authority，Verified 仍单列封装结果。
+- 在相同相位比较 Camera/Transform、Tween 内部进度和回调、所有受测粒子/seed/年龄/出生、Animator 状态/transition/参数、材质/TimeX/历史资源、RNG 与生命周期队列/计数。CPU 可读状态不代表已读全 native/GPU 隐藏状态；缺证据者标未覆盖。观测不得消费 RNG、推进 Animator/Particle 或额外调用 Camera.Render/OnRenderImage。
+- **当前帧 CPU buffer 冻结不足以证明视觉冻结**：在 f 的 EOF 后注入等待，除比较等待期间内部状态，还要自然捕获并比较 f+1 及后续事件帧。额外渲染或诊断重绘可能自身推进滤镜，不为取证给同一帧偷偷增加渲染；需要重绘验证时单独设计并计数。用未来帧差异、事件/调用计数及状态指纹发现“当前像素不变、内部已漂移”。
+- 范围必须覆盖所有可达、可能影响源图或未来源图的系统，包括屏外/池内对象、共享 RNG/输入来源；不能默许未知系统通过。若无法封闭实际场景或第三方 Mod 的输入/消费者范围，只能报告局部通过/整体未验证，不承诺任意场景完整确定性。
+
+#### 上一轮最小计划、停止条件与执行方（设施设计已暂停；最新计划见 §2.2.23）
+
+1. **R0（先于 Particle S1，GPT Work 负责裁决）**：用既有 DLL/Atlas 完成消费者/依赖清单和门禁候选审查（本轮已完成静态部分）。下一次目标 Unity 先只读 GetCurrentPlayerLoop、实际活动/池内组件/渲染链、时钟值、UMM/同步上下文/EOF 的执行位置，不能先删除 native 节点。本轮尚未取得该 runtime trace，不能宣称全局门禁可用。
+2. **R1（dsh 可按明确方案准备默认关闭的临时观测设施，GPT Work 审查）**：扩展独立诊断预算与状态指纹，覆盖 delta/absolute unscaled/frameCount writer、实际滤镜/render 回调、已知粒子；用隔离见证对象补 Animator/渲染时间等有安全构造依据的组。先跑 0/3/100 等待及真实背压，定位未授权 dispatch 和首个漂移相位；这是新覆盖矩阵验收，不重证 f3 的既有缺陷。没有可靠 GPU 输入观测设施时明确标未覆盖，不能拿 GetGlobalVector 顶替。
+3. **R2（只在 R0/R1 给出完整候选依赖闭包后由 GPT Work 决定）**：若能证明控制/取消/回执继续运转、native 调度/完成成对、安全恢复及 render/绝对时钟也受约束，才设计范围受限的相位门禁 PoC。只冻结脚本/只移除 ParticleBegin/End 不满足此前提。PlayerLoop 修改影响整场景，隔离几个粒子对象并不能隔离这种风险；不在用户未保存关卡直接试。若不能给出安全闭包，明确否决该候选并结束 R2，不无期限试全局补丁。
+4. **R3（局部语义验证，dsh 执行）**：没有更小且经证实安全的统一门禁时，继续 §8.7/S1–S6：Pause→Simulate、排空、Clear、Play/Revive/prewarm/seed、native 相位和恢复。R0/R1 复用 S0；粒子测试仍必要，但结果只放行粒子分支，不代表其它行的覆盖。任何 native 语义失败交 GPT Work，禁止每步 Play/restart、清空用户粒子或全局改时钟绕过。
+5. **R4（GPT Work 审查后才交 dsh 正式实施）**：选择改动最小的已验证组合；保留 MasterTimeline/授权合同与已通过 owner，按实际清单补必要的系统族/渲染控制。所有必需消费者有独立一次消费/完成证据，早于 Prepare/晚于 render/重复消费均具体失败。不能用大型统一管理器掩盖未审计的 native 行为。
+6. **R5（联合验收与后续闭环）**：同初态的 0/3/100 与真实背压，对比全部源帧和内部状态，覆盖 f0、B−1、首次 hidden、G partial/G+1、Hit、completion/End Tail/Finalizing；补 60 FPS、非 1 pitch、Cancel→Restart、异常及场景退出。任一像素/因果状态漂移、未知消费者、漏回执、jobs 未收敛、控制通道停摆、恢复失败、外部 loop 被覆盖均停止相应方案，报告具体阶段。通过前不进行版本收敛或清理 NVT。
+
+本轮没有新增可供用户运行的测试设施，现 `F977…` DLL 不能执行 R0/R1 的新增验收。下一次设施代码通过现有 net48 回归、Release Rebuild、package/strict verify 后才能只部署 Renderist 自身文件，核对新 hash；全局门禁与正式 Particle Patch 不作为 dsh 自主扩展范围。保留原帧事务、RGB24 lease/背压及 L3-C 协议，不因本次路线审查重构。
+
+外部依据仅为 Unity 6.3 API 合同，本机游戏行为仍以匹配 DLL 和实机为准：
+
+- [SetPlayerLoop](https://docs.unity3d.com/6000.3/Documentation/ScriptReference/LowLevel.PlayerLoop.SetPlayerLoop.html)、[PlayerLoopSystem](https://docs.unity3d.com/6000.3/Documentation/ScriptReference/LowLevel.PlayerLoopSystem.html)：替换/次轮生效/native 参数边界。
+- [captureDeltaTime](https://docs.unity3d.com/6000.3/Documentation/ScriptReference/Time-captureDeltaTime.html)、[timeScale](https://docs.unity3d.com/6000.3/Documentation/ScriptReference/Time-timeScale.html)：scaled/unscaled 与生效边界。
+- [OnDemandRendering](https://docs.unity3d.com/6000.3/Documentation/ScriptReference/Rendering.OnDemandRendering.html)、[OnRenderImage](https://docs.unity3d.com/6000.3/Documentation/ScriptReference/MonoBehaviour.OnRenderImage.html)：simulation 与 render/EOF 分离、渲染回调。
+- [内置 Shader 变量](https://docs.unity3d.com/6000.3/Documentation/Manual/SL-UnityShaderVariables.html)：GPU 时间变量不由 Camera 的局部 helper 自动接管。
+
+### 2.2.23 现有离线渲染器源码研究（2026-10-18；外部源码已核查，无新增实机放行）
+
+完整可复用报告：[现有 ADOFAI 离线渲染器源码研究与 Renderist 对照](docs/EXISTING_RENDERERS_RESEARCH_0.3.12.0.md)。包含固定提交/方法链接、历史、交付流程、视觉覆盖矩阵、恢复风险及本机调用路径。**后续帧内交付审查与最新调度见 §2.2.24；R0a/R1 自研观测设施设计继续暂停。**
+
+- **实际源码身份**：ADOFAIRenderer main `9e3941e3b566ffd42c95f8d752ea9683ff5b2c1906d0427de2518e1603732b40`（2026-10-18，代码 `0.3.2-INDEV`）；真正独立的 `adofaiex/ADOFAI.EditorTweaks.ChartRendering` main `556f3395e30bcb9f4768bfd63fb939e49e636ba7`（2026-09-27，Info `1.0.3`）；UMM/net48 的 OrbitRender main `8f02c7c982ab340ebc6ddc9aeb502e75dbd1790b`（Info `2.3.0`）；SpectreReplay master `27e19ac9a2e9d5ec43c4145f2505673a80f0d546` 仅作渲染技术参考，不引入 replay。网页缓存版本与源码身份分开。
+- **重要已确认事实（源码，不是本机实测）**：ADOFAIRenderer 早期 `Patch/RenderEnvironmentPatches.cs` 的全局时间 getter 重定向**未废弃**，迁至 `Patch/Engine/RenderEnvironmentPatches.cs`，当前仍将 managed time/unscaled/dsp/frameCount 映射为 base + frame/RenderFPS，delta 为正 1/RenderFPS。native 另用 captureDeltaTime；portal 粒子还有 useUnscaledTime=false 特例。它不是整个 native/GPU 时间层的虚拟化。
+- **值得优先借鉴的共同结构**：ADOFAIRenderer、ChartRendering 与 OrbitRender 的主要稳态 GPU/encoder 背压在当前 Unity 调用内 signal/poll/WaitForCompletion/buffer queue 等待，避免为了 IO 再 yield 场景帧。Orbit 的源码明确指出额外 yield 会使 tween/particle 在歌曲/输出时间不变时推进，并有对应阻塞路径。不同 simulation FPS / video FPS 的有意子步与未授权等待帧必须区分；ChartRendering 结束 drain 仍可 yield，不能外推成全生命周期冻结。
+- **不能直接移植的结构边界**：当前 Renderist completion 依赖 SynchronizationContext.Post→UMM Tick/主线程 Commit；不做依赖裁决而直接 `.Wait()` 会阻断所需通道。外部实现证明另有交付结构，不证明当前桥接可原样阻塞。MasterTimeline、f0/hidden/G partial 授权、single-in-flight/lease、Cancel/Completion/CleanupTask 双屏障、L3-C Finalizing 合同均保留。
+- **外部可靠性缺口**：ADOFAIRenderer GPU readback 失败会送黑帧，abort 有 Join 超时后仍 dispose encoder 的风险；不采用。ChartRendering 的 Camera/Game View 捕获范围不同；公开 bt709 PR 尚未合并，keyviewer issue 正文描述的是 Creplay，不能误记为 ChartRendering 已复现 bug。Orbit 默认是自动相机反馈 RT，manual Camera.Render 仅可选；private native backend 无法完整审计。Spectre 的 internal MonoMod detour、GPU 等待额外 yield 和撤销失败仍丢追踪，不作默认方案。全部只是源码/用户报告层证据，未运行第三方渲染器。
+- **当前技术判断**：优先审查“native 模拟次数与授权一致 + 必要 managed absolute/unscaled 时间适配 + 明确初态/渲染边界”，不能仅以 Camera/Particle 两 owner 或全局 getter 宣称整场景完成。未发现公开成熟实现已经证明全部 Particle/Animator/Shader/jobs/随机性及 0/3/100 等待源图一致；§2.2.22 的覆盖矩阵和严格验收合同不放宽。
+- **最小下一步**：GPT Work 先审查现交付/取消/残留清理可进展性和 hidden/partial 模拟预算，给出可回退、可审查的具体范围；dsh 此时不实现新设施或正式 Patch。通过后才安排限定验证：同初态、同逻辑时间分别改变墙钟交付等待和额外 native 帧数，比较无损源图、内部状态及 f+1。保留额外 native 控制帧或仍需手动粒子时，才恢复 §8.7/S1–S6 隔离测试；不默认直接进入 Particle owner。
+- **停止条件及不变项**：控制/取消停摆、依赖主线程后续帧才能结束却尝试阻塞、残留不可恢复、初态不同、无授权状态/像素漂移或消费者未覆盖即停止相应方案并交 GPT Work。Gate B、正式 Particle Patch、版本收敛与 NVT 清理继续暂停。版本 `0.3.12.0`、Release/部署 DLL `F97722C6…` 未变；视觉 FAIL 不变。未改生产/测试代码、构建、README、部署，未新增实机验证；只新增研究报告并同步文档状态入口，不提交、不推送。
+
+### 2.2.24 Frame-local Delivery 可行性审查（2026-10-19；静态审查完成，F0/Unity PoC 均未执行）
+
+**裁决**：帧写入到 canonical envelope 发布的后台依赖闭包，不要求改写 L2、MasterTimeline 或 L3-C；可以用现有代码做 **F0 test-only 行为验证**。但当前代码不具备直接生产切换条件：成功消费仍被 Post/后续 Tick 门控，GUI Stop/disable/unload 又依赖被阻塞的主线程。**Go 仅限下一轮 F0；现路径直接 `.Wait()`、无限期生产帧内等待、通过额外 Unity 帧或重入消息泵解围均 No-Go。** 静态可行不等于 Mono 管道/取消/视觉实机已通过。
+
+#### 本轮身份与修改范围
+
+`main` / HEAD `9f9ff34eee4ff1f9a73a260d7d753219297d0950`，staged 为空，21 个 tracked 修改和原有 untracked 工作保持。Info、csproj、ModEntry 版本仍 `0.3.12.0`；Release/Mods DLL SHA256 均为 `F97722C6624E028640F87E23971E52BA4561E851AF870AF5E64030053854F699`。证据来自当前未提交源码及既有测试源码，不以 HEAD 中旧文件代替工作区。只同步本节、状态入口与 §2.2.22 的依赖表述；其它 98 个 tracked/untracked 文件的本轮前后 SHA256 比较一致，`git diff --check` 通过。不新建生产/测试设施，不改构建、部署、NVT、版本、README，不提交/推送。未运行本节新验证。
+
+#### 逐方法交付依赖图（M=捕获的 Unity 主线程；W=后台；P=外部编码进程）
+
+```text
+M Prepare: TryRequestFrameCapture
+  → Transaction.TryBeginFrame → Pool.TryAcquire（一帧唯一 lease，尚未 delivery pin）
+  → FrameCaptureDriver.RequestRgb24Capture
+  → CaptureBehaviour.Observe / WaitForEndOfFrame（此处必须到达 Unity EOF）
+  → CaptureNow → RunEndOfFrameGateOrThrow（验证/关闭视觉授权）
+  → TryRunRgb24CapturePipeline
+      → save GPU state → BlitDownsampleChain → ReadBackRgb24Bands
+      → scratch.ReadPixels → GetRawTextureData.CopyTo(staging)
+      → OwnedRgb24Frame.CopyStagedSourceRowToDelivery（完整 managed byte[] 分段）
+      → restore GPU state
+  → _onResult / Scheduler.OnCaptureResult
+      → generation / pending index / phase / stop 校验
+      → Transaction.TryCompleteEof → status=AwaitingDelivery
+      → Transaction.TryBeginDelivery（先 pin，后调用 transport）
+          → FfmpegRgb24FrameTransport.TryBeginWrite / BuildVideoFrame（不复制数组）
+          → Pipeline.TryWriteFrame（占用单 write slot）
+          → Task.Run(WriteFrameCore)
+W             → 每段 stdin.WriteAsync(..., cancellation.Token).GetResult
+P                 → 消费 stdin / 编码；stdout/stderr 由后台 pump 排空
+W             → FlushAsync.GetResult → _gate 下提交结果/计数并释放 write slot
+W         → transport MapCompletion（Default scheduler；映射后的 Task 身份属于该帧）
+M         → 发布 _write 身份后 DeliveryNotification.Observe 注册 continuation
+W             → ReadOutcome → 创建唯一 canonical envelope → lock 下存 _completed
+W             → Bridge.TryPost(envelope, Store)（Post 入队成功不代表 Store 已执行）
+M                 → 捕获的 SynchronizationContext 执行回调 / 核验线程 → Store
+M                 → _pending=envelope → OnPostedCompletion（仅 abort 时退休旧 lease）
+M UMM OnUpdate → EditorExportController.Tick → Scheduler.TickAwaitingDelivery
+  → Context.TryTakePendingEnvelope → Notification.TryTake（现实现只取 _pending）
+  → Transaction.ConsumeEnvelope（线程、generation、frame、token、Task、canonical 引用）
+  → ReleaseCompletedLease（解除 pin、池释放、标记一次消费）
+  → ResumeAfterRgb24Delivery → 唯一 CommitFrame
+  → 下一次原生 Conductor Prefix 才可能 Prepare 下一帧
+```
+
+源码定位按本轮工作区行号：
+
+| 文件 | 关键入口与直接证据 |
+| --- | --- |
+| `Export/FrameCaptureDriver.cs` | Observe `:1556`；CaptureNow `:1603`；RGB24 callback `:1657`；GPU capture/恢复 `:1770`；ReadBackRgb24Bands `:1934`。**当前不是 AsyncGPUReadback 回调链**，不需要照搬第三方 WaitAllRequests |
+| `Export/DeterministicFrameScheduler.cs` | TryRequestFrameCapture `:2540`；TickAwaitingDelivery `:2588`；OnCaptureResult `:2662`；TryCompleteEof/BeginDelivery `:2730/:2741`；唯一 CommitFrame `:2780` |
+| `Export/Rgb24FrameTransaction.cs` | Bridge.TryPost `:187`；TryBeginDelivery `:341`；ConsumeEnvelope `:417`；TryAbort `:488`；Observe `:588`、Store `:600`、IsAuthentic `:611`、TryTake `:616` |
+| `Export/FfmpegRgb24FrameTransport.cs` | TryBeginWrite `:56`；MapCompletion `:108`。ContinueWith 明确 `ExecuteSynchronously + TaskScheduler.Default`，不捕获 Unity continuation |
+| `Ffmpeg/FfmpegVideoPipeline.cs` | TryWriteFrame `:1040`、Task.Run `:1071`、WriteFrameCore `:1075`、写入提交临界区 `:1113`；stream pump Task.Run/ConfigureAwait(false) `:2193`；Process.Exited 完成 Task `:2152` |
+
+路径前缀均为 `src/ADOFAI.Renderist/`。这是一张异步分叉/汇合依赖图；`Observe` 注册发生在 TryBeginDelivery 内，不能把图误读成 worker 必须先执行完才注册。已完成 Task 也由先发布 `_write` 再注册 continuation 的顺序保护。
+
+#### 三种“完成”及线程/PlayerLoop 边界
+
+1. **写入终态**：L2 raw Task 在完整 Write/Flush 与结果计数提交后结束；transport 映射 Task 随后结束。它们不需要 Unity API 或下一次 PlayerLoop；实际 OS/Mono stdin 是否进展仍需目标验证。Task.Run 内的 StreamWrapper/WriteCommitBarrier 是现有测试缝，正式默认路径不注入需要 Unity 的回调。
+2. **通知发布**：`DeliveryNotification._completed` 是后台 canonical 对象；`_pending` 则只在主线程 Store 后可取。mapped Task 已结束不严格等于 Observe continuation 已发布 `_completed`，尤其异步 continuation 调度时；未来若加 ready signal，必须在真实 envelope/失败发布之后唤醒，不能只等 raw/mapped Task 的 IsCompleted。
+3. **消费/提交**：`ConsumeEnvelope` 必须在捕获的主线程；其真实性检查依赖 `_completed` 引用及原 mapped Task，**不要求 Store 已运行或 _pending 已被取走**。这是可复用现有消费路径的源码依据；后台不能代替主线程释放 lease/Commit。当前真实 Unity context 没有公开给我们直接取 payload 的通道，仍需显式私有通知入口，不能截取或泵整个 Unity 上下文。
+
+必须主线程：Unity/GPU readback 与恢复、scheduler/authorizer/timeScale、lease/事务操作、generation 校验、Commit、Unity cleanup、Controller metadata/终态应用。可后台独立：L2 进程 IO/结果计数、map、不可变 envelope 发布、FFmpeg退出/双流排空/核验发布任务。必须等待/恢复 PlayerLoop 的现有入口：EOF 到达、Unity Post callback、UMM Tick、GUI Stop/OnToggle/OnUnload、环境观察和下一逻辑帧的 Conductor Prepare。后台完成不等于主线程通知完成，也不等于资源已清空。
+
+#### 具体死锁/不可取消边
+
+| 等待位置/条件 | 阻塞边与裁决 |
+| --- | --- |
+| EOF 前停主线程等图像完成 | CaptureBehaviour 必须先恢复到 EOF 才形成 CPU frame；不在此处等，不暂停整个 loop 等尚未发生的 EOF |
+| EOF 内循环等现 TryTakePendingEnvelope / Store / Tick 已消费 | M 等 `_pending`，Store 要 M 执行 Unity Post；或 Commit 只能由后续 UMM Tick 驱动。现代码没有自动主线程消费；循环等待形成闭环 |
+| 只 `.Wait()` raw/mapped Task | 不存在源码上的必需 Unity continuation，因此**不必然死锁**；但返回后仍不能越过 canonical/authentication，也不能声称当前正常流程会自动 Commit。无限背压时 GUI 不能发起 Cancel |
+| 持有 notification `_sync` / pipeline `_gate` 等 ready | worker 发布 envelope / 提交写入结果也要相同锁；锁内等待会阻止被等条件成立 |
+| 等 pool 可用再消费当前帧 | 当前唯一 lease 被 pin，释放要 M 的 ConsumeEnvelope/TryAbort；正常 busy 不是可排队的资源等待，不能重试第二次 TryBeginWrite/Acquire |
+| 等 `HasResidualOwnership=false` / CleanupTask / encoder 退出才 Commit 当前帧 | 正常 Running 时 CleanupTask 尚未建立、context 本就持有 pipeline；正常退出又要所有帧 Commit 后 Finish 关闭 stdin。把全会话收敛当单帧 barrier 会阻断正常进展 |
+| 无限等待 + 现 GUI Stop/disable/unload | 按钮 `ModEntry.cs:552–567 → Controller.Stop:702 → StopNow`，禁用 `OnToggle:169`、卸载 `OnUnload:2199 → Controller.Cancel:758` 均需 M 运行。不是 backend 无 Cancel API，而是用户请求到不了它；不能依赖 OnUpdate 超时/Timer 在主线程上的回调解围 |
+| 仅 RequestStop，继续等同一个 IO Task | Scheduler.RequestStop `:1038` 只存字段，ProcessStop 在后续 Tick；不调用 L2 Cancel，不保证堵塞 stdin 被解除 |
+| Wait(token) 提前抛取消 / Kill / CleanupTask 先结束就回池 | 取消等待不等于真实写入结束；L2 Teardown 与 Write Task 可独立先后结束。提前解除 pin 会使后台读取被复用的数组 |
+
+#### Cancel、异常、lease 与 Finalizing：保持双屏障
+
+- `Pipeline.Cancel:1228` 在 `_gate` 下锁定取消、取消 token、启动后台 convergence，锁外 TryKill 解除 pipe 背压；Teardown `:1719` 等 process exit/两流、释放进程和临时文件。**CleanupTask 没有承担当前 write Task 的全部寿命**，不能拿它替代 frame barrier。
+- `Context.TryStopAndDrain:228 → Transaction.TryAbort:488`：当前 mapped Completion 未完成则 pin/lease 保留；完成后可退休，**不依赖 Post 成功**，且永不返回可 Commit。再独立检查 CleanupTask 和 ResidualOwnership，最后才 Pool.Reset / 允许替换 context。`TryReplace:257`、scheduler pre-start/residual gate 和 Controller.IsBusy 都保留。
+- 现有 `PipelineBackpressureTests:29–92` 的源码明确覆盖 CleanupTask 先结束而 write 仍 pending，以及反向顺序；`Rgb24LifecycleTests:98–128` 覆盖无 UMM Tick、Post 未送达/抛错下的退休。**本轮只审阅，不重报为新测试 PASS。** 后续直接消费方案必须保留这些分支，特别是 Mod unload 后未必还有 UMM Tick，不能删掉现 abort 的主线程唤醒途径后靠未来 Tick 兜底。
+- worker 抛错/取消由 MapCompletion/ReadOutcome 形成失败结果；不伪造成功、不补黑帧、部分写入不重试。transport acceptance-unknown 保守 pin 的现规则不改。新增等待器自己的异常也不能释放身份不明的数组。
+- Frame-local 成功分支只能复用同一 ConsumeEnvelope→Commit；终态仍按 `CommitFrame:2888 RequestStop(completed)` → 后续 `Tick/ProcessStop:3184` → RestoreAll 全成功 → `TryDetachRgb24CompletionHandoff:3260` → Controller.BeginFinalizing `:944` → Context.TryBeginFinalizing `:137`（计数相等/无 frame ownership）→ 原 Pipeline.FinishAsync `:1195`。**不将 Finalizing 也搬进 EOF 的阻塞等待，不新建编码进程，不改变核验/原子发布。**
+- 待停止/异常时先禁止提交，帧内等待必须能退出；L2 取消可以通过主线程现有 `Context.TryRequestStop` 请求，Unity cleanup 延后到 callback 栈退出后的原 Tick/ProcessStop，避免在 CaptureNow 内贸然递归 Stop/Destroy 正在执行的 capture behaviour。raw Task 未结束的 lease 继续由旧 context 持有，回到 PlayerLoop 后按原双屏障收敛，不等待“所有清理结束”才肯退出取消等待。
+
+#### 候选比较与最小改动边界
+
+| 候选 | 可行性/范围 | 裁决 |
+| --- | --- | --- |
+| A 保留跨帧异步 + 局部 owner | 当前进展/GUI 取消和 L3-C 主路径已有证据；还要覆盖 Particle/Tween/绝对时钟/渲染等全部消费者 | 作为现有可回退基线；本轮不恢复 owner 实施，也不能把当前视觉 FAIL 标为可用 |
+| B 原代码直接 EOF 阻塞等待 | 单等 worker 可能结束，但现 Post/Tick 仍阻断消费，GUI 取消不可达 | **No-Go**；不得以 while+sleep、消息泵或固定写入超时补救 |
+| C EOF 后 worker 发布私有信封 ready，M 同次调用直接校验消费 | L2/数组布局/计数/MasterTimeline/L3-C 均可保留；主要改 notification 与 scheduler 的消费位置，并补独立取消请求来源 | **静态条件可行；F0 Go，生产 No-Go**，直到通知并发/取消/目标 Mono/视觉门槛全部通过 |
+| D 只做“已完成结果”的 inline fast path | 不阻塞 UI，可能消除部分通知延迟；pending 时仍跨 native frame | 只能优化，不能独立满足用户严格等待合同；不能以此宣布修复 |
+| E 多帧队列/提前 Commit、超时后异步 fallback、选择性 PlayerLoop 控制泵 | 前两者破坏当前 commit authority/或重新引入等待推进；后者已超出最小交付改动且 R0a/R1 暂停 | 本轮不采用 |
+
+**C 的最小生产候选范围（未实现、未获生产放行）**：
+
+1. `Rgb24FrameTransaction.DeliveryNotification` 内把 **原 canonical 对象**作为可等待的私有通知，结果/失败先发布，再唤醒；增加真正一次性的 claim，确保同步完成、迟到 Post、重复取结果不会形成两个消费/提交源。不能在外部手工重建 envelope 通过身份校验。现 async 模式不变；会话开始冻结交付模式，不能在同一 accepted write 等待超时后切换模式继续导出。
+2. scheduler 在 `OnCaptureResult` 的 TryBeginDelivery **Accepted 之后**、GPU 已恢复且 CPU buffer 完整时等待/取该信封；把 TickAwaitingDelivery 的身份校验、结果处理、Resume/Commit 提取为共同主线程消费入口。等待中不跑 Tick、不 Prepare、不调用 Camera.Render、不改任何视觉授权快照；Busy/Rejected 原样失败。
+3. **独立取消是必需的新边界，尚未选型/实现**：用户可触发的来源必须在 M 被占用时仍能发布 generation/context 绑定的纯托管取消 latch + wake signal。等待 M 在 ready/取消中醒来，先做取消与成功消费的明确仲裁，再调用现停止入口；worker 只发请求，不直接改 scheduler/context/lease/Unity。旧 generation 的信号绝不能取消下一 pipeline。现 GUI Stop 不能充当这个来源，不能假设后台调用 Unity Input/GUI 合法。
+4. “取消已请求但 write 未终止”允许退出正常等待、返回原清理流程，**不允许 Commit、复用数组或 restart**。成功/取消同时到达必须定义消费决策的先后；只看 WaitAny 返回哪个句柄不足以判定。L2 自己的终态仲裁仍是管道 authority。
+5. 必须明确正常结果获取与 abort wake Post 的职责：保留旧通知槽隔离、旧 Post 不 Commit、新 generation 不接旧结果；不能因改直接消费而丢掉 unload 后的退休唤醒，也不能把 Post 抛错/错误线程静默吞掉。原 async 分支的 failure/stall 行为须回归；Frame-local 的 ready 不受 Post callback 执行进度门控。等待原语/句柄也要有可验证的生命周期，不能在 worker 尚会 Set 时 Dispose。
+
+因此不是新增统一时间管理器，也不是 L2 重写；但也不能将 C 低估为“一行 Wait”。纯单帧通知可行与产品取消可用是两个独立关口。
+
+#### frame 0 / hidden / G partial / G+1 与剩余视觉边界
+
+- f0 的零步仍由原 authorizer 发布，EOF 前完成验证；帧内交付不再次 consume/publish/改变 delta，也不在 EOF Prepare f1。Conductor Prefix 的 `_lastPrepareUnityFrame` / pre-entry 对应 frame guard 保留。
+- B−1 的 freeze 与 G 的 partial restore 仍只在唯一 CommitFrame 的原分支（`:2818/:2839`）；候选使提交发生在该捕获的 EOF 栈，类似现 PNG/Log-only 的提交相位，但 **MP4 及特殊边界仍需实机**。不能自行用 native frame 数替代逻辑授权，不能把 hidden 生命周期帧视作 IO 等待帧删掉，也不能把 G partial 当普通 1/FPS。
+- 正常交付等待不进入下一轮 Update，可结构性减少既有 Tail/Core/Sparks 未授权积分；**不是整场景视觉确定性证明**。初始化/prewarm、hidden 有意帧、下一帧 absolute unscaled/realtime、shader/native media/jobs/渲染回调与初态仍有缺口。固定的 Time.frameCount 或当前 CPU buffer 不变不能代替 f+1 源图/因果状态。
+- 成功路径不要在长等待后调用带旧 wall-clock watchdog 的整 Scheduler.Tick；只走专用消费路径，由 CommitFrame 刷新原 progress deadline。Finalizing/已取消恢复后的 native 帧不属于继续成功导出的等待旁路，不能再提交它们。
+
+#### dsh 下一轮最小任务与 Go / No-Go
+
+**F0：只在现 net48 测试工程增加行为验证；不改生产代码/程序集引用、不跑新 Unity Patch、不部署。** 可新增 `FrameLocalDeliveryFeasibilityTests.cs` 并仅在测试 csproj/Program 注册，或在现 PipelineBackpressureTests 内组织，不能新建产品模块。复用真实 `FfmpegVideoPipeline → FfmpegRgb24FrameTransport → Rgb24FrameTransaction`，子进程使用既有 FakeVideoProcess、stdin 使用既有 ControllableStdinStream/DeferredEofStream；fake process 不是实际 FFmpeg/Mono/GPU 验证。
+
+1. 安装测试专用 SynchronizationContext：Post 只保存其 **state 中实际 Rgb24DeliveryEnvelope** 并发 ready 信号，**在等待窗口不执行 Post delegate、不调用 Pump/Send、不用反射改生产私有字段**。BeginFrame→填充固定字节→TryCompleteEof→TryBeginDelivery。独立测试 worker 在门闩允许后 ReleaseSuccess；主测试线程保持同一次调用，等待真正信封发布。断言当前 `TryTakePendingEnvelope` 仍无 `_pending`，但主线程可把拿到的同一个 canonical envelope 交现 ConsumeEnvelope，得到 Committed、lease exactly-once 释放；“模拟 Commit”计数只是测试 callback，不能称已运行真实 scheduler CommitFrame。
+2. 覆盖 transport 即时完成/延后完成、异常/Task fault/cancel、错误身份/线程/generation/token、重复 envelope；信封发布与 Task 结束分开观察，不从 IsCompleted 推断已有 ready。成功后开启下一 lease，再执行旧 Post delegate，确认没有双消费/旧通知污染。这是在**等待结束后**检查迟到回调，不在等待中泵消息。
+3. 独立测试 worker 只触发测试取消 signal。主测试线程等待可被唤醒，调用现 `TryStopAndDrain`，取消被观察但 raw write 仍 pending 时必须返回且保持 pin/residual；再分两种顺序释放 frame terminal / cleanup EOF，双屏障前 restart 均拒绝，之后旧 lease 一次释放、新 generation 可启动。用现 L2 Cancel，不用“测试 wrapper 提前返回 canceled Task”冒充底层已结束。
+4. Cancel 与 success 竞态、Post 被扣留/抛错/错误线程、未知接受态及通知晚到都不得产生成功提交或丢 ownership。真实生产 claim/取消仲裁尚未新增，不能声称 F0 已验证新 API；F0 先证明现有底座可支持的界面，并暴露缺口。测试的 wall-clock 保命 deadline 仅用于终止测试/报告失败，不成为产品合法背压超时。
+5. 运行现测试工程 net48 回归，记录每个新增行为测试与原双屏障测试结果、`git diff --check`；**只交测试 diff 与结论，由 GPT Work 审查，不顺带实现 notification/scheduler/Cancellation UI、时间 Patch、R0a/R1、owner 或改版本**。
+
+**F0 后的条件计划（不是本轮对 dsh 的实施放行）**：F0 全通过后，GPT Work 先审查私有通知/claim/取消来源的精确方案。再决定 F1：仅目标 Mono 的一帧限定 PoC，EOF 完整 CPU buffer 后开始等待，不泵 PlayerLoop/Post，由独立测试控制释放/取消，检查同一原生帧内取结果/消费/返回、无 Post/Tick 依赖、取消后两个 barrier 与线程/句柄无残留。用外部测试保命机制，不能无保护地冻结用户编辑会话；临时设施不复用/改造 NVT，也不冒充可用的生产 Stop UI。需要新 Unity 测试构建时必须按原流程构建成功、仅部署自身、核对新 SHA；现 `F977…` DLL 不能执行未实现的 PoC。
+
+**F2 视觉门槛（F1 后另行放行）**：同 DLL/谱面/设置/初态/seed/逻辑时间，只改变 wall-clock IO 背压；比较 EOF 前已形成的无损源字节及**后续 f+1/事件帧**，同时检查现 NVT 能覆盖的 Camera/Particle 关键状态，未知消费者仍列未覆盖。覆盖 f0、B−1、hidden→G partial→G+1、普通帧、End Tail 与 Cancel→Restart；0/3/100 额外 native 帧仍是原严格反例合同，F0/F1 或“等待期间未增加帧”不自动代替它。若方案排除交付额外帧，需逐入口证明没有旁路；不得偷偷放宽为固定帧率/MP4 Verified 就通过。只需最小源 buffer 对照与已有状态取证，不启动 R0a/R1 全场景观测工程；不足以证明整体时，报告局部结果。
+
+**Go 条件分层**：F0=无泵下真实写入/真实性消费与取消双屏障行为全通过；F1=目标 Mono 同帧进展、恢复/通知寿命通过；生产 C=另有用户可触发且不依赖 PlayerLoop 的取消来源、并发/旧 Post/Stop/unload 回归通过、所有既有逻辑/授权/Finalizing 合同不变；视觉放行=上述源图/后续状态合同满足，不能混为一个 PASS。
+
+**No-Go/停止条件**：任何 worker 实际需要主线程后续回调才结束；等待持锁；Cancel 到不了等待器或 raw Task 未完却释放 lease；通知/句柄/旧 generation 残留；必须修改 L2 终态/提前 Commit/省双屏障才能进展；靠固定 IO deadline 或额外 Unity 帧逃离；初态不匹配或任何未授权视觉漂移。失败就停止该层，不扩大 dsh 范围。可回退方式是保留旧 async 路径、在新 session 前冻结选择；同一 accepted write 内不静默 fallback，先按旧 context 取消并保留 residual，干净后才重开旧模式。旧模式仍是视觉 FAIL 基线，不把回退描述成确定性修复。
 
 ### 2.3 FFmpeg 构建、安装与独立进程取证（2026-09-23；未接入产品）
 
