@@ -5,7 +5,7 @@
     <RootNamespace>ADOFAI.Renderist</RootNamespace>
     <AssemblyName>ADOFAI.Renderist</AssemblyName>
     <Product>ADOFAI Renderist</Product>
-    <Version>0.3.10.4</Version>
+    <Version>0.3.11.0</Version>
     <Company>ShakeCrane, Ice2974</Company>
     <Copyright>Copyright (c) ShakeCrane, Ice2974</Copyright>
     <Description>Non-realtime / controlled / reproducible render export plugin for A Dance of Fire and Ice (UMM mod).</Description>
@@ -88,6 +88,19 @@
       resolved at runtime via reflection (EditorGameReflection / RenderistAutoPlay),
       and the DLL is never committed. This is a deliberate design choice, not a gap.
     -->
+
+    <!--
+      TEMP DIAGNOSTIC (must be removed together with Export/NativeVisualTimeProbe.cs):
+      the read-only native visual-time probe observes ParticleSystem state
+      (isPlaying / particleCount / time / main.useUnscaledTime / emission / trails /
+      a small GetParticles sample). Private=false: the game's own DLL is never copied
+      into bin/ or the release zip, and it is never committed.
+    -->
+    <Reference Include="UnityEngine.ParticleSystemModule">
+      <HintPath>$(AdofaiManagedDir)\UnityEngine.ParticleSystemModule.dll</HintPath>
+      <Private>false</Private>
+      <SpecificVersion>false</SpecificVersion>
+    </Reference>
 
     <!--
       UnityEngine.UnityWebRequestModule: UnityWebRequest + DownloadHandlerFile for the

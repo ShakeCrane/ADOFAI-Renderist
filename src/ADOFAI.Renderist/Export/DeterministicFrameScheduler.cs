@@ -196,6 +196,8 @@ namespace ADOFAI.Renderist.Export
         private static long _preEntryCapturedFrameCount;
         private static long _preEntryFrameIndex;
         private static long _preEntryGameplayStartOutputFrameIndex = -1;
+        // TEMP DIAGNOSTIC（只读）: G+1 相位观测只做一次，避免每帧重复记录。
+        private static bool _preEntryGPlusOneObserved;
         private static double _preEntryAnchor;
         private static double _preEntryStep;
         private static long _preEntryBoundaryOutputFrameIndex = -1L;
@@ -588,6 +590,10 @@ namespace ADOFAI.Renderist.Export
                     return FailStart("capture-driver-start-failed:" + captureError);
                 }
                 _captureGeneration = captureGeneration;
+
+                // TEMP DIAGNOSTIC（只读）: session 开始，解析反射句柄并记录粒子静态配置快照。
+                NativeVisualTimeProbe.SampleSessionStart(_captureGeneration,
+                    _outputFrameIndex, _status.ToString());
 
                 // Planet 视觉时间 ownership 绑定本 session 的 generation authority：
                 // 复用 FrameCaptureDriver 每次成功 Start 分配的单调 generation，不新建第二套
@@ -1434,6 +1440,9 @@ namespace ADOFAI.Renderist.Export
                             else
                             {
                                 PreparePreEntryFrame();
+                                // TEMP DIAGNOSTIC（只读）: pre-entry 逻辑帧已准备。
+                                NativeVisualTimeProbe.Sample("prepare-preentry", _captureGeneration,
+                                    _outputFrameIndex, _status.ToString(), -1, null);
                             }
                         }
                         else
@@ -1476,6 +1485,9 @@ namespace ADOFAI.Renderist.Export
                 LogFrame0Stage(_outputFrameIndex, "BEFORE_CONDUCTOR");
                 ObserveCanonicalCompletion("before-conductor");
                 PrepareFrame();
+                // TEMP DIAGNOSTIC（只读）: gameplay 逻辑帧 N 已准备（Conductor.Update 之前）。
+                NativeVisualTimeProbe.Sample("prepare", _captureGeneration,
+                    _outputFrameIndex, _status.ToString(), -1, null);
                 _prefixSongPosition = ToValue(EditorGameReflection.ReadConductorSongPosition());
                 LogFrameConductor("Prefix");
                 return;
@@ -1487,6 +1499,9 @@ namespace ADOFAI.Renderist.Export
                 LogFrame0Stage(_outputFrameIndex, "BEFORE_CONDUCTOR");
                 ObserveCanonicalCompletion("before-conductor");
                 PrepareFrame();
+                // TEMP DIAGNOSTIC（只读）: gameplay 逻辑帧 N 已准备（Conductor.Update 之前）。
+                NativeVisualTimeProbe.Sample("prepare", _captureGeneration,
+                    _outputFrameIndex, _status.ToString(), -1, null);
                 _prefixSongPosition = ToValue(EditorGameReflection.ReadConductorSongPosition());
                 LogFrameConductor("Prefix");
             }
@@ -1512,6 +1527,12 @@ namespace ADOFAI.Renderist.Export
 
             LogFrame0Stage(_outputFrameIndex, "AFTER_CONDUCTOR");
             LogFrame0Stage(_outputFrameIndex, "BEFORE_AUTOPLAY");
+            // TEMP DIAGNOSTIC（只读）: autoplay Hit 之前的 Camera / 粒子锚点。与紧随其后的
+            // post-conductor 配对即可判定 scrPlayer.Hit 内部的重定目标幅度
+            // （IL 已确认 Hit 会调用 scrCamera.UpdateFollowCam(bool) 与 scrCamera.Pulse()），
+            // 并给出"Hit 之后、下一次 scrCamera.Update 消费之前"的状态。
+            NativeVisualTimeProbe.Sample("pre-hit", _captureGeneration,
+                _outputFrameIndex, _status.ToString(), -1, null);
             if (!RenderistAutoPlay.CatchUp(_outputFrameIndex, _forcedSongPosition, out int hits, out string error))
             {
                 Log.Warn("DeterministicFrameScheduler: RenderistAutoPlay 失败：" + error);
@@ -1522,6 +1543,9 @@ namespace ADOFAI.Renderist.Export
             _hitsThisFrame = hits;
             LogFrame0Stage(_outputFrameIndex, "AFTER_AUTOPLAY");
             ObserveCanonicalCompletion("after-autoplay");
+            // TEMP DIAGNOSTIC（只读）: Conductor.Update 与本帧 autoplay hits 之后。
+            NativeVisualTimeProbe.Sample("post-conductor", _captureGeneration,
+                _outputFrameIndex, _status.ToString(), hits, null);
             if (_outputFrameIndex < 4 || hits > 0)
             {
                 Log.Info("MasterTimeline Conductor Postfix: frameIndex=" +
@@ -1769,6 +1793,12 @@ namespace ADOFAI.Renderist.Export
                 return;
             }
 
+
+            // TEMP DIAGNOSTIC（只读）: hidden lifecycle-only boundary phase 的逐 Unity frame 观测。
+            // 本阶段 timeScale 已为 0，因此这里能直接回答"scaled 时间被冻结时，Camera 与粒子
+            // 是否仍在按 Unity Update 推进"。采样入口自带节流，绝不逐帧刷日志。
+            NativeVisualTimeProbe.SampleHiddenPhase(_captureGeneration, _outputFrameIndex,
+                _status.ToString());
 
             // 关键：visual clock 保持 previousBoundaryTime，绝不前进到 boundaryForcedTime。
             _forcedSongPosition = _preEntryBoundaryPreviousTime;
@@ -2234,6 +2264,10 @@ namespace ADOFAI.Renderist.Export
         /// </summary>
         private static void TickAwaitingDelivery()
         {
+            // TEMP DIAGNOSTIC（只读）: 等待 L2 帧写入完成期间的 Unity Update 观测点（带节流）。
+            NativeVisualTimeProbe.SampleAwaitingDelivery(
+                _captureGeneration, _outputFrameIndex, _status.ToString());
+
             Rgb24DeliveryEnvelope envelope;
             string bridgeError;
             if (!_rgb24Delivery.TryTakePendingEnvelope(out envelope, out bridgeError))
@@ -2306,6 +2340,10 @@ namespace ADOFAI.Renderist.Export
             long generation, long frameIndex, bool success, bool imageWritten, string filePath, string error)
         {
             if (!_running) return;
+
+            // TEMP DIAGNOSTIC（只读）: 帧末事务（WaitForEndOfFrame）已形成的时刻。
+            NativeVisualTimeProbe.Sample("eof", generation, frameIndex, _status.ToString(), -1,
+                "ok=" + (success ? "1" : "0"));
 
             // A timeout/cancel requested by Tick owns the transaction. A late
             // callback must not commit a frame after the scheduler has decided
@@ -2445,6 +2483,10 @@ namespace ADOFAI.Renderist.Export
                 _preEntryFrameIndex++;
             }
 
+            // TEMP DIAGNOSTIC（只读）: 逻辑帧已提交（帧号与计数已推进）。
+            NativeVisualTimeProbe.Sample("commit", _captureGeneration,
+                frameIndex, _status.ToString(), _hitsThisFrame, null);
+
             // TEMP Trail-aging probe：只在 B-1 的帧末事务成功（PNG 模式下即 ReadPixels / Encode /
             // Write 全部成功；log-only 模式下即帧末校验通过）
             // 且上一 commit counters 已推进后，才在同一 Unity frame 结束前接管 timeScale。
@@ -2462,6 +2504,10 @@ namespace ADOFAI.Renderist.Export
                         freezeError ?? "time-scale-freeze-failed-after-b-minus-one-commit");
                     return;
                 }
+
+                // TEMP DIAGNOSTIC（只读）: B−1 之后 timeScale ownership 的转折点。
+                NativeVisualTimeProbe.Sample("preentry-freeze", _captureGeneration,
+                    frameIndex, _status.ToString(), -1, null);
             }
 
             // G 的帧末事务已成功且 commit counters 已推进；现在
@@ -2481,6 +2527,21 @@ namespace ADOFAI.Renderist.Export
                         partialRestoreError ?? "time-scale-restore-failed-after-g-commit");
                     return;
                 }
+
+                // TEMP DIAGNOSTIC（只读）: G commit 之后 partial timeScale 已恢复。
+                NativeVisualTimeProbe.Sample("preentry-restore", _captureGeneration,
+                    frameIndex, _status.ToString(), -1, null);
+            }
+
+            // TEMP DIAGNOSTIC（只读）: G+1 —— partial timeScale 已恢复后的第一个完整 timestep。
+            // 与 preentry-restore / hidden-frame 配对，判定恢复点前后 Camera 与粒子的时间是否连续。
+            if (!_preEntryGPlusOneObserved &&
+                _preEntryGameplayStartOutputFrameIndex >= 0 &&
+                frameIndex == _preEntryGameplayStartOutputFrameIndex + 1)
+            {
+                _preEntryGPlusOneObserved = true;
+                NativeVisualTimeProbe.Sample("g-plus-one", _captureGeneration,
+                    frameIndex, _status.ToString(), -1, null);
             }
 
             _progressDeadlineRealtime = Time.realtimeSinceStartupAsDouble + FrameProgressWatchdogSeconds;

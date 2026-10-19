@@ -27,7 +27,7 @@ namespace ADOFAI.Renderist
         /// 当前 mod 版本。与 Info.json / csproj / 启动日志保持同步，
         /// 由 scripts/set-version.ps1 自动同步。
         /// </summary>
-        internal const string ModVersion = "0.3.10.4";
+        internal const string ModVersion = "0.3.11.0";
 
         internal static UnityModManager.ModEntry Mod;
         internal static UnityModManager.ModEntry.ModLogger Logger;
@@ -140,7 +140,17 @@ namespace ADOFAI.Renderist
 
                 Harmony = new Harmony(HarmonyId);
 
-                Log.Info("Loaded ADOFAI Renderist 0.3.10.4 (Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions).");
+                Log.Info("Loaded ADOFAI Renderist 0.3.11.0 (Phase 3.9.0 FFmpeg Video Export Pipeline — L3 Unity MP4 Frame Transactions).");
+
+                // TEMP DIAGNOSTIC: 本构建启用了原生视觉时间**只读**探针，用于一次实机取证。
+                // 它绝不是已实机验证的 L3-C 构建：日志以 NVT| 前缀输出采样，
+                // session metadata 记 diagnosticProbe=true。清理探针时删除本段。
+                if (Export.NativeVisualTimeProbe.Enabled)
+                {
+                    Log.Warn("TEMP DIAGNOSTIC BUILD: native visual time probe ENABLED " +
+                             "(read-only Camera/ParticleSystem sampling, log prefix NVT|). " +
+                             "This is NOT the accepted L3-C build.");
+                }
 
                 // 0.3.10.2：本进程的首次 FFmpeg 组件检查在这里主动启动，不再依赖
                 // 组件 GUI 是否被绘制、也不依赖编辑器场景。它只做既有 inspector 的

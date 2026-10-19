@@ -317,6 +317,10 @@ namespace ADOFAI.Renderist.Export
             sb.Append("{\n");
             AppendString(sb, "version", ModEntry.ModVersion, true);
             AppendString(sb, "phase", PhaseLabel, true);
+            // TEMP DIAGNOSTIC: 明确标识本轮是"已启用原生视觉时间只读探针"的临时诊断构建，
+            // 不得与已实机验证的 L3-C 构建混淆。清理探针时必须一并删除本行
+            // （它引用 NativeVisualTimeProbe.Enabled，删除探针后本行会直接编译失败）。
+            AppendBool(sb, "diagnosticProbe", NativeVisualTimeProbe.Enabled, true);
             AppendString(sb, "mode", Mode, true);
             AppendBool(sb, "imageOutputEnabled", ImageOutputEnabled, true);
             // 以下 MP4 字段由冻结后的 output mode 派生 / 关联，不构成第二个模式 authority。
