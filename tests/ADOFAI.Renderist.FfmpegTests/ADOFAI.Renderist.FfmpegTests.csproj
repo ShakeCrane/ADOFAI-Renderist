@@ -30,6 +30,12 @@
   <ItemGroup>
     <Reference Include="System.IO.Compression" />
     <Reference Include="System.IO.Compression.FileSystem" />
+    <!-- Test-only Harmony dependency; the actual Camera owner is executed against
+         managed Time/Object stand-ins, without loading Unity or game assemblies. -->
+    <Reference Include="0Harmony">
+      <HintPath>$(AdofaiUmmDir)\0Harmony.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>
@@ -54,6 +60,10 @@
 
     <!-- L3-C：MP4 Finalizing 判决（L2 outcome -> session 结果投影）。 -->
     <Compile Include="..\..\src\ADOFAI.Renderist\Export\Mp4FinalizationPolicy.cs" LinkBase="Production" />
+
+    <!-- 0.3.12.0 Gate A：generation/frame/phase 视觉授权合同（刻意 Unity-free）。 -->
+    <Compile Include="..\..\src\ADOFAI.Renderist\Export\VisualFrameAuthorizer.cs" LinkBase="Production" />
+    <Compile Include="..\..\src\ADOFAI.Renderist\Export\CameraNativeTimeOwnership.cs" LinkBase="Production" />
   </ItemGroup>
 
 </Project>

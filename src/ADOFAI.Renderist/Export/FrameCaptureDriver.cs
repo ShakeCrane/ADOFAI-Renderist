@@ -105,6 +105,17 @@ namespace ADOFAI.Renderist.Export
         public delegate void CaptureResultCallback(
             long generation, long frameIndex, bool success, bool imageWritten, string filePath, string error);
 
+        /// <summary>
+        /// 帧末授权验证入口（只读）。
+        ///
+        /// driver 在 EOF 协程里、**任何读回之前**调用一次：它是 PNG 写盘 / RGB24 形成之前
+        /// 唯一的授权关口（只在 OnCaptureResult 检查会太晚）。driver 只负责调用与异常隔离，
+        /// 该入口自身的语义（校验哪些回执、失败如何收敛）完全由 scheduler 决定。
+        /// </summary>
+        public delegate void EndOfFrameGate(long frameIndex);
+
+        private static EndOfFrameGate _endOfFrameGate;
+
         /// <summary>本阶段 Render Source 标签；写入 session metadata。</summary>
         public const string CameraSourceLabel = "scrCamera-rendertexture";
 
@@ -308,6 +319,7 @@ namespace ADOFAI.Renderist.Export
             int zeroPadWidth,
             CaptureResultCallback onResult,
             CaptureOutputMode outputMode,
+            EndOfFrameGate endOfFrameGate,
             out long generation,
             out string error)
         {
@@ -331,6 +343,8 @@ namespace ADOFAI.Renderist.Export
                 error = "output-mode-invalid";
                 return false;
             }
+
+            _endOfFrameGate = endOfFrameGate;
 
             GameObject host = null;
             CaptureHostBehaviour behaviour = null;
@@ -901,6 +915,9 @@ namespace ADOFAI.Renderist.Export
 
             // 先使旧 generation 失效，阻止新的 capture callback / commit。
             _activeGeneration = 0;
+
+            // 0.3.12.0 Gate A：帧末授权关口随 session 一起失效；下一次 Start 会重新登记。
+            _endOfFrameGate = null;
 
             // 先同步让 behaviour 失效（停止 coroutine、清 callback / pending），再销毁 host。
             if (behaviour != null)
@@ -1565,6 +1582,24 @@ namespace ADOFAI.Renderist.Export
                 }
             }
 
+            /// <summary>
+            /// 调用帧末授权关口。关口**同步**判定本帧是否允许继续：
+            ///   * 返回 = 本帧授权完整，可以继续读回 / 写盘；
+            ///   * 抛异常 = 授权不完整或本帧已失败 ⇒ 本帧必须立即中止，
+            ///     **不得**产生任何 PNG / RGB24 产物，也不得回调成功。
+            ///
+            /// 抛出会被 <see cref="CaptureNow"/> 既有的 catch 转成失败结果
+            /// （<c>success=false</c>，scheduler 因此既不写盘也不 CommitFrame），
+            /// 继续沿用既有的统一失败与 cleanup 机制。
+            /// 关口未注册（非 0.3.12.0 调用方）时行为与旧版完全一致：不做任何额外校验。
+            /// </summary>
+            private static void RunEndOfFrameGateOrThrow(long frameIndex)
+            {
+                EndOfFrameGate gate = _endOfFrameGate;
+                if (gate == null) return;
+                gate(frameIndex);
+            }
+
             private void CaptureNow(long frameIndex, OwnedRgb24Frame rgb24Frame)
             {
                 if (_stopped || _generation != _activeGeneration) return;
@@ -1586,6 +1621,11 @@ namespace ADOFAI.Renderist.Export
                     {
                         throw new InvalidOperationException("capture-dimensions-invalid");
                     }
+
+                    // 0.3.12.0 Gate A：视觉帧授权完整性关口。
+                    // 必须在**任何读回 / 任何返回成功 log-only 结果之前**执行，且必须早于
+                    // EncodeToPNG 与写盘。入口自身不写文件、不改计数；异常隔离后本帧直接失败。
+                    RunEndOfFrameGateOrThrow(frameIndex);
 
                     // ---- L3-A：RGB24 CPU frame ownership ----
                     // 与 PNG 共用同一个 EOF coroutine、同一个降采样链与同一个读回源，

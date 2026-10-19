@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -11,10 +11,10 @@ using ADOFAI.Renderist.Ffmpeg;
 namespace ADOFAI.Renderist.FfmpegTests
 {
     /// <summary>
-    /// FFmpeg 组件管理（L1）回归测试。
+    /// FFmpeg 缁勪欢绠＄悊锛圠1锛夊洖褰掓祴璇曘€?
     ///
-    /// 断言的是**行为契约**，不是某次实验的具体数值：例如"哈希不符必须拒绝并清理暂存"，
-    /// 而不是"某次下载得到 155363 字节"。
+    /// 鏂█鐨勬槸**琛屼负濂戠害**锛屼笉鏄煇娆″疄楠岀殑鍏蜂綋鏁板€硷細渚嬪"鍝堝笇涓嶇蹇呴』鎷掔粷骞舵竻鐞嗘殏瀛?锛?
+    /// 鑰屼笉鏄?鏌愭涓嬭浇寰楀埌 155363 瀛楄妭"銆?
     /// </summary>
     internal static class Program
     {
@@ -22,11 +22,11 @@ namespace ADOFAI.Renderist.FfmpegTests
 
         private static int Main(string[] args)
         {
-            // 被 L2 视频管线当作"假编码 / 假核验进程"启动时，本进程充当可控子进程。
+            // 琚?L2 瑙嗛绠＄嚎褰撲綔"鍋囩紪鐮?/ 鍋囨牳楠岃繘绋?鍚姩鏃讹紝鏈繘绋嬪厖褰撳彲鎺у瓙杩涚▼銆?
             if (FakeVideoProcess.IsFakeInvocation(args))
                 return FakeVideoProcess.Run(args);
 
-            // 被能力探测以 -hide_banner 调用时，本进程充当"假 FFmpeg"子进程。
+            // 琚兘鍔涙帰娴嬩互 -hide_banner 璋冪敤鏃讹紝鏈繘绋嬪厖褰?鍋?FFmpeg"瀛愯繘绋嬨€?
             if (FakeFfmpeg.IsFakeInvocation(args))
                 return FakeFfmpeg.Run(args);
 
@@ -34,7 +34,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 "renderist-ffmpeg-tests-" + Guid.NewGuid().ToString("N").Substring(0, 8));
             Directory.CreateDirectory(_workRoot);
 
-            Console.WriteLine("ADOFAI Renderist — FFmpeg component (L1) regression tests");
+            Console.WriteLine("ADOFAI Renderist 鈥?FFmpeg component (L1) regression tests");
             Console.WriteLine("work dir: " + _workRoot);
             Console.WriteLine();
 
@@ -58,6 +58,10 @@ namespace ADOFAI.Renderist.FfmpegTests
             PipelineBackpressureTests.Run(_workRoot);
             Mp4StartupTests.Run();
             Mp4FinalizingTests.Run(_workRoot);
+            VisualFrameAuthorizationTests.Run();
+            SyntheticIlContractTests.Run();
+            CameraVisualTimeContractTests.Run();
+            CameraNativeTimeLifecycleTests.Run();
             NativeVisualTimeProbeContractTests.Run();
             FfmpegReadinessTests.Run();
             FfmpegMigrationTests.Run(_workRoot);
@@ -371,7 +375,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 string layoutError;
                 FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
 
-                // 伪造"外来"目录：命中目标路径但没有 ownership 标记。
+                // 浼€?澶栨潵"鐩綍锛氬懡涓洰鏍囪矾寰勪絾娌℃湁 ownership 鏍囪銆?
                 Fixtures.CreateForeignInstallDirectory(layout, asset);
 
                 string pathDir = Path.Combine(work, "pathdir");
@@ -463,10 +467,10 @@ namespace ADOFAI.Renderist.FfmpegTests
 
         // ==================== capability probe (fake ffmpeg) ====================
         //
-        // 这些回归针对一个已复现的缺陷：能力探测原先只判 -version 的退出码，
-        // -encoders / -formats 的非零退出（stdout 仍可能含目标 token）会被误判为成功。
-        // 另外"文本里出现 libx264 / mp4 / rawvideo"本身不足以证明能力存在，
-        // 必须来自结构化的表行。
+        // 杩欎簺鍥炲綊閽堝涓€涓凡澶嶇幇鐨勭己闄凤細鑳藉姏鎺㈡祴鍘熷厛鍙垽 -version 鐨勯€€鍑虹爜锛?
+        // -encoders / -formats 鐨勯潪闆堕€€鍑猴紙stdout 浠嶅彲鑳藉惈鐩爣 token锛変細琚鍒や负鎴愬姛銆?
+        // 鍙﹀"鏂囨湰閲屽嚭鐜?libx264 / mp4 / rawvideo"鏈韩涓嶈冻浠ヨ瘉鏄庤兘鍔涘瓨鍦紝
+        // 蹇呴』鏉ヨ嚜缁撴瀯鍖栫殑琛ㄨ銆?
 
         private static void FakeFfmpegProbeTests()
         {
@@ -594,7 +598,7 @@ namespace ADOFAI.Renderist.FfmpegTests
             return false;
         }
 
-        /// <summary>在受控环境变量下运行一段代码，结束后恢复原值。</summary>
+        /// <summary>鍦ㄥ彈鎺х幆澧冨彉閲忎笅杩愯涓€娈典唬鐮侊紝缁撴潫鍚庢仮澶嶅師鍊笺€?/summary>
         private static void WithFakeEnvironment(Dictionary<string, string> variables, Action body)
         {
             string[] names =
@@ -650,7 +654,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.Check(File.Exists(Path.Combine(destination, "bin", "ffmpeg.exe")), "ffmpeg.exe extracted");
                 TestKit.Check(File.Exists(Path.Combine(destination, "bin", "ffprobe.exe")), "ffprobe.exe extracted");
 
-                // 默认拒绝：白名单外的条目绝不写出。
+                // 榛樿鎷掔粷锛氱櫧鍚嶅崟澶栫殑鏉＄洰缁濅笉鍐欏嚭銆?
                 TestKit.Check(!File.Exists(Path.Combine(destination, "LICENSE")), "LICENSE is not whitelisted");
                 TestKit.Check(!Directory.Exists(Path.Combine(destination, "doc")), "doc/ must not be extracted");
             });
@@ -794,7 +798,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 string archivePath = Path.Combine(work, "symlink.zip");
 
                 var entry = ZipEntrySpec.File("pkg/bin/ffmpeg.exe", Fixtures.DeterministicBytes(128, 101));
-                // Unix S_IFLNK (0xA000) 位于外部属性的高 16 位。
+                // Unix S_IFLNK (0xA000) 浣嶄簬澶栭儴灞炴€х殑楂?16 浣嶃€?
                 entry.ExternalAttributes = unchecked((int)0xA1FF0000);
 
                 try
@@ -1043,7 +1047,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 string archivePath;
                 FfmpegAsset asset = Fixtures.BuildSyntheticAsset(work, out archivePath);
 
-                // 归档在构建后被替换：清单里的哈希不再匹配。
+                // 褰掓。鍦ㄦ瀯寤哄悗琚浛鎹細娓呭崟閲岀殑鍝堝笇涓嶅啀鍖归厤銆?
                 File.Delete(archivePath);
                 Fixtures.BuildZip(archivePath, new[]
                 {
@@ -1073,7 +1077,7 @@ namespace ADOFAI.Renderist.FfmpegTests
             {
                 string work = TestKit.NewWorkDirectory(_workRoot, "install-badzip");
 
-                // 归档哈希匹配，但内容缺少必需的 ffprobe.exe → 解压阶段失败。
+                // 褰掓。鍝堝笇鍖归厤锛屼絾鍐呭缂哄皯蹇呴渶鐨?ffprobe.exe 鈫?瑙ｅ帇闃舵澶辫触銆?
                 string missingZip = Path.Combine(work, "missing.zip");
                 Fixtures.BuildZip(missingZip, new[]
                 {
@@ -1165,7 +1169,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                     Task<FfmpegInstallResult> task = Task.Run(
                         () => FfmpegInstaller.Install(request, cancellation.Token));
 
-                    // 等待暂存目录出现后再取消：这样取消一定落在"已开始安装"之后。
+                    // 绛夊緟鏆傚瓨鐩綍鍑虹幇鍚庡啀鍙栨秷锛氳繖鏍峰彇娑堜竴瀹氳惤鍦?宸插紑濮嬪畨瑁?涔嬪悗銆?
                     bool sawStaging = false;
                     for (int i = 0; i < 3000 && !task.IsCompleted; i++)
                     {
@@ -1189,7 +1193,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                         result.Outcome == FfmpegInstallOutcome.Installed,
                         "outcome must be Cancelled or Installed, got " + result.Outcome + " (" + result.ErrorCode + ")");
 
-                    // 核心契约：无论结果如何，都不允许留下暂存目录。
+                    // 鏍稿績濂戠害锛氭棤璁虹粨鏋滃浣曪紝閮戒笉鍏佽鐣欎笅鏆傚瓨鐩綍銆?
                     TestKit.CheckEqual(0, Fixtures.CountStagingDirectories(layout),
                         "no staging leftovers after cancellation");
                 }
@@ -1275,8 +1279,8 @@ namespace ADOFAI.Renderist.FfmpegTests
                 string layoutError;
                 FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
 
-                // 组件检查只识别 manifest 中的资产；这里在真实资产的版本目录位置伪造
-                // 一个"外来"目录（无 ownership 标记）。
+                // 缁勪欢妫€鏌ュ彧璇嗗埆 manifest 涓殑璧勪骇锛涜繖閲屽湪鐪熷疄璧勪骇鐨勭増鏈洰褰曚綅缃吉閫?
+                // 涓€涓?澶栨潵"鐩綍锛堟棤 ownership 鏍囪锛夈€?
                 FfmpegAsset primary = FfmpegAssetManifest.Primary;
                 Fixtures.CreateForeignInstallDirectory(layout, primary);
 
@@ -1309,8 +1313,8 @@ namespace ADOFAI.Renderist.FfmpegTests
 
             TestKit.Run("component: valid managed install is discovered for a manifest asset", () =>
             {
-                // 组件检查按 manifest 资产定位托管安装。用一个临时布局验证：
-                // 合法的托管安装必须被发现并冻结身份。
+                // 缁勪欢妫€鏌ユ寜 manifest 璧勪骇瀹氫綅鎵樼瀹夎銆傜敤涓€涓复鏃跺竷灞€楠岃瘉锛?
+                // 鍚堟硶鐨勬墭绠″畨瑁呭繀椤昏鍙戠幇骞跺喕缁撹韩浠姐€?
                 string work = TestKit.NewWorkDirectory(_workRoot, "component-inspector-valid");
                 string archivePath;
                 FfmpegAsset asset = Fixtures.BuildSyntheticAsset(work, out archivePath);
@@ -1327,7 +1331,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 }, CancellationToken.None);
                 TestKit.CheckEqual(FfmpegInstallOutcome.Installed, install.Outcome, "seed install");
 
-                // 直接对合成资产做定位：等价于组件检查对 manifest 资产所做的校验。
+                // 鐩存帴瀵瑰悎鎴愯祫浜у仛瀹氫綅锛氱瓑浠蜂簬缁勪欢妫€鏌ュ manifest 璧勪骇鎵€鍋氱殑鏍￠獙銆?
                 FfmpegManagedInstall located = FfmpegManagedInstallLocator.Locate(layout, asset);
                 TestKit.Check(located.IsValid, "install must validate: " + located.InvalidReason);
                 TestKit.CheckNotEmpty(located.PrimaryExecutablePath, "primary executable path");
@@ -1357,11 +1361,11 @@ namespace ADOFAI.Renderist.FfmpegTests
 
         // ============================ download pipeline ============================
         //
-        // 说明：UnityWebRequest 本身无法在 net48 中真实执行，因此这里测试的是
-        // Unity-free 的 FfmpegDownloadController：generation 隔离、临时文件 ownership、
-        // 长度/哈希复核、后台安装与取消语义。Unity 侧驱动只把结果整理成
-        // FfmpegDownloadResponse 交给控制器 —— 这些测试正是模拟该契约。
-        // UnityWebRequest 的真实 TLS / 重定向 / 进度 / Abort 行为**必须**留到游戏内验证。
+        // 璇存槑锛歎nityWebRequest 鏈韩鏃犳硶鍦?net48 涓湡瀹炴墽琛岋紝鍥犳杩欓噷娴嬭瘯鐨勬槸
+        // Unity-free 鐨?FfmpegDownloadController锛歡eneration 闅旂銆佷复鏃舵枃浠?ownership銆?
+        // 闀垮害/鍝堝笇澶嶆牳銆佸悗鍙板畨瑁呬笌鍙栨秷璇箟銆俇nity 渚ч┍鍔ㄥ彧鎶婄粨鏋滄暣鐞嗘垚
+        // FfmpegDownloadResponse 浜ょ粰鎺у埗鍣?鈥斺€?杩欎簺娴嬭瘯姝ｆ槸妯℃嫙璇ュ绾︺€?
+        // UnityWebRequest 鐨勭湡瀹?TLS / 閲嶅畾鍚?/ 杩涘害 / Abort 琛屼负**蹇呴』**鐣欏埌娓告垙鍐呴獙璇併€?
 
         private static void DownloadTests()
         {
@@ -1482,7 +1486,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 string layoutError;
                 FfmpegInstallLayout.TryCreate(Path.Combine(work, "managed"), out layout, out layoutError);
 
-                // 非 HTTPS 重定向必须被拒绝（防降级）。
+                // 闈?HTTPS 閲嶅畾鍚戝繀椤昏鎷掔粷锛堥槻闄嶇骇锛夈€?
                 var controller = new FfmpegDownloadController(layout, generation => { });
                 FfmpegDownloadPlan plan = controller.TryStart(asset, false, 5);
                 File.Copy(archivePath, plan.TempFilePath, true);
@@ -1498,7 +1502,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.CheckEqual("download-insecure-redirect", controller.ErrorCode, "error code");
                 TestKit.Check(!File.Exists(plan.TempFilePath), "temp must be cleaned");
 
-                // HTTPS 重定向正常通过响应校验（后续由哈希决定成败）。
+                // HTTPS 閲嶅畾鍚戞甯搁€氳繃鍝嶅簲鏍￠獙锛堝悗缁敱鍝堝笇鍐冲畾鎴愯触锛夈€?
                 var controller2 = new FfmpegDownloadController(layout, generation => { });
                 FfmpegDownloadPlan plan2 = controller2.TryStart(asset, false, 5);
                 File.Copy(archivePath, plan2.TempFilePath, true);
@@ -1526,7 +1530,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 var controller = new FfmpegDownloadController(layout, generation => { });
                 FfmpegDownloadPlan plan = controller.TryStart(asset, false, 5);
 
-                // 写入一个长度明确不同的文件。
+                // 鍐欏叆涓€涓暱搴︽槑纭笉鍚岀殑鏂囦欢銆?
                 File.WriteAllBytes(plan.TempFilePath, Fixtures.DeterministicBytes(128, 777));
 
                 controller.ReportFinished(plan.Generation, SuccessResponse(plan));
@@ -1552,7 +1556,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 var controller = new FfmpegDownloadController(layout, generation => { });
                 FfmpegDownloadPlan plan = controller.TryStart(asset, false, 5);
 
-                // 长度相同但内容被篡改。
+                // 闀垮害鐩稿悓浣嗗唴瀹硅绡℃敼銆?
                 byte[] original = File.ReadAllBytes(archivePath);
                 byte[] tampered = (byte[])original.Clone();
                 tampered[tampered.Length / 2] ^= 0xFF;
@@ -1590,7 +1594,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 TestKit.Check(aborts.Count == 1, "abort must be requested exactly once");
                 TestKit.Check(!File.Exists(plan.TempFilePath), "temp must be cleaned synchronously");
 
-                // 取消后迟到的完成通知：必须被忽略，且不得把会话变成成功。
+                // 鍙栨秷鍚庤繜鍒扮殑瀹屾垚閫氱煡锛氬繀椤昏蹇界暐锛屼笖涓嶅緱鎶婁細璇濆彉鎴愭垚鍔熴€?
                 bool accepted = controller.ReportFinished(plan.Generation, SuccessResponse(plan));
                 TestKit.Check(!accepted, "late completion must be rejected");
                 TestKit.CheckEqual(FfmpegDownloadState.Cancelled, controller.State,
@@ -1611,19 +1615,19 @@ namespace ADOFAI.Renderist.FfmpegTests
 
                 var controller = new FfmpegDownloadController(layout, generation => { });
 
-                // 第一代：启动后立即废弃。
+                // 绗竴浠ｏ細鍚姩鍚庣珛鍗冲簾寮冦€?
                 FfmpegDownloadPlan first = controller.TryStart(asset, false, 5);
                 File.Copy(archivePath, first.TempFilePath, true);
                 controller.Invalidate("superseded", true);
                 TestKit.Check(!File.Exists(first.TempFilePath), "abandoned generation temp must be cleaned");
 
-                // 第二代：正常完成。
+                // 绗簩浠ｏ細姝ｅ父瀹屾垚銆?
                 FfmpegDownloadPlan second = controller.TryStart(asset, false, 5);
                 TestKit.Check(second.Started, "second generation must start");
                 TestKit.Check(second.Generation > first.Generation, "generation must advance");
                 File.Copy(archivePath, second.TempFilePath, true);
 
-                // 第一代的迟到通知到达：必须被拒绝，且不得影响第二代。
+                // 绗竴浠ｇ殑杩熷埌閫氱煡鍒拌揪锛氬繀椤昏鎷掔粷锛屼笖涓嶅緱褰卞搷绗簩浠ｃ€?
                 bool accepted = controller.ReportFinished(first.Generation, SuccessResponse(first));
                 TestKit.Check(!accepted, "old generation completion must be rejected");
                 TestKit.CheckEqual(FfmpegDownloadState.Downloading, controller.State,
@@ -1641,7 +1645,7 @@ namespace ADOFAI.Renderist.FfmpegTests
             {
                 string work = TestKit.NewWorkDirectory(_workRoot, "download-install-fail");
 
-                // 归档哈希与清单一致，但缺少必需的 ffprobe.exe → 解压阶段失败。
+                // 褰掓。鍝堝笇涓庢竻鍗曚竴鑷达紝浣嗙己灏戝繀闇€鐨?ffprobe.exe 鈫?瑙ｅ帇闃舵澶辫触銆?
                 string archivePath = Path.Combine(work, "missing.zip");
                 Fixtures.BuildZip(archivePath, new[]
                 {
@@ -1685,8 +1689,8 @@ namespace ADOFAI.Renderist.FfmpegTests
             {
                 string work = TestKit.NewWorkDirectory(_workRoot, "download-capability");
                 string archivePath;
-                // 默认的合成资产里 ffmpeg.exe 是随机字节，不可执行：
-                // 安装后的能力探测必须失败，且绝不能发布。
+                // 榛樿鐨勫悎鎴愯祫浜ч噷 ffmpeg.exe 鏄殢鏈哄瓧鑺傦紝涓嶅彲鎵ц锛?
+                // 瀹夎鍚庣殑鑳藉姏鎺㈡祴蹇呴』澶辫触锛屼笖缁濅笉鑳藉彂甯冦€?
                 FfmpegAsset asset = Fixtures.BuildSyntheticAsset(work, out archivePath);
 
                 FfmpegInstallLayout layout;
@@ -1723,14 +1727,14 @@ namespace ADOFAI.Renderist.FfmpegTests
                 FfmpegDownloadPlan plan = controller.TryStart(asset, false, 5);
                 File.Copy(archivePath, plan.TempFilePath, true);
 
-                // 模拟 Mod 禁用 / 卸载：必须在调用内同步收敛，不能等 OnUpdate。
+                // 妯℃嫙 Mod 绂佺敤 / 鍗歌浇锛氬繀椤诲湪璋冪敤鍐呭悓姝ユ敹鏁涳紝涓嶈兘绛?OnUpdate銆?
                 controller.Shutdown();
 
                 TestKit.CheckEqual(FfmpegDownloadState.Cancelled, controller.State, "state after shutdown");
                 TestKit.Check(!File.Exists(plan.TempFilePath), "temp must be cleaned by shutdown");
                 TestKit.Check(aborts.Count == 1, "abort must be requested");
 
-                // 禁用后迟到的完成通知不得标记成功。
+                // 绂佺敤鍚庤繜鍒扮殑瀹屾垚閫氱煡涓嶅緱鏍囪鎴愬姛銆?
                 controller.ReportFinished(plan.Generation, SuccessResponse(plan));
                 TestKit.CheckEqual(FfmpegDownloadState.Cancelled, controller.State,
                     "late completion after shutdown must not mark success");
@@ -1750,7 +1754,7 @@ namespace ADOFAI.Renderist.FfmpegTests
 
                 var controller = new FfmpegDownloadController(layout, generation => { });
 
-                // 第一次安装。
+                // 绗竴娆″畨瑁呫€?
                 FfmpegDownloadPlan first = controller.TryStart(asset, true, 30);
                 File.Copy(archivePath, first.TempFilePath, true);
                 controller.ReportFinished(first.Generation, SuccessResponse(first));
@@ -1761,7 +1765,7 @@ namespace ADOFAI.Renderist.FfmpegTests
                 string primary = Path.Combine(layout.VersionDirectory(asset.Id, asset.Version), "bin", "ffmpeg.exe");
                 DateTime stamp = File.GetLastWriteTimeUtc(primary);
 
-                // 第二次：既有有效安装不得被覆盖。
+                // 绗簩娆★細鏃㈡湁鏈夋晥瀹夎涓嶅緱琚鐩栥€?
                 FfmpegDownloadPlan second = controller.TryStart(asset, true, 30);
                 File.Copy(archivePath, second.TempFilePath, true);
                 controller.ReportFinished(second.Generation, SuccessResponse(second));
@@ -1841,8 +1845,8 @@ namespace ADOFAI.Renderist.FfmpegTests
                     "first completion must be accepted");
                 TestKit.CheckEqual(FfmpegDownloadState.Verifying, controller.State, "entered verification");
 
-                // 同一代的重复完成通知：既不得重复推进校验/安装，也不得删除
-                // 校验与安装**仍在读取**的归档（临时文件的 owner 是控制器）。
+                // 鍚屼竴浠ｇ殑閲嶅瀹屾垚閫氱煡锛氭棦涓嶅緱閲嶅鎺ㄨ繘鏍￠獙/瀹夎锛屼篃涓嶅緱鍒犻櫎
+                // 鏍￠獙涓庡畨瑁?*浠嶅湪璇诲彇**鐨勫綊妗ｏ紙涓存椂鏂囦欢鐨?owner 鏄帶鍒跺櫒锛夈€?
                 TestKit.Check(!controller.ReportFinished(plan.Generation, SuccessResponse(plan)),
                     "duplicate completion must be rejected");
                 TestKit.CheckEqual(FfmpegDownloadState.Verifying, controller.State,
@@ -1869,7 +1873,7 @@ namespace ADOFAI.Renderist.FfmpegTests
             };
         }
 
-        /// <summary>推进控制器直到后台校验/安装结束（或超时）。</summary>
+        /// <summary>鎺ㄨ繘鎺у埗鍣ㄧ洿鍒板悗鍙版牎楠?瀹夎缁撴潫锛堟垨瓒呮椂锛夈€?/summary>
         private static void PumpUntilSettled(FfmpegDownloadController controller)
         {
             DateTime deadline = DateTime.UtcNow.AddSeconds(120);

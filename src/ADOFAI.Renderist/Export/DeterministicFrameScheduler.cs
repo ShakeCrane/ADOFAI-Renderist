@@ -206,6 +206,12 @@ namespace ADOFAI.Renderist.Export
         private static double _preEntryBoundaryCanonicalStart;
         private static int _preEntryInjectedBeatNumber;
         private static bool _preEntryLifecycleInjectionArmed;
+        /// <summary>
+        /// B−1 之后的隐藏迁移窗口是否已经发布过「只过生命周期、不发新视觉步」的 sealed 授权。
+        /// 隐藏窗口可能跨越多个 Unity frame，但**只发布一次**：它是授权序列里的一个位置，
+        /// 不是每个 Unity frame 一个新步。
+        /// </summary>
+        private static bool _preEntryBoundarySealed;
 
         // PreEntry lifecycle bridge：scoped beat override 的真实 ownership。
         // Prefix 建立 ownership（保存 exact conductor instance / exact FieldInfo / 原始 beat），
@@ -298,6 +304,31 @@ namespace ADOFAI.Renderist.Export
 
         // saved Unity timing state is itself ownership until restoration succeeds
         private static bool _ownsUnityTiming;
+
+        // ---- 0.3.12.0 Gate A: 视觉帧授权合同 + Camera 原生时间入口 ----
+        //
+        // authorizer 是 generation / frame / phase 授权的唯一单点：scheduler 在既有 Prepare
+        // 边界发布，各 owner 在各自原生调用相位消费并留下独立回执，EOF 前统一校验完整性。
+        // 它**不是** clock，也**不是**全局视觉管理器：MasterTimeline 仍是唯一逻辑时间权威，
+        // L3-A/L3-B/L3-C 的帧交付、计数、Finalizing 与发布语义一律未改。
+        private static readonly VisualFrameAuthorizer _visualAuthorizer = new VisualFrameAuthorizer();
+
+        /// <summary>本 session 的 Camera 原生视觉时间入口 ownership；未安装时为 null。</summary>
+        private static CameraNativeTimeOwnership _cameraNativeTime;
+
+        /// <summary>
+        /// 上一帧发布给授权的 chart sample（仅用于计算相邻 chart sample 差值）。
+        /// 它不是第二套时间权威：真正的 chart time 仍只来自 MasterTimeline / PreEntryClock。
+        /// </summary>
+        private static double _lastAuthorizedChartSample;
+        private static bool _hasLastAuthorizedChartSample;
+
+        /// <summary>
+        /// G（gameplay 起始边界）那一帧的 partial fraction。它在 partial timeScale 被 arm 时
+        /// 记录下来，供该帧的授权投影使用：G 的授权必须覆盖
+        /// previousBoundaryTime → canonicalStart，而不是一个完整 output step。
+        /// </summary>
+        private static double _gameplayPartialFraction;
 
         public static bool IsRunning => _running;
         public static SchedulerStatus Status => _status;
@@ -584,7 +615,7 @@ namespace ADOFAI.Renderist.Export
                 }
 
                 if (!FrameCaptureDriver.Start(outputDirectory, FramePrefix, ZeroPadWidth,
-                        OnCaptureResult, _frozenOutputMode,
+                        OnCaptureResult, _frozenOutputMode, TryValidateVisualFrameAtEndOfFrame,
                         out long captureGeneration, out string captureError))
                 {
                     return FailStart("capture-driver-start-failed:" + captureError);
@@ -603,13 +634,42 @@ namespace ADOFAI.Renderist.Export
                     return FailStart("planet-visual-time-ownership-unavailable");
                 }
 
-                // ---- 6) 官方 editor.Play() ----
+                // ---- 6) 视觉帧授权合同：复用同一个 capture generation（不新建第二套 generation），
+                // 并在 playback 之前登记本 session 必须回执的消费者槽位。登记集合此后固定：
+                // EOF 完整性校验只要求已登记槽位，未登记的 owner（Gate A 尚未接入的 Tween /
+                // Particle）不参与。
+                if (!ArmVisualFrameAuthorization(_captureGeneration, out string authorizationError))
+                {
+                    return FailStart("visual-frame-authorization-unavailable:" + authorizationError);
+                }
+
+                // ---- 6b) Camera 原生时间入口 ownership：必须在 editor.Play() 之前安装。
+                // 安装一半失败即撤销已装部分并拒绝启动；实例 / generation 在 Play 返回后绑定。
+                if (!InstallCameraNativeTimeOwnership(out string cameraOwnershipError))
+                {
+                    return FailStart("camera-native-time-ownership-unavailable:" + cameraOwnershipError);
+                }
+
+                // ---- 7) 官方 editor.Play() ----
                 _handoff.MarkPlayRequested();
                 if (!TryPlay(out string playError))
                 {
                     return FailStart("start-playback-failed:" + playError);
                 }
                 _handoff.MarkPlayReturned();
+
+                // Camera 原生时间入口在 editor.Play() 返回后才绑定实例与 generation：
+                // scrCamera.instance 只有在 Play 之后才必然存在，而本 session 的第一帧
+                // （pre-entry frame 0）最早出现在后续 InitializationHold 里。
+                //
+                // 待实机验证（无法由静态证据裁决）：Play 返回到首次 Arm 之间若已经发生过
+                // 原生 scrCamera.Update，那几次调用读的是**原生** Time.deltaTime
+                // （owner 尚未活动）；Arm 之后的 bootstrap 窗口则由 authorizer 的
+                // Waiting 状态给出 0 增量。两者都不会 fail-closed，但真实时序必须实机确认。
+                if (!ArmCameraNativeTimeOwnership(_captureGeneration, out string cameraArmError))
+                {
+                    return FailStart("camera-native-time-arm-failed:" + cameraArmError);
+                }
 
                 // native playback teardown observer：必须在 editor.Play() 返回后安装。
                 // 静态 IL 已确认 scnEditor.Play 不会调用 SwitchToEditMode（调用者只有
@@ -880,6 +940,7 @@ namespace ADOFAI.Renderist.Export
             _preEntryBoundaryPreviousTime = 0.0;
             _preEntryInjectedBeatNumber = 0;
             _preEntryLifecycleInjectionArmed = false;
+            _preEntryBoundarySealed = false;
             _preEntryBeatOverrideOwned = false;
             _preEntryBeatOverrideConductor = null;
             _preEntryBeatOverrideField = null;
@@ -892,6 +953,11 @@ namespace ADOFAI.Renderist.Export
             _preEntryLifecyclePartialStep = 0.0;
             _preEntryLifecyclePartialFraction = 0.0;
             _preEntryLifecycleRequestedPartialScale = 0f;
+            // 0.3.12.0 Gate A：授权合同与 Camera ownership 每次新 session 显式复位。
+            // 注意：authorizer 只在 TryStart 绑定 generation 之后才 armed；此处只清计数投影。
+            _lastAuthorizedChartSample = 0.0;
+            _hasLastAuthorizedChartSample = false;
+            _gameplayPartialFraction = 0.0;
         }
 
         private static bool HasResidualOwnership()
@@ -903,6 +969,9 @@ namespace ADOFAI.Renderist.Export
                    // 也是 residual ownership —— 未收敛前绝不允许开始下一 session。
                    FrameCaptureDriver.HasOwnedDownsampleChain ||
                    FrameCaptureDriver.HasResidualGpuState ||
+                   // 0.3.12.0 Gate A：Camera 原生时间入口未撤销 / 未失效前同样是 residual ownership，
+                   // 复建 DLL 或重开 session 都不得在旧 Patch 仍存活时开始。
+                   (_cameraNativeTime != null && _cameraNativeTime.HasResidualOwnership) ||
                    // L3-A：帧 Completion 与 pipeline cleanup 未各自收敛前，RGB24 lease 仍然是
                    // residual ownership（CleanupTask 完成**不能**推导 frame buffer 已可复用）。
                    (!_rgb24DeliveryArmed && _rgb24Delivery != null && _rgb24Delivery.HasResidualOwnership) ||
@@ -1606,6 +1675,205 @@ namespace ADOFAI.Renderist.Export
                 reason ?? "planet-visual-time-ownership-failed");
         }
 
+        // ================================================================
+        // 0.3.12.0 Gate A：视觉帧授权合同 + Camera 原生时间入口
+        // ================================================================
+        //
+        // 这一层只做三件事，且都发生在既有边界上：
+        //   1) TryStart：绑定 generation + 在 playback 之前登记消费者槽位；
+        //   2) Prepare（pre-entry 与 gameplay 共用的唯一边界）：发布本帧不可变授权；
+        //   3) FrameCaptureDriver 的既有 EOF 协程在读回 / 返回 log-only 成功**之前**
+        //      回调 TryValidateVisualFrameAtEndOfFrame：校验全部已登记回执完整性并关闭授权。
+        //
+        // 它**不**改变 MasterTimeline、不改变 L3-A 的 lease / 计数、不改变 L3-C Finalizing
+        // 与原子发布语义，也不接管任何 UI 状态。
+
+        /// <summary>
+        /// 绑定本 session 的 generation，并登记本 session 必须回执的消费者槽位。
+        /// 必须在 <c>editor.Play()</c> 之前调用（登记集合此后固定）。
+        /// </summary>
+        private static bool ArmVisualFrameAuthorization(long generation, out string error)
+        {
+            error = null;
+            try
+            {
+                if (generation == 0)
+                {
+                    error = "generation-zero";
+                    return false;
+                }
+
+                _visualAuthorizer.Arm(generation);
+
+                // Camera 槽位在 Gate A 内必然存在（本 session 会安装 Camera 原生时间入口）。
+                if (!_visualAuthorizer.TryRegisterConsumer(VisualConsumerSlot.Camera, out string cameraError))
+                {
+                    error = "camera-consumer-registration-failed:" + cameraError;
+                    return false;
+                }
+
+                Log.Info("DeterministicFrameScheduler visual frame authorization armed: generation=" +
+                         generation.ToString(CultureInfo.InvariantCulture) +
+                         " registeredConsumers=Camera");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("DeterministicFrameScheduler: 视觉帧授权绑定异常", ex);
+                error = "arm-exception:" + ex.GetType().Name;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 在 Prepare 边界发布本帧授权。返回 false 即本帧没有可消费的视觉时间：
+        /// 调用方必须让 session fail-closed（绝不带着未发布授权的帧继续 capture）。
+        /// </summary>
+        private static bool TryPublishVisualFrameAuthorization(
+            long absoluteOutputFrameIndex, VisualFramePhase phase, double chartSampleSeconds,
+            double partialFraction, out string error)
+        {
+            error = null;
+
+            double chartDelta = _hasLastAuthorizedChartSample
+                ? chartSampleSeconds - _lastAuthorizedChartSample
+                : 0.0;
+
+            VisualFrameAuthorization authorization;
+            if (!_visualAuthorizer.TryPublishFrame(
+                    _captureGeneration, absoluteOutputFrameIndex, Time.frameCount, phase,
+                    chartSampleSeconds, chartDelta, _outputFps,
+                    _preEntryLifecycleSavedTimeScale > 0f ? _preEntryLifecycleSavedTimeScale : 1.0,
+                    partialFraction, out authorization, out error))
+            {
+                return false;
+            }
+
+            _lastAuthorizedChartSample = chartSampleSeconds;
+            _hasLastAuthorizedChartSample = true;
+            return true;
+        }
+
+        /// <summary>
+        /// FrameCaptureDriver 的既有 EOF 协程在**任何读回之前**调用的验证入口。
+        ///
+        /// 只在 <c>OnCaptureResult</c> 检查会晚于 PNG 写盘 / RGB24 形成，因此这里才是唯一关口。
+        /// 语义是**同步中止**：校验失败时本方法登记停止请求并**抛出**，让 driver 既有的
+        /// catch 把本帧变成失败结果 —— 于是不会产生 PNG / RGB24 产物、不会回调成功、
+        /// 也不会 CommitFrame。绝不允许"只登记一个延后的停止请求，然后继续写盘"。
+        /// 本方法自身不写文件、不改计数、不提交任何帧。
+        /// </summary>
+        private static void TryValidateVisualFrameAtEndOfFrame(long frameIndex)
+        {
+            if (!_running) return;
+
+            string validationError;
+            if (!_visualAuthorizer.TryValidateEndOfFrame(out validationError))
+            {
+                Log.Error("DeterministicFrameScheduler: 视觉帧授权完整性校验失败 frameIndex=" +
+                          frameIndex.ToString(CultureInfo.InvariantCulture) +
+                          " detail=" + (validationError ?? "unknown") +
+                          " state=" + _visualAuthorizer.Describe(Time.frameCount));
+                RequestStop("visual-frame-authorization-failed",
+                    validationError ?? "visual-frame-authorization-failed");
+                // 同步中止当前帧末事务：抛出的异常由 driver 既有的 catch 转成本帧失败。
+                // 不在这里做任何 cleanup —— 统一由既有 Tick → ProcessStop → RestoreAll 收敛。
+                throw new InvalidOperationException(
+                    "visual-frame-authorization-incomplete:" + (validationError ?? "unknown"));
+            }
+
+            // 校验通过后本帧授权一次性关闭：EOF 后的等待 / 交付 / Finalizing 期间
+            // 任何迟到的原生 Update 都只能看到 Waiting，并因此只得到 0 增量。
+            _visualAuthorizer.CloseCurrentFrame();
+        }
+
+        /// <summary>
+        /// 安装 Camera 原生时间入口的窄 Patch（<c>scrCamera.Update</c> / <c>UpdateSize</c> /
+        /// <c>CheckUpdateFrameRateScreen</c> / <c>UpdateCustomFrameRateScreen</c>）。
+        /// 安装一半失败即撤销已装部分并返回 false。
+        /// </summary>
+        private static bool InstallCameraNativeTimeOwnership(out string error)
+        {
+            error = null;
+            try
+            {
+                Harmony harmony = ModEntry.Harmony;
+                if (harmony == null)
+                {
+                    error = "harmony-null";
+                    return false;
+                }
+
+                var ownership = new CameraNativeTimeOwnership(
+                    harmony, _visualAuthorizer, RequestCameraNativeTimeStop);
+                if (!ownership.Begin(out string beginError))
+                {
+                    error = beginError ?? "install-failed";
+                    return false;
+                }
+
+                _cameraNativeTime = ownership;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("DeterministicFrameScheduler: Camera 原生时间入口安装异常", ex);
+                error = "install-exception:" + ex.GetType().Name;
+                return false;
+            }
+        }
+
+        /// <summary>在 <c>editor.Play()</c> 返回后绑定实例 / generation / 原生时间锚点。</summary>
+        private static bool ArmCameraNativeTimeOwnership(long generation, out string error)
+        {
+            error = null;
+            if (_cameraNativeTime == null)
+            {
+                error = "not-installed";
+                return false;
+            }
+            return _cameraNativeTime.Arm(generation, out error);
+        }
+
+        /// <summary>
+        /// Camera ownership 的 fail-closed 失败出口：只登记停止请求，不在这里 cleanup
+        /// （统一由既有 Tick → ProcessStop → RestoreAll 与 residual gate 收敛）。
+        /// </summary>
+        private static void RequestCameraNativeTimeStop(string reason)
+        {
+            RequestStop("camera-native-time-failed", reason ?? "camera-native-time-failed");
+        }
+
+        /// <summary>
+        /// 撤销 Camera 原生时间入口并失效视觉帧授权。返回 false 表示仍有 residual ownership。
+        /// </summary>
+        private static bool DisposeCameraNativeTimeOwnership(out string error)
+        {
+            error = null;
+            // 先使授权失效：in-flight 的 Prefix / Postfix / Finalizer 及任何迟到回调都只能读到 stale。
+            _visualAuthorizer.Invalidate();
+
+            if (_cameraNativeTime == null) return true;
+
+            try
+            {
+                if (_cameraNativeTime.TryDispose(out string disposeError))
+                {
+                    _cameraNativeTime = null;
+                    return true;
+                }
+
+                error = disposeError ?? "camera-native-time-dispose-failed";
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("DeterministicFrameScheduler: Camera 原生时间入口清理异常", ex);
+                error = "camera-native-time-dispose-exception:" + ex.GetType().Name;
+                return false;
+            }
+        }
+
         private static void PrepareFrame()
         {
             // 关键不变量：上一帧必须已捕获并提交，才允许开始下一帧。
@@ -1692,6 +1960,22 @@ namespace ADOFAI.Renderist.Export
             // 共用同一实现与同一 absolute _outputFrameIndex。顺序必须是
             // Prepare → ownership Goto → ADOFAI native Update / Planet 视觉消费 → EOF → Commit。
             // ownership 自身不推进任何时间，只在 EOF 之前把已识别 Tween 定位到本帧视觉时间。
+
+            // 0.3.12.0 Gate A：本帧相位（gameplay partial 只在 G 这一帧成立）。
+            VisualFramePhase phase = _preEntryLifecyclePartialScaleArmed
+                ? VisualFramePhase.GameplayPartial
+                : VisualFramePhase.Gameplay;
+            double partialFraction = phase == VisualFramePhase.GameplayPartial
+                ? _gameplayPartialFraction
+                : 0.0;
+            if (!TryPublishVisualFrameAuthorization(
+                    index, phase, _forcedSongPosition, partialFraction, out string authorizationError))
+            {
+                RequestStop("visual-frame-authorization-failed",
+                    authorizationError ?? "authorization-publish-failed");
+                return;
+            }
+
             if (!TryPreparePlanetVisualTime(index))
             {
                 return;
@@ -1793,6 +2077,32 @@ namespace ADOFAI.Renderist.Export
                 return;
             }
 
+
+            // 0.3.12.0 Gate A：B−1 的视觉授权已随其 EOF 关闭；隐藏迁移窗口只过生命周期，
+            // 因此在这里一次性发布 sealed 授权（两个视觉增量恒为 0）。这样等待期间重新进入
+            // Unity Update 只能拿到「不授予视觉步」，而不是继续消费 B−1 的授权。
+            //
+            // Sealed 是 **lifecycle-only**：它不占用输出帧序列位置（不推进 authorizer 的
+            // lastPublishedOutputFrameIndex），因此紧随其后的 G 仍可合法发布同一个
+            // absolute output frame index；它同时也覆盖整个相位，跨越任意多个原生 Unity
+            // frame 只返回 0 增量，不构成重复消费。
+            if (!_preEntryBoundarySealed)
+            {
+                _preEntryBoundarySealed = true;
+                if (!TryPublishVisualFrameAuthorization(
+                        _outputFrameIndex, VisualFramePhase.Sealed, _forcedSongPosition, 0.0,
+                        out string sealedAuthorizationError))
+                {
+                    RequestStop("visual-frame-authorization-failed",
+                        sealedAuthorizationError ?? "preentry-boundary-seal-failed");
+                    return;
+                }
+
+                Log.Info("PreEntry lifecycle-only boundary visual authorization sealed: " +
+                         "absoluteOutputFrameIndex=" + _outputFrameIndex.ToString(CultureInfo.InvariantCulture) +
+                         " phase=" + VisualFramePhase.Sealed +
+                         " unityFrame=" + Time.frameCount.ToString(CultureInfo.InvariantCulture));
+            }
 
             // TEMP DIAGNOSTIC（只读）: hidden lifecycle-only boundary phase 的逐 Unity frame 观测。
             // 本阶段 timeScale 已为 0，因此这里能直接回答"scaled 时间被冻结时，Camera 与粒子
@@ -2002,6 +2312,8 @@ namespace ADOFAI.Renderist.Export
             _preEntryLifecyclePartialStep = partialStep;
             _preEntryLifecyclePartialFraction = partialFraction;
             _preEntryLifecycleRequestedPartialScale = requested;
+            // G 那一帧的视觉授权必须覆盖同一个 partial span，而不是一个完整 output step。
+            _gameplayPartialFraction = partialFraction;
 
             Log.Info("PreEntry partial timeScale armed for gameplay frame G: " +
                      "unityFrame=" + Time.frameCount.ToString(CultureInfo.InvariantCulture) +
@@ -2126,6 +2438,17 @@ namespace ADOFAI.Renderist.Export
             _forcedSongPosition = forcedPreEntryTime;
             EditorVisualClock.SetForcedSongPosition(_forcedSongPosition);
             EditorVisualClock.SetActive(true);
+
+            // 0.3.12.0 Gate A：在 Prepare 边界发布本帧授权（pre-entry 与 gameplay 共用同一入口）。
+            // 发布必须先于本帧任何视觉消费；失败即 fail-closed，绝不在未授权状态下捕获。
+            if (!TryPublishVisualFrameAuthorization(
+                    index, VisualFramePhase.PreEntry, _forcedSongPosition, 0.0,
+                    out string preEntryAuthorizationError))
+            {
+                RequestStop("visual-frame-authorization-failed",
+                    preEntryAuthorizationError ?? "preentry-authorization-publish-failed");
+                return;
+            }
 
             // 与 gameplay 完全相同的 ownership 定位入口，使用同一 absolute _outputFrameIndex：
             // pre-entry → gameplay 边界绝不把 owned Tween position 重新从 4/FPS 起算。
@@ -3110,6 +3433,19 @@ namespace ADOFAI.Renderist.Export
                     _pendingCaptureIndex = -1;
                     _captureGeneration = 0;
                     _captureDeadlineRealtime = 0.0;
+                }
+
+                // 0.3.12.0 Gate A：Camera 原生时间入口先失效再精确 Unpatch。
+                // 撤销失败保留引用并阻止 restart（绝不用全局 UnpatchAll）。
+                try
+                {
+                    if (!DisposeCameraNativeTimeOwnership(out string cameraCleanupError))
+                        failures.Add("camera-native-time-dispose:" + (cameraCleanupError ?? "unknown"));
+                }
+                catch (Exception ex)
+                {
+                    failures.Add("camera-native-time-dispose-exception");
+                    Log.Exception("DeterministicFrameScheduler: Camera 原生时间入口清理异常", ex);
                 }
 
                 EditorVisualClock.SetActive(false);
